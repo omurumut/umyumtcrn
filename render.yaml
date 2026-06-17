@@ -1,9 +1,0 @@
-services:
-- type: web
-  name: ems-dashboard
-  env: node
-  rootDir: artifacts/ems-dashboard
-  buildCommand: corepack enable && pnpm install --filter . && pnpm run build
-  startCommand: pnpm run preview
-  nodeVersion: 24.14.1
-  autoDeploy: true
