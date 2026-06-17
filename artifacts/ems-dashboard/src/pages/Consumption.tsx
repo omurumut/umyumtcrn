@@ -1,0 +1,430 @@
+import { useState, useEffect } from "react";
+import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
+import { useAuth } from "@/context/AuthContext";
+import { useUnit } from "@/context/UnitContext";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import { Plus, Pencil, Trash2, Loader2, Building2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { useYear } from "@/context/YearContext";
+
+const MONTHS = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"];
+const TYPE_COLORS: Record<string, string> = {
+  elektrik: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
+  dogalgaz: "bg-blue-500/10 text-blue-400 border-blue-500/20",
+  buhar: "bg-orange-500/10 text-orange-400 border-orange-500/20",
+  su: "bg-cyan-500/10 text-cyan-400 border-cyan-500/20",
+  diger: "bg-slate-500/10 text-slate-400 border-slate-500/20",
+};
+
+interface EnergySource { id: number; type: string; name: string; unit: string; }
+interface SubUnit { id: number; name: string; city: string; }
+interface Meter { id: number; name: string; type: string; subUnitId?: number | null; energySourceId?: number | null; unit: string; city?: string; }
+
+const apiFetch = (token: string | null, url: string) =>
+  fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    .then(r => r.ok ? r.json() : r.json().then((e: any) => {
+      const err: any = new Error(e.error ?? "İstek başarısız");
+      err.status = r.status;
+      throw err;
+    }));
+const apiMutate = (token: string | null, method: string, url: string, body?: unknown) =>
+  fetch(url, { method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+    .then(r => r.ok ? (r.status === 204 ? null : r.json()) : r.json().then((e: any) => { throw new Error(e.error); }));
+
+interface FormState {
+  meterId: string; year: string; month: string;
+  kwh: string; tep: string; co2: string; hdd: string; cdd: string; notes: string;
+}
+const EMPTY_FORM = (year: number): FormState => ({
+  meterId: "", year: year.toString(), month: "1",
+  kwh: "", tep: "", co2: "", hdd: "", cdd: "", notes: "",
+});
+
+export default function Consumption() {
+  const { year } = useYear();
+  const { user, token } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const [filterEnergySource, setFilterEnergySource] = useState("all");
+  const [filterSubUnit, setFilterSubUnit] = useState("all");
+  const [filterMeter, setFilterMeter] = useState("all");
+  const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [form, setForm] = useState<FormState>(EMPTY_FORM(year));
+  const [formEnergySource, setFormEnergySource] = useState("");
+  const [formSubUnit, setFormSubUnit] = useState("");
+  const [hddFetching, setHddFetching] = useState(false);
+
+  const { unitId } = useUnit();
+  const isAdmin = user?.role === "admin";
+
+  const esKey = ["energy-sources", unitId];
+  const { data: energySources } = useQuery<EnergySource[]>({
+    queryKey: esKey,
+    queryFn: () => apiFetch(token, unitId !== null ? `/api/energy-sources?unitId=${unitId}` : "/api/energy-sources"),
+    enabled: !!token,
+  });
+
+  const suKey = ["sub-units", unitId];
+  const { data: subUnits } = useQuery<SubUnit[]>({
+    queryKey: suKey,
+    queryFn: () => apiFetch(token, unitId !== null ? `/api/sub-units?unitId=${unitId}` : "/api/sub-units"),
+    enabled: !!token,
+  });
+
+  const metersKey = ["meters-all", unitId];
+  const { data: allMeters } = useQuery<Meter[]>({
+    queryKey: metersKey,
+    queryFn: () => apiFetch(token, unitId !== null ? `/api/meters?unitId=${unitId}` : "/api/meters"),
+    enabled: !!token,
+  });
+
+  const filteredSubUnitsBySource = filterEnergySource !== "all"
+    ? (subUnits ?? []).filter(su =>
+        (allMeters ?? []).some(m => m.subUnitId === su.id && m.energySourceId?.toString() === filterEnergySource)
+      )
+    : (subUnits ?? []);
+
+  const filteredMeters = (allMeters ?? []).filter(m => {
+    if (filterEnergySource !== "all" && m.energySourceId?.toString() !== filterEnergySource) return false;
+    if (filterSubUnit !== "all" && m.subUnitId?.toString() !== filterSubUnit) return false;
+    return true;
+  });
+
+  const formFilteredMeters = (allMeters ?? []).filter(m => {
+    if (formEnergySource && m.energySourceId?.toString() !== formEnergySource) return false;
+    if (formSubUnit && m.subUnitId?.toString() !== formSubUnit) return false;
+    return true;
+  });
+
+  const consParams = new URLSearchParams();
+  consParams.set("year", year.toString());
+  if (filterMeter !== "all") consParams.set("meterId", filterMeter);
+  else if (filteredMeters.length > 0 && filteredMeters.length < 100) {
+    // no additional filtering - handled client side
+  }
+  const { data: records, isLoading } = useQuery<any[]>({
+    queryKey: ["consumption", year, filterMeter, filterEnergySource, filterSubUnit],
+    queryFn: () => apiFetch(token, `/api/consumption?${consParams}`),
+    enabled: !!token,
+  });
+
+  const filteredRecords = (Array.isArray(records) ? records : []).filter(r => {
+    if (filterMeter !== "all") return r.meterId?.toString() === filterMeter;
+    const m = (allMeters ?? []).find(m => m.id === r.meterId);
+    if (!m) return false;
+    if (filterEnergySource !== "all" && m.energySourceId?.toString() !== filterEnergySource) return false;
+    if (filterSubUnit !== "all" && m.subUnitId?.toString() !== filterSubUnit) return false;
+    return true;
+  });
+
+  const createC = useMutation({
+    mutationFn: (d: any) => apiMutate(token, "POST", "/api/consumption", d),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["consumption"] }); setOpen(false); toast({ title: "Veri eklendi" }); },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
+  const updateC = useMutation({
+    mutationFn: (d: any) => apiMutate(token, "PATCH", `/api/consumption/${editingId}`, d),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["consumption"] }); setOpen(false); toast({ title: "Güncellendi" }); },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
+  const deleteC = useMutation({
+    mutationFn: (id: number) => apiMutate(token, "DELETE", `/api/consumption/${id}`),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["consumption"] }); toast({ title: "Silindi" }); },
+  });
+
+  async function fetchHddCdd(city: string) {
+    if (!city) return;
+    setHddFetching(true);
+    try {
+      const res = await fetch("/api/weather", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ location: city, year: parseInt(form.year) }),
+      });
+      if (res.ok) {
+        const data: any[] = await res.json();
+        const monthData = data.find(d => d.month === parseInt(form.month));
+        if (monthData) {
+          setForm(f => ({ ...f, hdd: monthData.hdd?.toString() ?? "", cdd: monthData.cdd?.toString() ?? "" }));
+          toast({ title: `HDD/CDD çekildi (${city})` });
+        }
+      }
+    } catch {}
+    setHddFetching(false);
+  }
+
+  function openCreate() {
+    setEditingId(null);
+    setFormEnergySource(filterEnergySource !== "all" ? filterEnergySource : "");
+    setFormSubUnit(filterSubUnit !== "all" ? filterSubUnit : "");
+    setForm({ ...EMPTY_FORM(year), meterId: filterMeter !== "all" ? filterMeter : "" });
+    setOpen(true);
+  }
+
+  function openEdit(r: any) {
+    const m = (allMeters ?? []).find(m => m.id === r.meterId);
+    setEditingId(r.id);
+    setFormEnergySource(m?.energySourceId?.toString() ?? "");
+    setFormSubUnit(m?.subUnitId?.toString() ?? "");
+    setForm({ meterId: r.meterId.toString(), year: r.year.toString(), month: r.month.toString(), kwh: r.kwh.toString(), tep: r.tep.toString(), co2: r.co2.toString(), hdd: r.hdd?.toString() ?? "", cdd: r.cdd?.toString() ?? "", notes: r.notes ?? "" });
+    setOpen(true);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const m = (allMeters ?? []).find(m => m.id.toString() === form.meterId);
+    if (m?.city && !form.hdd && !form.cdd && !editingId) {
+      fetchHddCdd(m.city);
+    }
+  }, [form.meterId]);
+
+  useEffect(() => {
+    if (!open || !form.meterId) return;
+    const m = (allMeters ?? []).find(m => m.id.toString() === form.meterId);
+    if (m?.city) fetchHddCdd(m.city);
+  }, [form.month, form.year]);
+
+  function handleKwhChange(v: string) {
+    const kwh = parseFloat(v) || 0;
+    const meter = (allMeters ?? []).find(m => m.id.toString() === form.meterId);
+    const type = meter?.type ?? "elektrik";
+    const tepFactor = type === "elektrik" ? 0.000086 : type === "dogalgaz" ? 0.00086 : 0.000086;
+    const co2Factor = type === "elektrik" ? 0.4 : type === "dogalgaz" ? 0.202 : 0.4;
+    setForm(f => ({ ...f, kwh: v, tep: (kwh * tepFactor).toFixed(4), co2: (kwh * co2Factor).toFixed(2) }));
+  }
+
+  function handleSave() {
+    const data: any = {
+      meterId: parseInt(form.meterId), year: parseInt(form.year), month: parseInt(form.month),
+      kwh: parseFloat(form.kwh) || 0, tep: parseFloat(form.tep) || 0, co2: parseFloat(form.co2) || 0,
+    };
+    if (form.hdd) data.hdd = parseFloat(form.hdd);
+    if (form.cdd) data.cdd = parseFloat(form.cdd);
+    if (form.notes) data.notes = form.notes;
+    if (!data.meterId) { toast({ title: "Sayaç seçin", variant: "destructive" }); return; }
+    editingId !== null ? updateC.mutate(data) : createC.mutate(data);
+  }
+
+  const getSourceName = (meterId: number) => {
+    const m = (allMeters ?? []).find(m => m.id === meterId);
+    if (!m) return null;
+    const es = (energySources ?? []).find(s => s.id === m.energySourceId);
+    return es?.name ?? m.type;
+  };
+
+  const getSubUnitName = (meterId: number) => {
+    const m = (allMeters ?? []).find(m => m.id === meterId);
+    if (!m || !m.subUnitId) return null;
+    return (subUnits ?? []).find(s => s.id === m.subUnitId)?.name ?? null;
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Tüketim Verileri</h1>
+          <p className="text-sm text-muted-foreground mt-1">{year} yılı enerji tüketim kayıtları</p>
+        </div>
+        <Button onClick={openCreate} className="gap-2"><Plus className="h-4 w-4" /> Veri Ekle</Button>
+      </div>
+
+      {isAdmin && unitId === null ? (
+        <Card><CardContent className="py-16 flex flex-col items-center text-muted-foreground">
+          <Building2 className="h-10 w-10 mb-3 opacity-30" />
+          <p className="font-medium">Birim seçilmedi</p>
+          <p className="text-sm mt-1">Üst menüden bir birim seçerek tüketim verilerini görüntüleyin</p>
+        </CardContent></Card>
+      ) : (<>
+      <div className="flex flex-wrap items-center gap-3">
+        <Select value={filterEnergySource} onValueChange={v => { setFilterEnergySource(v); setFilterSubUnit("all"); setFilterMeter("all"); }}>
+          <SelectTrigger className="w-48"><SelectValue placeholder="Enerji kaynağı" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Tüm Kaynaklar</SelectItem>
+            {(energySources ?? []).map(s => <SelectItem key={s.id} value={s.id.toString()}>{s.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={filterSubUnit} onValueChange={v => { setFilterSubUnit(v); setFilterMeter("all"); }}>
+          <SelectTrigger className="w-48"><SelectValue placeholder="Alt birim" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Tüm Alt Birimler</SelectItem>
+            {filteredSubUnitsBySource.map(s => <SelectItem key={s.id} value={s.id.toString()}>{s.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={filterMeter} onValueChange={setFilterMeter}>
+          <SelectTrigger className="w-48"><SelectValue placeholder="Sayaç" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Tüm Sayaçlar</SelectItem>
+            {filteredMeters.map(m => <SelectItem key={m.id} value={m.id.toString()}>{m.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <span className="text-sm text-muted-foreground">{filteredRecords.length} kayıt</span>
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          {isLoading ? (
+            <div className="p-6 space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10" />)}</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Kaynak</TableHead>
+                  <TableHead>Alt Birim</TableHead>
+                  <TableHead>Sayaç</TableHead>
+                  <TableHead>Ay</TableHead>
+                  <TableHead className="text-right">Tüketim</TableHead>
+                  <TableHead className="text-right">TEP</TableHead>
+                  <TableHead className="text-right">CO₂ (ton)</TableHead>
+                  <TableHead className="text-right">HDD</TableHead>
+                  <TableHead className="text-right">CDD</TableHead>
+                  <TableHead className="text-right w-20"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredRecords.length === 0 ? (
+                  <TableRow><TableCell colSpan={10} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı. Veri ekleyin.</TableCell></TableRow>
+                ) : filteredRecords.map((r: any) => {
+                  const srcName = getSourceName(r.meterId);
+                  const suName = getSubUnitName(r.meterId);
+                  const m = (allMeters ?? []).find(m => m.id === r.meterId);
+                  return (
+                    <TableRow key={r.id}>
+                      <TableCell>
+                        {srcName && <Badge className={`text-xs ${TYPE_COLORS[m?.type ?? "diger"]}`} variant="outline">{srcName}</Badge>}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{suName ?? "—"}</TableCell>
+                      <TableCell className="font-medium text-sm">{r.meterName ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{MONTHS[(r.month ?? 1) - 1]}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{(r.kwh ?? 0).toLocaleString("tr-TR")} <span className="text-xs text-muted-foreground">{m?.unit}</span></TableCell>
+                      <TableCell className="text-right font-mono text-sm">{(r.tep ?? 0).toFixed(4)}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{(r.co2 ?? 0).toFixed(2)}</TableCell>
+                      <TableCell className="text-right text-sm">{r.hdd ?? "—"}</TableCell>
+                      <TableCell className="text-right text-sm">{r.cdd ?? "—"}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => openEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>
+                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive" onClick={() => deleteC.mutate(r.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+      </>)}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader><DialogTitle>{editingId !== null ? "Veri Düzenle" : "Tüketim Verisi Ekle"}</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>1. Enerji Kaynağı *</Label>
+              <Select value={formEnergySource} onValueChange={v => { setFormEnergySource(v); setFormSubUnit(""); setForm(f => ({ ...f, meterId: "" })); }}>
+                <SelectTrigger><SelectValue placeholder="Kaynak seçin" /></SelectTrigger>
+                <SelectContent>
+                  {(energySources ?? []).map(s => <SelectItem key={s.id} value={s.id.toString()}>{s.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {formEnergySource && (
+              <div className="space-y-1.5">
+                <Label>2. Alt Birim / Lokasyon</Label>
+                <Select value={formSubUnit || "all_sub"} onValueChange={v => { setFormSubUnit(v === "all_sub" ? "" : v); setForm(f => ({ ...f, meterId: "" })); }}>
+                  <SelectTrigger><SelectValue placeholder="Alt birim seçin" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all_sub">Tümü</SelectItem>
+                    {(subUnits ?? [])
+                      .filter(su => (allMeters ?? []).some(m => m.subUnitId === su.id && m.energySourceId?.toString() === formEnergySource))
+                      .map(s => <SelectItem key={s.id} value={s.id.toString()}>{s.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {formEnergySource && (
+              <div className="space-y-1.5">
+                <Label>3. Sayaç *</Label>
+                <Select value={form.meterId} onValueChange={v => setForm(f => ({ ...f, meterId: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Sayaç seçin" /></SelectTrigger>
+                  <SelectContent>
+                    {formFilteredMeters.map(m => <SelectItem key={m.id} value={m.id.toString()}>{m.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Yıl</Label>
+                <Input value={form.year} onChange={e => setForm(f => ({ ...f, year: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Ay</Label>
+                <Select value={form.month} onValueChange={v => setForm(f => ({ ...f, month: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{MONTHS.map((m, i) => <SelectItem key={i + 1} value={(i + 1).toString()}>{m}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-1.5">
+                <Label>Tüketim *</Label>
+                <Input type="number" value={form.kwh} onChange={e => handleKwhChange(e.target.value)} placeholder="0" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>TEP</Label>
+                <Input type="number" value={form.tep} onChange={e => setForm(f => ({ ...f, tep: e.target.value }))} placeholder="Otomatik" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>CO₂ (ton)</Label>
+                <Input type="number" value={form.co2} onChange={e => setForm(f => ({ ...f, co2: e.target.value }))} placeholder="Otomatik" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-2">
+                  HDD
+                  {hddFetching && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+                </Label>
+                <Input type="number" value={form.hdd} onChange={e => setForm(f => ({ ...f, hdd: e.target.value }))} placeholder="Otomatik" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>CDD</Label>
+                <Input type="number" value={form.cdd} onChange={e => setForm(f => ({ ...f, cdd: e.target.value }))} placeholder="Otomatik" />
+              </div>
+            </div>
+            {form.meterId && (
+              <p className="text-xs text-muted-foreground">
+                HDD/CDD sayacın şehrine ({(allMeters ?? []).find(m => m.id.toString() === form.meterId)?.city ?? "?"}) göre meteorolojiden otomatik çekilir.
+              </p>
+            )}
+            <div className="space-y-1.5">
+              <Label>Not</Label>
+              <Input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="İsteğe bağlı" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>İptal</Button>
+            <Button onClick={handleSave} disabled={createC.isPending || updateC.isPending}>{editingId !== null ? "Güncelle" : "Ekle"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

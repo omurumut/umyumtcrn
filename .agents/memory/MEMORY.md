@@ -1,0 +1,2 @@
+- [EMS Dashboard Architecture](ems-dashboard.md) — ISO 50001 EMS full-stack app: React+Vite frontend at `/`, Express API on port 8080, Postgres + Drizzle ORM.
+- [EMS Multi-unit hook pattern](ems-multi-unit.md) — unitId context, hook çağrı kalıbı, TS7030 return-toast fix

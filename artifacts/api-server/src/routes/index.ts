@@ -1,0 +1,42 @@
+import { Router, type IRouter } from "express";
+import healthRouter from "./health";
+import metersRouter from "./meters";
+import consumptionRouter from "./consumption";
+import weatherRouter from "./weather";
+import analysisRouter from "./analysis";
+import swotRouter from "./swot";
+import risksRouter from "./risks";
+import seuRouter from "./seu";
+import dashboardRouter from "./dashboard";
+import aiRouter from "./ai";
+import reportsRouter from "./reports";
+import unitsRouter from "./units";
+import summaryRouter from "./summary";
+import authRouter from "./auth";
+import subUnitsRouter from "./sub-units";
+import energySourcesRouter from "./energy-sources";
+import seedRouter from "./seed";
+import targetsRouter from "./targets";
+
+const router: IRouter = Router();
+
+router.use(healthRouter);
+router.use(authRouter);
+router.use(unitsRouter);
+router.use(subUnitsRouter);
+router.use(energySourcesRouter);
+router.use(metersRouter);
+router.use(consumptionRouter);
+router.use(weatherRouter);
+router.use(analysisRouter);
+router.use(swotRouter);
+router.use(risksRouter);
+router.use(seuRouter);
+router.use(dashboardRouter);
+router.use(aiRouter);
+router.use(reportsRouter);
+router.use(summaryRouter);
+router.use(seedRouter);
+router.use(targetsRouter);
+
+export default router;

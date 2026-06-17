@@ -1,0 +1,1644 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: Enerji Yönetim Sistemi API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: targets
+    description: Enerji hedefleri ve EnPI takibi
+  - name: units
+    description: Birim yönetimi
+  - name: meters
+    description: Sayaç yönetimi
+  - name: consumption
+    description: Enerji tüketim verileri
+  - name: weather
+    description: Meteoroloji verileri (HDD/CDD)
+  - name: analysis
+    description: Regresyon ve performans analizi
+  - name: swot
+    description: SWOT analizi
+  - name: risks
+    description: Risk ve fırsat analizi
+  - name: seu
+    description: Önemli enerji kullanımları (ÖEK/SEU)
+  - name: reports
+    description: Raporlar
+  - name: dashboard
+    description: Dashboard özet verileri
+  - name: summary
+    description: Çok birimli özet
+  - name: ai
+    description: Yapay zeka önerileri
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  # ── UNITS ────────────────────────────────────────────────
+  /units:
+    get:
+      operationId: listUnits
+      tags: [units]
+      summary: Tüm birimleri listele
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Unit"
+    post:
+      operationId: createUnit
+      tags: [units]
+      summary: Yeni birim ekle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unit"
+
+  /units/{id}:
+    get:
+      operationId: getUnit
+      tags: [units]
+      summary: Birim detayı
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unit"
+    patch:
+      operationId: updateUnit
+      tags: [units]
+      summary: Birim güncelle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitUpdate"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unit"
+    delete:
+      operationId: deleteUnit
+      tags: [units]
+      summary: Birim sil
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ── METERS ──────────────────────────────────────────────
+  /meters:
+    get:
+      operationId: listMeters
+      tags: [meters]
+      summary: Tüm sayaçları listele
+      parameters:
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Meter"
+    post:
+      operationId: createMeter
+      tags: [meters]
+      summary: Yeni sayaç ekle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeterInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meter"
+
+  /meters/{id}:
+    get:
+      operationId: getMeter
+      tags: [meters]
+      summary: Sayaç detayı
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meter"
+    patch:
+      operationId: updateMeter
+      tags: [meters]
+      summary: Sayaç güncelle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeterUpdate"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meter"
+    delete:
+      operationId: deleteMeter
+      tags: [meters]
+      summary: Sayaç sil
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ── CONSUMPTION ──────────────────────────────────────────
+  /consumption:
+    get:
+      operationId: listConsumption
+      tags: [consumption]
+      summary: Tüketim verileri listesi
+      parameters:
+        - name: meterId
+          in: query
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: month
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ConsumptionRecord"
+    post:
+      operationId: createConsumption
+      tags: [consumption]
+      summary: Tüketim verisi ekle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsumptionInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumptionRecord"
+
+  /consumption/{id}:
+    patch:
+      operationId: updateConsumption
+      tags: [consumption]
+      summary: Tüketim verisi güncelle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsumptionUpdate"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumptionRecord"
+    delete:
+      operationId: deleteConsumption
+      tags: [consumption]
+      summary: Tüketim verisi sil
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ── WEATHER ─────────────────────────────────────────────
+  /weather:
+    get:
+      operationId: listWeather
+      tags: [weather]
+      summary: HDD/CDD verileri listesi
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WeatherRecord"
+    post:
+      operationId: fetchWeatherData
+      tags: [weather]
+      summary: Meteoroloji API'sinden HDD/CDD çek
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WeatherFetchRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WeatherRecord"
+
+  # ── ANALYSIS ─────────────────────────────────────────────
+  /analysis/regression:
+    get:
+      operationId: getRegressionAnalysis
+      tags: [analysis]
+      summary: Regresyon analizi (EnPG, EnRÇ, EEI hesapla)
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: meterId
+          in: query
+          schema:
+            type: integer
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegressionResult"
+
+  /analysis/performance:
+    get:
+      operationId: getPerformanceIndicators
+      tags: [analysis]
+      summary: Enerji performans göstergeleri özeti
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceIndicators"
+
+  # ── SWOT ──────────────────────────────────────────────────
+  /swot:
+    get:
+      operationId: listSwotItems
+      tags: [swot]
+      summary: SWOT maddeleri listesi
+      parameters:
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SwotItem"
+    post:
+      operationId: createSwotItem
+      tags: [swot]
+      summary: SWOT maddesi ekle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwotInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SwotItem"
+
+  /swot/{id}:
+    patch:
+      operationId: updateSwotItem
+      tags: [swot]
+      summary: SWOT maddesi güncelle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwotUpdate"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SwotItem"
+    delete:
+      operationId: deleteSwotItem
+      tags: [swot]
+      summary: SWOT maddesi sil
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ── TARGETS ───────────────────────────────────────────────
+  /targets:
+    get:
+      operationId: listTargets
+      tags: [targets]
+      summary: Enerji hedeflerini listele (ilerleme dahil)
+      parameters:
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EnergyTargetWithProgress"
+    post:
+      operationId: createTarget
+      tags: [targets]
+      summary: Enerji hedefi ekle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnergyTargetInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnergyTarget"
+
+  /targets/{id}:
+    patch:
+      operationId: updateTarget
+      tags: [targets]
+      summary: Enerji hedefini güncelle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnergyTargetUpdate"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnergyTarget"
+    delete:
+      operationId: deleteTarget
+      tags: [targets]
+      summary: Enerji hedefini sil
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ── RISKS ─────────────────────────────────────────────────
+  /risks:
+    get:
+      operationId: listRisks
+      tags: [risks]
+      summary: Risk ve fırsatlar listesi
+      parameters:
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RiskItem"
+    post:
+      operationId: createRisk
+      tags: [risks]
+      summary: Risk/Fırsat ekle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RiskInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskItem"
+
+  /risks/{id}:
+    patch:
+      operationId: updateRisk
+      tags: [risks]
+      summary: Risk/Fırsat güncelle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RiskUpdate"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskItem"
+    delete:
+      operationId: deleteRisk
+      tags: [risks]
+      summary: Risk/Fırsat sil
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ── SEU / ÖEK ────────────────────────────────────────────
+  /seu:
+    get:
+      operationId: listSeu
+      tags: [seu]
+      summary: Önemli enerji kullanımları listesi
+      parameters:
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SeuItem"
+    post:
+      operationId: createSeu
+      tags: [seu]
+      summary: ÖEK ekle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SeuInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SeuItem"
+
+  /seu/{id}:
+    patch:
+      operationId: updateSeu
+      tags: [seu]
+      summary: ÖEK güncelle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SeuUpdate"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SeuItem"
+    delete:
+      operationId: deleteSeu
+      tags: [seu]
+      summary: ÖEK sil
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ── DASHBOARD ─────────────────────────────────────────────
+  /dashboard/kpi:
+    get:
+      operationId: getDashboardKpi
+      tags: [dashboard]
+      summary: KPI özet verileri (Toplam Enerji, CO₂, TEP)
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardKpi"
+
+  /dashboard/monthly-trend:
+    get:
+      operationId: getMonthlyTrend
+      tags: [dashboard]
+      summary: Aylık enerji tüketim trendi
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MonthlyTrendPoint"
+
+  /dashboard/seu-breakdown:
+    get:
+      operationId: getSeuBreakdown
+      tags: [dashboard]
+      summary: ÖEK bazında enerji dağılımı
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: unitId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SeuBreakdownPoint"
+
+  # ── SUMMARY ───────────────────────────────────────────────
+  /summary:
+    get:
+      operationId: getSummary
+      tags: [summary]
+      summary: Tüm birimler için özet ve karşılaştırma
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SummaryResult"
+
+  # ── AI ────────────────────────────────────────────────────
+  /ai/suggestions:
+    post:
+      operationId: getAiSuggestions
+      tags: [ai]
+      summary: Yapay zeka enerji iyileştirme önerileri
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiSuggestionRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiSuggestionResponse"
+
+  # ── REPORTS ───────────────────────────────────────────────
+  /reports/generate:
+    post:
+      operationId: generateReport
+      tags: [reports]
+      summary: Yıllık enerji performans raporu oluştur
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportResult"
+
+  /reports:
+    get:
+      operationId: listReports
+      tags: [reports]
+      summary: Oluşturulan raporlar listesi
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReportRecord"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
+
+    # ── Unit ─────────────────────────────────────────────────
+    Unit:
+      type: object
+      required: [id, name, location, type, city, active]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        location:
+          type: string
+        type:
+          type: string
+          description: "fabrika | ofis | depo | hastane | okul | diger"
+        city:
+          type: string
+        responsible:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+        active:
+          type: boolean
+        createdAt:
+          type: string
+
+    UnitInput:
+      type: object
+      required: [name, location]
+      properties:
+        name:
+          type: string
+        location:
+          type: string
+        type:
+          type: string
+        city:
+          type: string
+        responsible:
+          type: string
+        description:
+          type: string
+        active:
+          type: boolean
+
+    UnitUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        location:
+          type: string
+        type:
+          type: string
+        city:
+          type: string
+        responsible:
+          type: string
+        description:
+          type: string
+        active:
+          type: boolean
+
+    # ── Meter ───────────────────────────────────────────────
+    Meter:
+      type: object
+      required: [id, name, type, location, unit]
+      properties:
+        id:
+          type: integer
+        unitId:
+          type: ["integer", "null"]
+        name:
+          type: string
+        type:
+          type: string
+          description: "elektrik | dogalgaz | buhar | su | diger"
+        location:
+          type: string
+        unit:
+          type: string
+          description: "kWh | m3 | ton | litre"
+        description:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    MeterInput:
+      type: object
+      required: [name, type, location, unit]
+      properties:
+        unitId:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+        location:
+          type: string
+        unit:
+          type: string
+        description:
+          type: string
+
+    MeterUpdate:
+      type: object
+      properties:
+        unitId:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+        location:
+          type: string
+        unit:
+          type: string
+        description:
+          type: string
+
+    # ── ConsumptionRecord ────────────────────────────────────
+    ConsumptionRecord:
+      type: object
+      required: [id, meterId, year, month, kwh, tep, co2]
+      properties:
+        id:
+          type: integer
+        meterId:
+          type: integer
+        meterName:
+          type: ["string", "null"]
+        year:
+          type: integer
+        month:
+          type: integer
+        kwh:
+          type: number
+        tep:
+          type: number
+        co2:
+          type: number
+        hdd:
+          type: ["number", "null"]
+        cdd:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    ConsumptionInput:
+      type: object
+      required: [meterId, year, month, kwh]
+      properties:
+        meterId:
+          type: integer
+        year:
+          type: integer
+        month:
+          type: integer
+        kwh:
+          type: number
+        tep:
+          type: number
+        co2:
+          type: number
+        hdd:
+          type: number
+        cdd:
+          type: number
+        notes:
+          type: string
+
+    ConsumptionUpdate:
+      type: object
+      properties:
+        kwh:
+          type: number
+        tep:
+          type: number
+        co2:
+          type: number
+        hdd:
+          type: number
+        cdd:
+          type: number
+        notes:
+          type: string
+
+    # ── Weather ──────────────────────────────────────────────
+    WeatherRecord:
+      type: object
+      required: [id, year, month, hdd, cdd, location]
+      properties:
+        id:
+          type: integer
+        year:
+          type: integer
+        month:
+          type: integer
+        hdd:
+          type: number
+        cdd:
+          type: number
+        location:
+          type: string
+        avgTemp:
+          type: ["number", "null"]
+        createdAt:
+          type: string
+
+    WeatherFetchRequest:
+      type: object
+      required: [location, year]
+      properties:
+        location:
+          type: string
+        year:
+          type: integer
+
+    # ── Regression / Performance ─────────────────────────────
+    RegressionResult:
+      type: object
+      required: [slope, intercept, r2, enpg, enrc, eei, dataPoints]
+      properties:
+        slope:
+          type: number
+        intercept:
+          type: number
+        r2:
+          type: number
+          description: "R² değeri (0-1)"
+        enpg:
+          type: number
+          description: "Enerji Performans Göstergesi"
+        enrc:
+          type: number
+          description: "Enerji Referans Çizgisi"
+        eei:
+          type: number
+          description: "Enerji Etkinlik Indeksi"
+        dataPoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/RegressionDataPoint"
+
+    RegressionDataPoint:
+      type: object
+      required: [month, actual, predicted, hdd]
+      properties:
+        month:
+          type: integer
+        actual:
+          type: number
+        predicted:
+          type: number
+        hdd:
+          type: number
+
+    PerformanceIndicators:
+      type: object
+      required: [totalKwh, totalTep, totalCo2, enpg, enrc, eei, savingsKwh, savingsTep, improvementPercent]
+      properties:
+        totalKwh:
+          type: number
+        totalTep:
+          type: number
+        totalCo2:
+          type: number
+        enpg:
+          type: number
+        enrc:
+          type: number
+        eei:
+          type: number
+        savingsKwh:
+          type: number
+        savingsTep:
+          type: number
+        improvementPercent:
+          type: number
+
+    # ── SWOT ─────────────────────────────────────────────────
+    SwotItem:
+      type: object
+      required: [id, category, title, score, impact]
+      properties:
+        id:
+          type: integer
+        unitId:
+          type: ["integer", "null"]
+        category:
+          type: string
+          description: "strengths | weaknesses | opportunities | threats"
+        title:
+          type: string
+        description:
+          type: ["string", "null"]
+        score:
+          type: integer
+          description: "1-5 puan"
+        impact:
+          type: string
+          description: "yuksek | orta | dusuk"
+        createdAt:
+          type: string
+
+    SwotInput:
+      type: object
+      required: [category, title, score, impact]
+      properties:
+        unitId:
+          type: integer
+        category:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        score:
+          type: integer
+        impact:
+          type: string
+
+    SwotUpdate:
+      type: object
+      properties:
+        unitId:
+          type: integer
+        category:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        score:
+          type: integer
+        impact:
+          type: string
+
+    # ── Risk ─────────────────────────────────────────────────
+    RiskItem:
+      type: object
+      required: [id, type, title, probability, severity, score]
+      properties:
+        id:
+          type: integer
+        unitId:
+          type: ["integer", "null"]
+        type:
+          type: string
+          description: "risk | firsat"
+        title:
+          type: string
+        description:
+          type: ["string", "null"]
+        probability:
+          type: integer
+          description: "1-5"
+        severity:
+          type: integer
+          description: "1-5"
+        score:
+          type: integer
+          description: "probability * severity"
+        mitigationPlan:
+          type: ["string", "null"]
+        owner:
+          type: ["string", "null"]
+        status:
+          type: string
+          description: "acik | devam | kapali"
+        createdAt:
+          type: string
+
+    RiskInput:
+      type: object
+      required: [title, probability, severity]
+      properties:
+        unitId:
+          type: integer
+        type:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        probability:
+          type: integer
+        severity:
+          type: integer
+        mitigationPlan:
+          type: string
+        owner:
+          type: string
+        status:
+          type: string
+
+    RiskUpdate:
+      type: object
+      properties:
+        unitId:
+          type: integer
+        type:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        probability:
+          type: integer
+        severity:
+          type: integer
+        mitigationPlan:
+          type: string
+        owner:
+          type: string
+        status:
+          type: string
+
+    # ── SEU / ÖEK ────────────────────────────────────────────
+    SeuItem:
+      type: object
+      required: [id, name, category, annualKwh, percentage, priority]
+      properties:
+        id:
+          type: integer
+        unitId:
+          type: ["integer", "null"]
+        name:
+          type: string
+        category:
+          type: string
+        annualKwh:
+          type: number
+        percentage:
+          type: number
+        priority:
+          type: integer
+        targetReductionPercent:
+          type: ["number", "null"]
+        responsible:
+          type: ["string", "null"]
+        notes:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    SeuInput:
+      type: object
+      required: [name, category]
+      properties:
+        unitId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+        annualKwh:
+          type: number
+        percentage:
+          type: number
+        priority:
+          type: integer
+        targetReductionPercent:
+          type: number
+        responsible:
+          type: string
+        notes:
+          type: string
+
+    SeuUpdate:
+      type: object
+      properties:
+        unitId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+        annualKwh:
+          type: number
+        percentage:
+          type: number
+        priority:
+          type: integer
+        targetReductionPercent:
+          type: number
+        responsible:
+          type: string
+        notes:
+          type: string
+
+    # ── Dashboard ─────────────────────────────────────────────
+    DashboardKpi:
+      type: object
+      required: [year, totalKwh, totalTep, totalCo2, kwhChange, tepChange, co2Change, meterCount, activeSeuCount]
+      properties:
+        year:
+          type: integer
+        totalKwh:
+          type: number
+        totalTep:
+          type: number
+        totalCo2:
+          type: number
+        kwhChange:
+          type: number
+        tepChange:
+          type: number
+        co2Change:
+          type: number
+        meterCount:
+          type: integer
+        activeSeuCount:
+          type: integer
+
+    MonthlyTrendPoint:
+      type: object
+      required: [month, monthName, kwh, tep, co2]
+      properties:
+        month:
+          type: integer
+        monthName:
+          type: string
+        kwh:
+          type: number
+        tep:
+          type: number
+        co2:
+          type: number
+        hdd:
+          type: ["number", "null"]
+        cdd:
+          type: ["number", "null"]
+
+    SeuBreakdownPoint:
+      type: object
+      required: [name, kwh, percentage, category]
+      properties:
+        name:
+          type: string
+        kwh:
+          type: number
+        percentage:
+          type: number
+        category:
+          type: string
+
+    # ── Summary ───────────────────────────────────────────────
+    SummaryResult:
+      type: object
+      required: [year, unitCount, grandTotalKwh, grandTotalTep, grandTotalCo2, units]
+      properties:
+        year:
+          type: integer
+        unitCount:
+          type: integer
+        grandTotalKwh:
+          type: number
+        grandTotalTep:
+          type: number
+        grandTotalCo2:
+          type: number
+        units:
+          type: array
+          items:
+            $ref: "#/components/schemas/SummaryUnitItem"
+
+    SummaryUnitItem:
+      type: object
+      required: [id, name, location, type, city, totalKwh, totalTep, totalCo2, kwhChange, meterCount, seuCount]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        location:
+          type: string
+        type:
+          type: string
+        city:
+          type: string
+        responsible:
+          type: ["string", "null"]
+        totalKwh:
+          type: number
+        totalTep:
+          type: number
+        totalCo2:
+          type: number
+        kwhChange:
+          type: number
+        meterCount:
+          type: integer
+        seuCount:
+          type: integer
+
+    # ── AI ────────────────────────────────────────────────────
+    AiSuggestionRequest:
+      type: object
+      required: [focus]
+      properties:
+        focus:
+          type: string
+          description: "genel | seu | co2 | maliyet | iklimlendirme | aydinlatma"
+        totalKwh:
+          type: number
+        topSeuCategory:
+          type: string
+
+    AiSuggestionResponse:
+      type: object
+      required: [suggestions]
+      properties:
+        suggestions:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiSuggestion"
+
+    AiSuggestion:
+      type: object
+      required: [title, description, potentialSavingKwh, potentialSavingPercent, paybackMonths, priority, category]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        potentialSavingKwh:
+          type: number
+        potentialSavingPercent:
+          type: number
+        paybackMonths:
+          type: integer
+        priority:
+          type: string
+        category:
+          type: string
+
+    # ── Reports ───────────────────────────────────────────────
+    ReportRequest:
+      type: object
+      required: [year]
+      properties:
+        year:
+          type: integer
+        unitId:
+          type: integer
+        includeSwot:
+          type: boolean
+        includeRisks:
+          type: boolean
+        includeSeu:
+          type: boolean
+        includeRegression:
+          type: boolean
+
+    EnergyTarget:
+      type: object
+      required: [id, name, baselineYear, targetYear, targetReductionPercent, createdAt]
+      properties:
+        id:
+          type: integer
+        unitId:
+          type: ["integer", "null"]
+        name:
+          type: string
+        baselineYear:
+          type: integer
+        targetYear:
+          type: integer
+        targetReductionPercent:
+          type: number
+        notes:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    EnergyTargetWithProgress:
+      type: object
+      required: [id, name, baselineYear, targetYear, targetReductionPercent, createdAt, yearlyProgress]
+      properties:
+        id:
+          type: integer
+        unitId:
+          type: ["integer", "null"]
+        name:
+          type: string
+        baselineYear:
+          type: integer
+        targetYear:
+          type: integer
+        targetReductionPercent:
+          type: number
+        notes:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        baselineKwh:
+          type: ["number", "null"]
+        yearlyProgress:
+          type: array
+          items:
+            type: object
+            required: [year]
+            properties:
+              year:
+                type: integer
+              actualKwh:
+                type: ["number", "null"]
+              reductionPercent:
+                type: ["number", "null"]
+
+    EnergyTargetInput:
+      type: object
+      required: [name, baselineYear, targetYear, targetReductionPercent]
+      properties:
+        unitId:
+          type: integer
+        name:
+          type: string
+        baselineYear:
+          type: integer
+        targetYear:
+          type: integer
+        targetReductionPercent:
+          type: number
+        notes:
+          type: string
+
+    EnergyTargetUpdate:
+      type: object
+      properties:
+        unitId:
+          type: integer
+        name:
+          type: string
+        baselineYear:
+          type: integer
+        targetYear:
+          type: integer
+        targetReductionPercent:
+          type: number
+        notes:
+          type: string
+
+    ReportResult:
+      type: object
+      required: [id, status, downloadUrl]
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+        downloadUrl:
+          type: string
+
+    ReportRecord:
+      type: object
+      required: [id, year, status]
+      properties:
+        id:
+          type: integer
+        unitId:
+          type: ["integer", "null"]
+        year:
+          type: integer
+        status:
+          type: string
+        downloadUrl:
+          type: ["string", "null"]
+        includeSwot:
+          type: ["boolean", "null"]
+        includeRisks:
+          type: ["boolean", "null"]
+        includeSeu:
+          type: ["boolean", "null"]
+        includeRegression:
+          type: ["boolean", "null"]
+        createdAt:
+          type: string

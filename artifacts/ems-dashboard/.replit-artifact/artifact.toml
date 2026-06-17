@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Enerji Yönetim Sistemi"
+version = "1.0.0"
+id = "artifacts/ems-dashboard"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21055
+
+[services.development]
+run = "pnpm --filter @workspace/ems-dashboard run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/ems-dashboard", "run", "build" ]
+publicDir = "artifacts/ems-dashboard/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21055"
+BASE_PATH = "/"
