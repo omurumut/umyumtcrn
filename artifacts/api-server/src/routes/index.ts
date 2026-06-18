@@ -17,6 +17,7 @@ import subUnitsRouter from "./sub-units";
 import energySourcesRouter from "./energy-sources";
 import seedRouter from "./seed";
 import targetsRouter from "./targets";
+import companiesRouter from "./companies";
 
 const router: IRouter = Router();
 
@@ -38,5 +39,6 @@ router.use(reportsRouter);
 router.use(summaryRouter);
 router.use(seedRouter);
 router.use(targetsRouter);
+router.use(companiesRouter);
 
 export default router;

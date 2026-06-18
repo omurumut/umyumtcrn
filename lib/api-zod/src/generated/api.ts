@@ -817,3 +817,56 @@ export const ListReportsResponseItem = zod.object({
 export const ListReportsResponse = zod.array(ListReportsResponseItem)
 
 
+/**
+ * @summary Tüm firmaları listele (sadece superadmin)
+ */
+export const ListCompaniesResponseItem = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "subdomain": zod.string(),
+  "isActive": zod.boolean(),
+  "createdAt": zod.string()
+})
+export const ListCompaniesResponse = zod.array(ListCompaniesResponseItem)
+
+
+/**
+ * @summary Yeni firma oluştur (sadece superadmin)
+ */
+export const CreateCompanyBody = zod.object({
+  "name": zod.string(),
+  "subdomain": zod.string(),
+  "isActive": zod.boolean().optional()
+})
+
+
+/**
+ * @summary Firma güncelle (sadece superadmin)
+ */
+export const UpdateCompanyParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateCompanyBody = zod.object({
+  "name": zod.string().optional(),
+  "subdomain": zod.string().optional(),
+  "isActive": zod.boolean().optional()
+})
+
+export const UpdateCompanyResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "subdomain": zod.string(),
+  "isActive": zod.boolean(),
+  "createdAt": zod.string()
+})
+
+
+/**
+ * @summary Firma sil (sadece superadmin, id=1 silinemez)
+ */
+export const DeleteCompanyParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+

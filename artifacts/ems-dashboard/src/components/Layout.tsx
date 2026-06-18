@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Activity, AlertTriangle, BarChart2, Building2, CloudLightning, FileText,
-  Gauge, Home, LayoutDashboard, Lightbulb, ShieldAlert, Target, User, LogOut,
+  Gauge, Home, LayoutDashboard, Lightbulb, ShieldAlert, Target, User, LogOut, Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -77,7 +77,8 @@ export function Layout({ children }: { children: ReactNode }) {
   const { data: units } = useListUnits({ query: { queryKey: getListUnitsQueryKey() } });
   const years = Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - i);
 
-  const isAdmin = user?.role === "admin";
+  const isSuperAdmin = user?.role === "superadmin";
+  const isAdmin = user?.role === "admin" || isSuperAdmin;
   const topNavItems = isAdmin ? ADMIN_NAV : USER_NAV;
   const navItems = [...topNavItems, ...COMMON_NAV];
 
@@ -108,6 +109,13 @@ export function Layout({ children }: { children: ReactNode }) {
                     <SidebarMenuItem>
                       <SidebarMenuButton asChild isActive={location === "/ozet"}>
                         <Link href="/ozet"><LayoutDashboard className="h-4 w-4" /><span>Çok Birimli Özet</span></Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
+                  {isSuperAdmin && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton asChild isActive={location === "/firmalar"}>
+                        <Link href="/firmalar"><Globe className="h-4 w-4" /><span>Firma Yönetimi</span></Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   )}
@@ -144,7 +152,9 @@ export function Layout({ children }: { children: ReactNode }) {
                   </div>
                   <div className="flex-1 text-left min-w-0">
                     <div className="text-xs font-medium truncate">{user?.name}</div>
-                    <div className="text-[10px] text-muted-foreground">{isAdmin ? "Yönetici" : "Kullanıcı"}</div>
+                    <div className="text-[10px] text-muted-foreground">
+                    {isSuperAdmin ? "Sistem Yöneticisi" : isAdmin ? "Yönetici" : "Kullanıcı"}
+                  </div>
                   </div>
                 </Button>
               </DropdownMenuTrigger>

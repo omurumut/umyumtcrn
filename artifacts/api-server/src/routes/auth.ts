@@ -13,17 +13,20 @@ function hashPassword(password: string): string {
 
 export async function seedAdminUser() {
   try {
-    const existing = await db.select().from(usersTable).where(eq(usersTable.username, "admin"));
-    if (existing.length === 0) {
+    const [existing] = await db.select().from(usersTable).where(eq(usersTable.username, "admin"));
+    if (!existing) {
       await db.insert(usersTable).values({
         username: "admin",
         passwordHash: hashPassword("admin123"),
         name: "Sistem Yöneticisi",
-        role: "admin",
+        role: "superadmin",
         unitId: null,
         active: true,
       });
       console.log("[Auth] Admin kullanıcı oluşturuldu: admin / admin123");
+    } else if (existing.role === "admin") {
+      await db.update(usersTable).set({ role: "superadmin" }).where(eq(usersTable.username, "admin"));
+      console.log("[Auth] Admin kullanıcı rolü superadmin'e güncellendi");
     }
   } catch (err) {
     console.error("[Auth] Admin seed hatası:", err);
@@ -93,7 +96,7 @@ router.post("/auth/logout", (req, res) => {
 // GET /api/users — admin only: list users
 router.get("/users", requireAuth, async (req, res) => {
   try {
-    if (req.user!.role !== "admin") {
+    if (req.user!.role !== "admin" && req.user!.role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
@@ -116,7 +119,7 @@ router.get("/users", requireAuth, async (req, res) => {
 // POST /api/users — admin only: create user
 router.post("/users", requireAuth, async (req, res) => {
   try {
-    if (req.user!.role !== "admin") {
+    if (req.user!.role !== "admin" && req.user!.role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
@@ -156,7 +159,7 @@ router.post("/users", requireAuth, async (req, res) => {
 // PATCH /api/users/:id — admin only
 router.patch("/users/:id", requireAuth, async (req, res) => {
   try {
-    if (req.user!.role !== "admin") {
+    if (req.user!.role !== "admin" && req.user!.role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
@@ -183,7 +186,7 @@ router.patch("/users/:id", requireAuth, async (req, res) => {
 // DELETE /api/users/:id — admin only
 router.delete("/users/:id", requireAuth, async (req, res) => {
   try {
-    if (req.user!.role !== "admin") {
+    if (req.user!.role !== "admin" && req.user!.role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }

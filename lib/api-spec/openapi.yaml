@@ -853,6 +853,76 @@ paths:
                 items:
                   $ref: "#/components/schemas/ReportRecord"
 
+  /companies:
+    get:
+      operationId: listCompanies
+      tags: [companies]
+      summary: Tüm firmaları listele (sadece superadmin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Company"
+    post:
+      operationId: createCompany
+      tags: [companies]
+      summary: Yeni firma oluştur (sadece superadmin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompanyInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Company"
+
+  /companies/{id}:
+    patch:
+      operationId: updateCompany
+      tags: [companies]
+      summary: Firma güncelle (sadece superadmin)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompanyUpdate"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Company"
+    delete:
+      operationId: deleteCompany
+      tags: [companies]
+      summary: Firma sil (sadece superadmin, id=1 silinemez)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
 components:
   schemas:
     HealthStatus:
@@ -1642,3 +1712,39 @@ components:
           type: ["boolean", "null"]
         createdAt:
           type: string
+
+    Company:
+      type: object
+      required: [id, name, subdomain, isActive, createdAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        subdomain:
+          type: string
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+
+    CompanyInput:
+      type: object
+      required: [name, subdomain]
+      properties:
+        name:
+          type: string
+        subdomain:
+          type: string
+        isActive:
+          type: boolean
+
+    CompanyUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        subdomain:
+          type: string
+        isActive:
+          type: boolean

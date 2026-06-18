@@ -22,6 +22,7 @@ import Reports from "@/pages/Reports";
 import Units from "@/pages/Units";
 import Summary from "@/pages/Summary";
 import Targets from "@/pages/Targets";
+import Companies from "@/pages/Companies";
 
 const logoutRef = { fn: () => {} };
 
@@ -43,7 +44,13 @@ const queryClient = new QueryClient({
 
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {
   const { user } = useAuth();
-  if (user?.role !== "admin") return <Redirect to="/" />;
+  if (user?.role !== "admin" && user?.role !== "superadmin") return <Redirect to="/" />;
+  return <Component />;
+}
+
+function SuperAdminRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user } = useAuth();
+  if (user?.role !== "superadmin") return <Redirect to="/" />;
   return <Component />;
 }
 
@@ -65,6 +72,9 @@ function Router() {
       <Route path="/oneriler" component={AiSuggestions} />
       <Route path="/raporlar" component={Reports} />
       <Route path="/hedefler" component={Targets} />
+      <Route path="/firmalar">
+        {() => <SuperAdminRoute component={Companies} />}
+      </Route>
       <Route component={NotFound} />
     </Switch>
   );

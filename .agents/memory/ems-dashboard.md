@@ -15,9 +15,17 @@ description: Key decisions and conventions for the ISO 50001 Enerji Yönetim Sis
 ## DB Tables (13 total after multi-tenant prep)
 `companies`, `units`, `users`, `meters`, `sub_units`, `energy_sources`, `consumption`, `weather`, `swot_items`, `risks`, `seu_items`, `energy_targets`, `reports` — all in `lib/db/src/schema/energy.ts`.
 
-## Multi-tenant scaffold (company_id)
+## Multi-tenant scaffold (company_id + superadmin role)
 All 12 business tables have `company_id INTEGER NOT NULL DEFAULT 1 REFERENCES companies(id)`. Migration `0003_loud_namorita.sql` seeds default company (id=1, subdomain='default') before adding FK constraints — order matters. App still runs in single-company mode; no routing/subdomain logic yet.
 **Why:** Schema-level isolation foundation for future SaaS tenancy. Keep `DEFAULT 1` so new inserts don't need explicit company_id until multi-tenant routing is wired.
+
+## Role hierarchy
+3 roles: `superadmin` > `admin` > `user`.
+- `superadmin`: sistem yöneticisi, Firma Yönetimi paneline erişebilir. Varsayılan `admin` kullanıcısı `seedAdminUser()` ile otomatik `superadmin`'e yükseltilir.
+- `admin`: şirket yöneticisi, firma panelini göremez. `requireAdmin` middleware hem `admin` hem `superadmin`'e izin verir.
+- `user`: birim kullanıcısı.
+- `requireSuperAdmin` middleware: sadece `superadmin` için, `/api/companies` endpoint'lerinde kullanılır.
+- `SuperAdminRoute` (frontend): `role === 'superadmin'` kontrolü, `/firmalar` route'unu korur.
 
 ## Auto-migration on startup
 API server runs `runMigrations()` (from `lib/db/src/index.ts`) before listening. Build script copies `lib/db/drizzle/` → `dist/drizzle/`. Any schema change: run `drizzle-kit generate` in `lib/db/`, commit the SQL file, restart API Server.

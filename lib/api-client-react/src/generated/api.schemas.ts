@@ -457,6 +457,26 @@ export interface ReportRecord {
   createdAt?: string;
 }
 
+export interface Company {
+  id: number;
+  name: string;
+  subdomain: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface CompanyInput {
+  name: string;
+  subdomain: string;
+  isActive?: boolean;
+}
+
+export interface CompanyUpdate {
+  name?: string;
+  subdomain?: string;
+  isActive?: boolean;
+}
+
 export type ListMetersParams = {
 unitId?: number;
 };

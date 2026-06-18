@@ -39,8 +39,16 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.user || req.user.role !== "admin") {
+  if (!req.user || (req.user.role !== "admin" && req.user.role !== "superadmin")) {
     res.status(403).json({ error: "Bu işlem için yetkiniz yok" });
+    return;
+  }
+  next();
+}
+
+export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.user || req.user.role !== "superadmin") {
+    res.status(403).json({ error: "Bu işlem için sistem yöneticisi yetkisi gereklidir" });
     return;
   }
   next();
