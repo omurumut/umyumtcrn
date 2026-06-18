@@ -14,7 +14,7 @@ import {
   energyTargetsTable,
 } from "@workspace/db";
 import { requireAuth, requireAdmin } from "../middlewares/auth.js";
-import { eq, inArray, ne } from "drizzle-orm";
+import { eq, inArray, ne, and } from "drizzle-orm";
 
 
 const router = Router();
@@ -49,77 +49,80 @@ function gasFactor(month: number, city: string): number {
   return 0.2 + (w.hdd[month - 1] / 450) * 1.2;
 }
 
-router.post("/admin/seed", requireAuth, requireAdmin, async (_req, res) => {
+router.post("/admin/seed", requireAuth, requireAdmin, async (req, res) => {
   try {
-    // ── Mevcut demo verileri temizle (kullanıcı verileri korunur) ───────────
-    await db.delete(usersTable).where(eq(usersTable.isDemo, true));
+    const companyId: number = req.body?.companyId ? parseInt(req.body.companyId) : 1;
+
+    // ── Mevcut demo verileri temizle (sadece aynı firma) ────────────────────
+    await db.delete(usersTable).where(and(eq(usersTable.isDemo, true), eq(usersTable.companyId, companyId)));
     const existingDemoUnits = await db
       .select({ id: unitsTable.id })
       .from(unitsTable)
-      .where(eq(unitsTable.isDemo, true));
+      .where(and(eq(unitsTable.isDemo, true), eq(unitsTable.companyId, companyId)));
     if (existingDemoUnits.length > 0) {
       const ids = existingDemoUnits.map((u) => u.id);
       await db.delete(metersTable).where(inArray(metersTable.unitId, ids));
-      await db.delete(unitsTable).where(eq(unitsTable.isDemo, true));
+      await db.delete(unitsTable).where(and(eq(unitsTable.isDemo, true), eq(unitsTable.companyId, companyId)));
     }
 
     // ── Birimler ────────────────────────────────────────────────────────────
     const units = await db.insert(unitsTable).values([
-      { name: "İstanbul Fabrika A", location: "Dudullu OSB, İstanbul", type: "fabrika", city: "Istanbul", responsible: "Mehmet Yılmaz", description: "Tekstil üretim fabrikası — 45.000 m²", active: true, isDemo: true },
-      { name: "Ankara Merkez Ofis", location: "Çankaya, Ankara", type: "ofis", city: "Ankara", responsible: "Ayşe Kaya", description: "Genel merkez ofisi — 8.500 m²", active: true, isDemo: true },
-      { name: "İzmir Lojistik Depo", location: "Kemalpaşa OSB, İzmir", type: "depo", city: "Izmir", responsible: "Fatih Demir", description: "Soğuk zincir lojistik deposu — 22.000 m²", active: true, isDemo: true },
+      { name: "İstanbul Fabrika A", location: "Dudullu OSB, İstanbul", type: "fabrika", city: "Istanbul", responsible: "Mehmet Yılmaz", description: "Tekstil üretim fabrikası — 45.000 m²", active: true, isDemo: true, companyId },
+      { name: "Ankara Merkez Ofis", location: "Çankaya, Ankara", type: "ofis", city: "Ankara", responsible: "Ayşe Kaya", description: "Genel merkez ofisi — 8.500 m²", active: true, isDemo: true, companyId },
+      { name: "İzmir Lojistik Depo", location: "Kemalpaşa OSB, İzmir", type: "depo", city: "Izmir", responsible: "Fatih Demir", description: "Soğuk zincir lojistik deposu — 22.000 m²", active: true, isDemo: true, companyId },
     ]).returning();
 
     // ── Demo kullanıcılar ───────────────────────────────────────────────────
+    const userSuffix = companyId !== 1 ? `_c${companyId}` : "";
     await db.insert(usersTable).values([
-      { username: "istanbul_yonetici", passwordHash: hashPassword("demo123"), name: "Mehmet Yılmaz", role: "user", unitId: units[0].id, active: true, isDemo: true },
-      { username: "ankara_yonetici",   passwordHash: hashPassword("demo123"), name: "Ayşe Kaya",    role: "user", unitId: units[1].id, active: true, isDemo: true },
-      { username: "izmir_yonetici",    passwordHash: hashPassword("demo123"), name: "Fatih Demir",  role: "user", unitId: units[2].id, active: true, isDemo: true },
+      { username: `istanbul_yonetici${userSuffix}`, passwordHash: hashPassword("demo123"), name: "Mehmet Yılmaz", role: "user", unitId: units[0].id, active: true, isDemo: true, companyId },
+      { username: `ankara_yonetici${userSuffix}`,   passwordHash: hashPassword("demo123"), name: "Ayşe Kaya",    role: "user", unitId: units[1].id, active: true, isDemo: true, companyId },
+      { username: `izmir_yonetici${userSuffix}`,    passwordHash: hashPassword("demo123"), name: "Fatih Demir",  role: "user", unitId: units[2].id, active: true, isDemo: true, companyId },
     ]).onConflictDoNothing();
 
     // ── Alt Birimler ────────────────────────────────────────────────────────
     const subUnits = await db.insert(subUnitsTable).values([
-      { unitId: units[0].id, name: "Üretim Hattı 1",       city: "Istanbul", description: "Ana üretim hattı" },
-      { unitId: units[0].id, name: "Üretim Hattı 2",       city: "Istanbul", description: "İkincil üretim hattı" },
-      { unitId: units[0].id, name: "Boya & Apre",           city: "Istanbul", description: "Boya ve apre bölümü" },
-      { unitId: units[0].id, name: "Yardımcı İşletme",      city: "Istanbul", description: "Kompresör, buhar, soğutma" },
-      { unitId: units[1].id, name: "Ofis Katı 1-5",         city: "Ankara",  description: "1-5. kat ofis alanları" },
-      { unitId: units[1].id, name: "Toplantı & Konferans",  city: "Ankara",  description: "Konferans salonları" },
-      { unitId: units[1].id, name: "Veri Merkezi",          city: "Ankara",  description: "Sunucu odası ve UPS" },
-      { unitId: units[2].id, name: "Soğuk Depo A Blok",     city: "Izmir",   description: "-20°C donmuş ürün deposu" },
-      { unitId: units[2].id, name: "Soğuk Depo B Blok",     city: "Izmir",   description: "+4°C soğutmalı depo" },
-      { unitId: units[2].id, name: "Yükleme Rampası",       city: "Izmir",   description: "Araç yükleme/boşaltma" },
+      { unitId: units[0].id, name: "Üretim Hattı 1",       city: "Istanbul", description: "Ana üretim hattı",           companyId },
+      { unitId: units[0].id, name: "Üretim Hattı 2",       city: "Istanbul", description: "İkincil üretim hattı",       companyId },
+      { unitId: units[0].id, name: "Boya & Apre",           city: "Istanbul", description: "Boya ve apre bölümü",        companyId },
+      { unitId: units[0].id, name: "Yardımcı İşletme",      city: "Istanbul", description: "Kompresör, buhar, soğutma",  companyId },
+      { unitId: units[1].id, name: "Ofis Katı 1-5",         city: "Ankara",  description: "1-5. kat ofis alanları",     companyId },
+      { unitId: units[1].id, name: "Toplantı & Konferans",  city: "Ankara",  description: "Konferans salonları",         companyId },
+      { unitId: units[1].id, name: "Veri Merkezi",          city: "Ankara",  description: "Sunucu odası ve UPS",         companyId },
+      { unitId: units[2].id, name: "Soğuk Depo A Blok",     city: "Izmir",   description: "-20°C donmuş ürün deposu",   companyId },
+      { unitId: units[2].id, name: "Soğuk Depo B Blok",     city: "Izmir",   description: "+4°C soğutmalı depo",        companyId },
+      { unitId: units[2].id, name: "Yükleme Rampası",       city: "Izmir",   description: "Araç yükleme/boşaltma",      companyId },
     ]).returning();
 
     // ── Enerji Kaynakları ───────────────────────────────────────────────────
     const sources = await db.insert(energySourcesTable).values([
-      { unitId: units[0].id, type: "elektrik",  name: "Trafo Merkezi A",            unit: "kWh" },
-      { unitId: units[0].id, type: "elektrik",  name: "Trafo Merkezi B",            unit: "kWh" },
-      { unitId: units[0].id, type: "dogalgaz",  name: "Doğalgaz Ana Hat",           unit: "m3"  },
-      { unitId: units[0].id, type: "buhar",     name: "Buhar Üretim Merkezi",       unit: "ton" },
-      { unitId: units[1].id, type: "elektrik",  name: "Ana Elektrik Panosu",        unit: "kWh" },
-      { unitId: units[1].id, type: "dogalgaz",  name: "Isıtma Sistemi",             unit: "m3"  },
-      { unitId: units[2].id, type: "elektrik",  name: "Soğutma Sistemleri Elektrik",unit: "kWh" },
-      { unitId: units[2].id, type: "dogalgaz",  name: "Isıtma & Jeneratör",         unit: "m3"  },
+      { unitId: units[0].id, type: "elektrik",  name: "Trafo Merkezi A",            unit: "kWh", companyId },
+      { unitId: units[0].id, type: "elektrik",  name: "Trafo Merkezi B",            unit: "kWh", companyId },
+      { unitId: units[0].id, type: "dogalgaz",  name: "Doğalgaz Ana Hat",           unit: "m3",  companyId },
+      { unitId: units[0].id, type: "buhar",     name: "Buhar Üretim Merkezi",       unit: "ton", companyId },
+      { unitId: units[1].id, type: "elektrik",  name: "Ana Elektrik Panosu",        unit: "kWh", companyId },
+      { unitId: units[1].id, type: "dogalgaz",  name: "Isıtma Sistemi",             unit: "m3",  companyId },
+      { unitId: units[2].id, type: "elektrik",  name: "Soğutma Sistemleri Elektrik",unit: "kWh", companyId },
+      { unitId: units[2].id, type: "dogalgaz",  name: "Isıtma & Jeneratör",         unit: "m3",  companyId },
     ]).returning();
 
     // ── Sayaçlar ────────────────────────────────────────────────────────────
     const meters = await db.insert(metersTable).values([
-      { unitId: units[0].id, subUnitId: subUnits[0].id, energySourceId: sources[0].id, name: "Hat-1 Elektrik Sayacı",     type: "elektrik", location: "Üretim Hattı 1 Panosu",       city: "Istanbul", unit: "kWh" },
-      { unitId: units[0].id, subUnitId: subUnits[0].id, energySourceId: sources[2].id, name: "Hat-1 Gaz Sayacı",          type: "dogalgaz", location: "Üretim Hattı 1 Gaz Bağlantısı", city: "Istanbul", unit: "m3"  },
-      { unitId: units[0].id, subUnitId: subUnits[1].id, energySourceId: sources[1].id, name: "Hat-2 Elektrik Sayacı",     type: "elektrik", location: "Üretim Hattı 2 Panosu",       city: "Istanbul", unit: "kWh" },
-      { unitId: units[0].id, subUnitId: subUnits[1].id, energySourceId: sources[2].id, name: "Hat-2 Gaz Sayacı",          type: "dogalgaz", location: "Üretim Hattı 2 Gaz Bağlantısı", city: "Istanbul", unit: "m3"  },
-      { unitId: units[0].id, subUnitId: subUnits[2].id, energySourceId: sources[1].id, name: "Boya Elektrik Sayacı",      type: "elektrik", location: "Boya Bölümü Panosu",           city: "Istanbul", unit: "kWh" },
-      { unitId: units[0].id, subUnitId: subUnits[2].id, energySourceId: sources[3].id, name: "Boya Buhar Sayacı",         type: "buhar",    location: "Boya Buhar Hattı",             city: "Istanbul", unit: "ton" },
-      { unitId: units[0].id, subUnitId: subUnits[3].id, energySourceId: sources[0].id, name: "Yardımcı İşletme Elektrik", type: "elektrik", location: "Kompresör Odası",              city: "Istanbul", unit: "kWh" },
-      { unitId: units[1].id, subUnitId: subUnits[4].id, energySourceId: sources[4].id, name: "Ofis Elektrik Sayacı",      type: "elektrik", location: "Kat Panosu",                   city: "Ankara",   unit: "kWh" },
-      { unitId: units[1].id, subUnitId: subUnits[4].id, energySourceId: sources[5].id, name: "Merkezi Isıtma Sayacı",     type: "dogalgaz", location: "Kazan Dairesi",                city: "Ankara",   unit: "m3"  },
-      { unitId: units[1].id, subUnitId: subUnits[5].id, energySourceId: sources[4].id, name: "Konferans Elektrik Sayacı", type: "elektrik", location: "Konferans Panosu",              city: "Ankara",   unit: "kWh" },
-      { unitId: units[1].id, subUnitId: subUnits[6].id, energySourceId: sources[4].id, name: "Veri Merkezi UPS Sayacı",   type: "elektrik", location: "Sunucu Odası",                 city: "Ankara",   unit: "kWh" },
-      { unitId: units[2].id, subUnitId: subUnits[7].id, energySourceId: sources[6].id, name: "A Blok Soğutucu Elektrik",  type: "elektrik", location: "A Blok Makine Dairesi",        city: "Izmir",    unit: "kWh" },
-      { unitId: units[2].id, subUnitId: subUnits[8].id, energySourceId: sources[6].id, name: "B Blok Soğutucu Elektrik",  type: "elektrik", location: "B Blok Makine Dairesi",        city: "Izmir",    unit: "kWh" },
-      { unitId: units[2].id, subUnitId: subUnits[9].id, energySourceId: sources[6].id, name: "Rampa Aydınlatma & Sistem", type: "elektrik", location: "Yükleme Rampası",              city: "Izmir",    unit: "kWh" },
-      { unitId: units[2].id, subUnitId: subUnits[9].id, energySourceId: sources[7].id, name: "Jeneratör Gaz Sayacı",      type: "dogalgaz", location: "Jeneratör Odası",              city: "Izmir",    unit: "m3"  },
+      { unitId: units[0].id, subUnitId: subUnits[0].id, energySourceId: sources[0].id, name: "Hat-1 Elektrik Sayacı",     type: "elektrik", location: "Üretim Hattı 1 Panosu",          city: "Istanbul", unit: "kWh", companyId },
+      { unitId: units[0].id, subUnitId: subUnits[0].id, energySourceId: sources[2].id, name: "Hat-1 Gaz Sayacı",          type: "dogalgaz", location: "Üretim Hattı 1 Gaz Bağlantısı",  city: "Istanbul", unit: "m3",  companyId },
+      { unitId: units[0].id, subUnitId: subUnits[1].id, energySourceId: sources[1].id, name: "Hat-2 Elektrik Sayacı",     type: "elektrik", location: "Üretim Hattı 2 Panosu",          city: "Istanbul", unit: "kWh", companyId },
+      { unitId: units[0].id, subUnitId: subUnits[1].id, energySourceId: sources[2].id, name: "Hat-2 Gaz Sayacı",          type: "dogalgaz", location: "Üretim Hattı 2 Gaz Bağlantısı",  city: "Istanbul", unit: "m3",  companyId },
+      { unitId: units[0].id, subUnitId: subUnits[2].id, energySourceId: sources[1].id, name: "Boya Elektrik Sayacı",      type: "elektrik", location: "Boya Bölümü Panosu",              city: "Istanbul", unit: "kWh", companyId },
+      { unitId: units[0].id, subUnitId: subUnits[2].id, energySourceId: sources[3].id, name: "Boya Buhar Sayacı",         type: "buhar",    location: "Boya Buhar Hattı",                city: "Istanbul", unit: "ton", companyId },
+      { unitId: units[0].id, subUnitId: subUnits[3].id, energySourceId: sources[0].id, name: "Yardımcı İşletme Elektrik", type: "elektrik", location: "Kompresör Odası",                 city: "Istanbul", unit: "kWh", companyId },
+      { unitId: units[1].id, subUnitId: subUnits[4].id, energySourceId: sources[4].id, name: "Ofis Elektrik Sayacı",      type: "elektrik", location: "Kat Panosu",                      city: "Ankara",   unit: "kWh", companyId },
+      { unitId: units[1].id, subUnitId: subUnits[4].id, energySourceId: sources[5].id, name: "Merkezi Isıtma Sayacı",     type: "dogalgaz", location: "Kazan Dairesi",                   city: "Ankara",   unit: "m3",  companyId },
+      { unitId: units[1].id, subUnitId: subUnits[5].id, energySourceId: sources[4].id, name: "Konferans Elektrik Sayacı", type: "elektrik", location: "Konferans Panosu",                 city: "Ankara",   unit: "kWh", companyId },
+      { unitId: units[1].id, subUnitId: subUnits[6].id, energySourceId: sources[4].id, name: "Veri Merkezi UPS Sayacı",   type: "elektrik", location: "Sunucu Odası",                    city: "Ankara",   unit: "kWh", companyId },
+      { unitId: units[2].id, subUnitId: subUnits[7].id, energySourceId: sources[6].id, name: "A Blok Soğutucu Elektrik",  type: "elektrik", location: "A Blok Makine Dairesi",           city: "Izmir",    unit: "kWh", companyId },
+      { unitId: units[2].id, subUnitId: subUnits[8].id, energySourceId: sources[6].id, name: "B Blok Soğutucu Elektrik",  type: "elektrik", location: "B Blok Makine Dairesi",           city: "Izmir",    unit: "kWh", companyId },
+      { unitId: units[2].id, subUnitId: subUnits[9].id, energySourceId: sources[6].id, name: "Rampa Aydınlatma & Sistem", type: "elektrik", location: "Yükleme Rampası",                 city: "Izmir",    unit: "kWh", companyId },
+      { unitId: units[2].id, subUnitId: subUnits[9].id, energySourceId: sources[7].id, name: "Jeneratör Gaz Sayacı",      type: "dogalgaz", location: "Jeneratör Odası",                 city: "Izmir",    unit: "m3",  companyId },
     ]).returning();
 
     // ── Tüketim Verileri ────────────────────────────────────────────────────
@@ -184,92 +187,50 @@ router.post("/admin/seed", requireAuth, requireAdmin, async (_req, res) => {
 
     // ── SWOT ────────────────────────────────────────────────────────────────
     await db.insert(swotTable).values([
-      { unitId: units[0].id, category: "strengths",    title: "ISO 50001 Sertifikası",      description: "2022'den beri aktif enerji yönetim sistemi",         score: 4, impact: "yuksek" },
-      { unitId: units[0].id, category: "strengths",    title: "Enerji İzleme Altyapısı",    description: "Tüm sayaçlar SCADA sistemine entegre",               score: 4, impact: "yuksek" },
-      { unitId: units[0].id, category: "weaknesses",   title: "Eski Kompresörler",           description: "20+ yıllık hava kompresörleri %35 fazla tüketiyor", score: 2, impact: "yuksek" },
-      { unitId: units[0].id, category: "opportunities",title: "Çatı GES Kurulumu",           description: "45.000 m² çatıda 2 MWp güneş enerji potansiyeli",   score: 5, impact: "yuksek" },
-      { unitId: units[0].id, category: "threats",      title: "Elektrik Fiyat Artışı",       description: "Endüstriyel tarifelerdeki öngörülemeyen artışlar",   score: 3, impact: "yuksek" },
-      { unitId: units[1].id, category: "strengths",    title: "LED Aydınlatma Dönüşümü",    description: "2023'te tamamlanan tam LED dönüşümü — %42 tasarruf", score: 5, impact: "orta"  },
-      { unitId: units[1].id, category: "weaknesses",   title: "Eski Klima Sistemleri",       description: "5 kattaki klimalar 15 yıllık, EER değerleri düşük",  score: 2, impact: "orta"  },
-      { unitId: units[1].id, category: "opportunities",title: "Akıllı Bina Yönetimi",        description: "BMS sistemi ile %15-20 ek tasarruf potansiyeli",      score: 4, impact: "orta"  },
-      { unitId: units[1].id, category: "threats",      title: "Doğalgaz Arz Güvenliği",      description: "Kış aylarında gaz arzında kesinti riski",            score: 3, impact: "yuksek" },
-      { unitId: units[2].id, category: "strengths",    title: "Modern Soğutma Sistemleri",  description: "2021 yılında yenilenen A++ sınıfı soğutucular",       score: 5, impact: "yuksek" },
-      { unitId: units[2].id, category: "weaknesses",   title: "Yüksek Baz Enerji Tüketimi", description: "7/24 soğutma nedeniyle tüketim azaltmak zor",        score: 2, impact: "yuksek" },
-      { unitId: units[2].id, category: "opportunities",title: "Güneş Enerjisi + Depolama",  description: "GES + batarya ile gece enerji maliyeti düşürme",     score: 4, impact: "yuksek" },
-      { unitId: units[2].id, category: "threats",      title: "İklim Değişikliği",           description: "Artan sıcaklıklar soğutma yükünü artırıyor",         score: 4, impact: "yuksek" },
+      { unitId: units[0].id, category: "strengths",    title: "ISO 50001 Sertifikası",      description: "2022'den beri aktif enerji yönetim sistemi",         score: 4, impact: "yuksek", companyId },
+      { unitId: units[0].id, category: "strengths",    title: "Enerji İzleme Altyapısı",    description: "Tüm sayaçlar SCADA sistemine entegre",               score: 4, impact: "yuksek", companyId },
+      { unitId: units[0].id, category: "weaknesses",   title: "Eski Kompresörler",           description: "20+ yıllık hava kompresörleri %35 fazla tüketiyor", score: 2, impact: "yuksek", companyId },
+      { unitId: units[0].id, category: "opportunities",title: "Çatı GES Kurulumu",           description: "45.000 m² çatıda 2 MWp güneş enerji potansiyeli",   score: 5, impact: "yuksek", companyId },
+      { unitId: units[0].id, category: "threats",      title: "Elektrik Fiyat Artışı",       description: "Endüstriyel tarifelerdeki öngörülemeyen artışlar",   score: 3, impact: "yuksek", companyId },
+      { unitId: units[1].id, category: "strengths",    title: "LED Aydınlatma Dönüşümü",    description: "2023'te tamamlanan tam LED dönüşümü — %42 tasarruf", score: 5, impact: "orta",   companyId },
+      { unitId: units[1].id, category: "weaknesses",   title: "Eski Klima Sistemleri",       description: "5 kattaki klimalar 15 yıllık, EER değerleri düşük",  score: 2, impact: "orta",   companyId },
+      { unitId: units[1].id, category: "opportunities",title: "Akıllı Bina Yönetimi",        description: "BMS sistemi ile %15-20 ek tasarruf potansiyeli",      score: 4, impact: "orta",   companyId },
+      { unitId: units[1].id, category: "threats",      title: "Doğalgaz Arz Güvenliği",      description: "Kış aylarında gaz arzında kesinti riski",            score: 3, impact: "yuksek", companyId },
+      { unitId: units[2].id, category: "strengths",    title: "Modern Soğutma Sistemleri",  description: "2021 yılında yenilenen A++ sınıfı soğutucular",       score: 5, impact: "yuksek", companyId },
+      { unitId: units[2].id, category: "weaknesses",   title: "Yüksek Baz Enerji Tüketimi", description: "7/24 soğutma nedeniyle tüketim azaltmak zor",        score: 2, impact: "yuksek", companyId },
+      { unitId: units[2].id, category: "opportunities",title: "Güneş Enerjisi + Depolama",  description: "GES + batarya ile gece enerji maliyeti düşürme",     score: 4, impact: "yuksek", companyId },
+      { unitId: units[2].id, category: "threats",      title: "İklim Değişikliği",           description: "Artan sıcaklıklar soğutma yükünü artırıyor",         score: 4, impact: "yuksek", companyId },
     ]);
 
     // ── Riskler ─────────────────────────────────────────────────────────────
     await db.insert(risksTable).values([
-      { unitId: units[0].id, type: "risk",    title: "Transformatör Arızası",         description: "Ana trafonun ömrü dolmaya yaklaşıyor",                  probability: 3, severity: 5, score: 15, mitigationPlan: "Yedek trafo temin planlanıyor",       owner: "Elektrik Bakım",      status: "acik"  },
-      { unitId: units[0].id, type: "firsat",  title: "Reaktif Güç Cezası Azaltma",    description: "Güç faktörü düzeltme ile fatura cezalarının önlenmesi", probability: 5, severity: 3, score: 15, mitigationPlan: "Kondansatör bankaları kurulumu",      owner: "Elektrik Bakım",      status: "acik"  },
-      { unitId: units[1].id, type: "risk",    title: "Veri Merkezi Soğutma Arızası",  description: "Klima arızasında sunucu ekipmanı zarar görür",           probability: 2, severity: 5, score: 10, mitigationPlan: "Yedek klima ünitesi ve sıcaklık alarmı", owner: "IT Altyapı",       status: "devam" },
-      { unitId: units[1].id, type: "firsat",  title: "Doğalgaz Verimlilik İyileştirmesi", description: "Kazan verimini %85'ten %92'ye çıkarmak",            probability: 4, severity: 3, score: 12, mitigationPlan: "Kazan modernizasyonu ihaleye çıkarılacak", owner: "Teknik Servis",  status: "acik"  },
-      { unitId: units[2].id, type: "risk",    title: "Freon Kaçağı",                  description: "Soğutucu akışkan kaçağı verimlilik ve çevre riski",      probability: 3, severity: 4, score: 12, mitigationPlan: "6 aylık periyodik bakım ve kaçak testi", owner: "Soğutma Bakım",   status: "devam" },
-      { unitId: units[2].id, type: "firsat",  title: "Termal Depolama Sistemi",       description: "Gece saatlerinde buz üreterek gündüz yükü düşürme",     probability: 4, severity: 4, score: 16, mitigationPlan: "FS çalışması başlatıldı",             owner: "Proje Departmanı",    status: "acik"  },
+      { unitId: units[0].id, type: "risk",    title: "Transformatör Arızası",            description: "Ana trafonun ömrü dolmaya yaklaşıyor",                  probability: 3, severity: 5, score: 15, mitigationPlan: "Yedek trafo temin planlanıyor",          owner: "Elektrik Bakım",   status: "acik",  companyId },
+      { unitId: units[0].id, type: "firsat",  title: "Reaktif Güç Cezası Azaltma",       description: "Güç faktörü düzeltme ile fatura cezalarının önlenmesi", probability: 5, severity: 3, score: 15, mitigationPlan: "Kondansatör bankaları kurulumu",          owner: "Elektrik Bakım",   status: "acik",  companyId },
+      { unitId: units[1].id, type: "risk",    title: "Veri Merkezi Soğutma Arızası",     description: "Klima arızasında sunucu ekipmanı zarar görür",           probability: 2, severity: 5, score: 10, mitigationPlan: "Yedek klima ünitesi ve sıcaklık alarmı", owner: "IT Altyapı",       status: "devam", companyId },
+      { unitId: units[1].id, type: "firsat",  title: "Doğalgaz Verimlilik İyileştirmesi",description: "Kazan verimini %85'ten %92'ye çıkarmak",                probability: 4, severity: 3, score: 12, mitigationPlan: "Kazan modernizasyonu ihaleye çıkarılacak",owner: "Teknik Servis",    status: "acik",  companyId },
+      { unitId: units[2].id, type: "risk",    title: "Freon Kaçağı",                     description: "Soğutucu akışkan kaçağı verimlilik ve çevre riski",      probability: 3, severity: 4, score: 12, mitigationPlan: "6 aylık periyodik bakım ve kaçak testi", owner: "Soğutma Bakım",    status: "devam", companyId },
+      { unitId: units[2].id, type: "firsat",  title: "Termal Depolama Sistemi",          description: "Gece saatlerinde buz üreterek gündüz yükü düşürme",     probability: 4, severity: 4, score: 16, mitigationPlan: "FS çalışması başlatıldı",                owner: "Proje Departmanı", status: "acik",  companyId },
     ]);
 
     // ── SEU / ÖEK ───────────────────────────────────────────────────────────
     await db.insert(seuTable).values([
-      { unitId: units[0].id, name: "Üretim Hattı Motorları", category: "motor",         annualKwh: 4800000, percentage: 38.5, priority: 1, targetReductionPercent: 12, responsible: "Üretim Müdürü",   notes: "VFD sürücü eklenecek" },
-      { unitId: units[0].id, name: "Boya Fırınları",         category: "isi",           annualKwh: 3200000, percentage: 25.7, priority: 2, targetReductionPercent: 8,  responsible: "Boya Bölüm Şefi", notes: "Atık ısı geri kazanım projesi" },
-      { unitId: units[0].id, name: "Kompresör Sistemi",      category: "basinclihava",  annualKwh: 1900000, percentage: 15.2, priority: 3, targetReductionPercent: 20, responsible: "Bakım Müdürü",    notes: "Kaçak tespiti ve yeni nesil kompresör" },
-      { unitId: units[1].id, name: "HVAC Sistemi",           category: "iklimlendirme", annualKwh: 820000,  percentage: 52.1, priority: 1, targetReductionPercent: 18, responsible: "Tesis Yöneticisi",notes: "Klima yenileme projesi" },
-      { unitId: units[1].id, name: "Bilgisayar & Sunucu",    category: "bilisim",       annualKwh: 420000,  percentage: 26.7, priority: 2, targetReductionPercent: 10, responsible: "IT Direktörü",    notes: "Sanallaştırma ile fiziksel sunucu azaltma" },
-      { unitId: units[2].id, name: "Soğutma Kompresörleri",  category: "sogutma",       annualKwh: 5200000, percentage: 61.3, priority: 1, targetReductionPercent: 7,  responsible: "Soğutma Mühendisi",notes: "Frekans konvertörü ile kısmi yük optimizasyonu" },
-      { unitId: units[2].id, name: "Kondenser Fanları",      category: "sogutma",       annualKwh: 1100000, percentage: 13.0, priority: 2, targetReductionPercent: 15, responsible: "Soğutma Mühendisi",notes: "EC fan motoru yenileme" },
+      { unitId: units[0].id, name: "Üretim Hattı Motorları", category: "motor",         annualKwh: 4800000, percentage: 38.5, priority: 1, targetReductionPercent: 12, responsible: "Üretim Müdürü",    notes: "VFD sürücü eklenecek",                         companyId },
+      { unitId: units[0].id, name: "Boya Fırınları",         category: "isi",           annualKwh: 3200000, percentage: 25.7, priority: 2, targetReductionPercent: 8,  responsible: "Boya Bölüm Şefi",  notes: "Atık ısı geri kazanım projesi",                 companyId },
+      { unitId: units[0].id, name: "Kompresör Sistemi",      category: "basinclihava",  annualKwh: 1900000, percentage: 15.2, priority: 3, targetReductionPercent: 20, responsible: "Bakım Müdürü",     notes: "Kaçak tespiti ve yeni nesil kompresör",         companyId },
+      { unitId: units[1].id, name: "HVAC Sistemi",           category: "iklimlendirme", annualKwh: 820000,  percentage: 52.1, priority: 1, targetReductionPercent: 18, responsible: "Tesis Yöneticisi", notes: "Klima yenileme projesi",                        companyId },
+      { unitId: units[1].id, name: "Bilgisayar & Sunucu",    category: "bilisim",       annualKwh: 420000,  percentage: 26.7, priority: 2, targetReductionPercent: 10, responsible: "IT Direktörü",     notes: "Sanallaştırma ile fiziksel sunucu azaltma",    companyId },
+      { unitId: units[2].id, name: "Soğutma Kompresörleri",  category: "sogutma",       annualKwh: 5200000, percentage: 61.3, priority: 1, targetReductionPercent: 7,  responsible: "Soğutma Mühendisi",notes: "Frekans konvertörü ile kısmi yük optimizasyonu",companyId },
+      { unitId: units[2].id, name: "Kondenser Fanları",      category: "sogutma",       annualKwh: 1100000, percentage: 13.0, priority: 2, targetReductionPercent: 15, responsible: "Soğutma Mühendisi",notes: "EC fan motoru yenileme",                        companyId },
     ]);
 
     // ── Enerji Hedefleri ────────────────────────────────────────────────────
     await db.insert(energyTargetsTable).values([
-      {
-        unitId: units[0].id,
-        name: "İstanbul Fabrika 2030 Karbon Nötr Yolu",
-        baselineYear: 2022,
-        targetYear: 2030,
-        targetReductionPercent: 20,
-        notes: "ISO 50001 revizyon hedefi — VFD, GES ve atık ısı geri kazanım projeleri kapsamında",
-      },
-      {
-        unitId: units[0].id,
-        name: "Kompresör & Motor Verimliliği Projesi",
-        baselineYear: 2023,
-        targetYear: 2026,
-        targetReductionPercent: 12,
-        notes: "ÖEK 1 ve 3 kapsamındaki motor grubu için kısa vadeli hedef",
-      },
-      {
-        unitId: units[1].id,
-        name: "Ankara Ofis Net-Sıfır Enerji Hedefi",
-        baselineYear: 2022,
-        targetYear: 2028,
-        targetReductionPercent: 15,
-        notes: "LED dönüşümü tamamlandı; BMS ve klima yenileme ile kalan %9 hedefleniyor",
-      },
-      {
-        unitId: units[1].id,
-        name: "Veri Merkezi PUE İyileştirmesi",
-        baselineYear: 2023,
-        targetYear: 2025,
-        targetReductionPercent: 10,
-        notes: "Sanallaştırma ve soğutma optimizasyonu ile PUE 1.8 → 1.5 hedefi",
-      },
-      {
-        unitId: units[2].id,
-        name: "İzmir Soğuk Zincir Uzun Vadeli Azalma",
-        baselineYear: 2021,
-        targetYear: 2030,
-        targetReductionPercent: 25,
-        notes: "Termal depolama + GES + EC fan projeleri; soğutma yükü optimizasyonu odaklı",
-      },
-      {
-        unitId: units[2].id,
-        name: "Kondenser Fan Yenileme Kısa Vadeli Hedef",
-        baselineYear: 2023,
-        targetYear: 2025,
-        targetReductionPercent: 15,
-        notes: "EC fan motoru yenileme tamamlanınca hedef aşılabilir",
-      },
+      { unitId: units[0].id, name: "İstanbul Fabrika 2030 Karbon Nötr Yolu",  baselineYear: 2022, targetYear: 2030, targetReductionPercent: 20, notes: "ISO 50001 revizyon hedefi — VFD, GES ve atık ısı geri kazanım projeleri kapsamında", companyId },
+      { unitId: units[0].id, name: "Kompresör & Motor Verimliliği Projesi",   baselineYear: 2023, targetYear: 2026, targetReductionPercent: 12, notes: "ÖEK 1 ve 3 kapsamındaki motor grubu için kısa vadeli hedef",                        companyId },
+      { unitId: units[1].id, name: "Ankara Ofis Net-Sıfır Enerji Hedefi",    baselineYear: 2022, targetYear: 2028, targetReductionPercent: 15, notes: "LED dönüşümü tamamlandı; BMS ve klima yenileme ile kalan %9 hedefleniyor",          companyId },
+      { unitId: units[1].id, name: "Veri Merkezi PUE İyileştirmesi",         baselineYear: 2023, targetYear: 2025, targetReductionPercent: 10, notes: "Sanallaştırma ve soğutma optimizasyonu ile PUE 1.8 → 1.5 hedefi",                  companyId },
+      { unitId: units[2].id, name: "İzmir Soğuk Zincir Uzun Vadeli Azalma",  baselineYear: 2021, targetYear: 2030, targetReductionPercent: 25, notes: "Termal depolama + GES + EC fan projeleri; soğutma yükü optimizasyonu odaklı",      companyId },
+      { unitId: units[2].id, name: "Kondenser Fan Yenileme Kısa Vadeli Hedef",baselineYear: 2023, targetYear: 2025, targetReductionPercent: 15, notes: "EC fan motoru yenileme tamamlanınca hedef aşılabilir",                            companyId },
     ]);
 
     res.json({

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListUnits, useCreateUnit, useUpdateUnit, useDeleteUnit, getListUnitsQueryKey,
+  useListCompanies, getListCompaniesQueryKey,
 } from "@workspace/api-client-react";
 import { useAuth } from "@/context/AuthContext";
 import { useUnit } from "@/context/UnitContext";
@@ -70,6 +71,11 @@ function AdminUnitsTab() {
   const [resetMode, setResetMode] = useState<"demo" | "all" | null>(null);
   const [resetLoading, setResetLoading] = useState(false);
 
+  const { data: companies } = useListCompanies({ query: { queryKey: getListCompaniesQueryKey() } });
+  const activeCompanyName = companyId !== null
+    ? (companies ?? []).find((c: any) => c.id === companyId)?.name ?? `Firma #${companyId}`
+    : null;
+
   async function handleReset(mode: "demo" | "all") {
     setResetMode(null);
     setResetLoading(true);
@@ -100,18 +106,21 @@ function AdminUnitsTab() {
     setSeedConfirmOpen(false);
     setSeedLoading(true);
     try {
+      const body: Record<string, any> = {};
+      if (companyId !== null) body.companyId = companyId;
       const res = await fetch("/api/admin/seed", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Sunucu hatası");
       const s = json.summary;
       setUnitId(null);
-      queryClient.clear();
+      queryClient.invalidateQueries();
       toast({
         title: "Demo veriler yüklendi ✓",
-        description: `${s.units} birim · ${s.meters} sayaç · ${s.consumptionRecords} tüketim kaydı oluşturuldu`,
+        description: `${s.units} birim · ${s.meters} sayaç · ${s.consumptionRecords} tüketim kaydı oluşturuldu${activeCompanyName ? ` (${activeCompanyName})` : ""}`,
       });
     } catch (err: any) {
       toast({ title: "Seed başarısız", description: err.message, variant: "destructive" });
@@ -227,11 +236,16 @@ function AdminUnitsTab() {
             </DialogTitle>
           </DialogHeader>
           <div className="py-2 space-y-3 text-sm text-muted-foreground">
+            {activeCompanyName && (
+              <p className="text-amber-400 font-medium flex items-center gap-1">
+                🏢 Demo veriler <strong className="text-foreground">{activeCompanyName}</strong> firmasına yüklenecek.
+              </p>
+            )}
             <p>Mevcut verilerinize dokunulmadan aşağıdaki örnek veriler eklenir:</p>
             <ul className="list-disc list-inside space-y-1 pl-1">
               <li>3 birim (İstanbul Fabrika, Ankara Ofis, İzmir Depo)</li>
               <li>10 alt birim, 8 enerji kaynağı, 15 sayaç</li>
-              <li>255 aylık tüketim kaydı (2024–2025)</li>
+              <li>255 aylık tüketim kaydı</li>
               <li>SWOT, Risk/Fırsat ve ÖEK maddeleri</li>
               <li>3 demo kullanıcı (şifre: <code className="bg-secondary px-1 rounded">demo123</code>)</li>
             </ul>
