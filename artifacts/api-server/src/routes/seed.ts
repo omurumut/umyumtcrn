@@ -257,36 +257,86 @@ router.post("/admin/reset", requireAuth, requireAdmin, async (req, res) => {
     return;
   }
 
+  const { role, companyId: sessionCompanyId, userId: currentUserId } = req.user!;
+  const isSuperAdmin = role === "superadmin";
+
   try {
     if (mode === "all") {
-      await db.delete(consumptionTable);
-      await db.delete(metersTable);
-      await db.delete(energySourcesTable);
-      await db.delete(subUnitsTable);
-      await db.delete(swotTable);
-      await db.delete(risksTable);
-      await db.delete(seuTable);
-      await db.delete(energyTargetsTable);
-      await db.delete(unitsTable);
-      await db.delete(usersTable).where(ne(usersTable.username, "admin"));
+      if (isSuperAdmin) {
+        // Superadmin: tüm verileri temizle, sadece "admin" kullanıcısını koru
+        await db.delete(consumptionTable);
+        await db.delete(metersTable);
+        await db.delete(energySourcesTable);
+        await db.delete(subUnitsTable);
+        await db.delete(swotTable);
+        await db.delete(risksTable);
+        await db.delete(seuTable);
+        await db.delete(energyTargetsTable);
+        await db.delete(unitsTable);
+        await db.delete(usersTable).where(ne(usersTable.username, "admin"));
+      } else {
+        // Admin: sadece kendi firmasının verilerini temizle, kendi hesabını silme
+        const companyUnits = await db
+          .select({ id: unitsTable.id })
+          .from(unitsTable)
+          .where(eq(unitsTable.companyId, sessionCompanyId));
+        const companyUnitIds = companyUnits.map((u) => u.id);
+
+        // Önce tüketim kayıtlarını sil (companyId üzerinden)
+        await db.delete(consumptionTable).where(eq(consumptionTable.companyId, sessionCompanyId));
+        // Sayaçları sil
+        await db.delete(metersTable).where(eq(metersTable.companyId, sessionCompanyId));
+        // Enerji kaynaklarını sil
+        await db.delete(energySourcesTable).where(eq(energySourcesTable.companyId, sessionCompanyId));
+        // Alt birimleri sil
+        await db.delete(subUnitsTable).where(eq(subUnitsTable.companyId, sessionCompanyId));
+        // ISO 50001 verilerini sil
+        await db.delete(swotTable).where(eq(swotTable.companyId, sessionCompanyId));
+        await db.delete(risksTable).where(eq(risksTable.companyId, sessionCompanyId));
+        await db.delete(seuTable).where(eq(seuTable.companyId, sessionCompanyId));
+        await db.delete(energyTargetsTable).where(eq(energyTargetsTable.companyId, sessionCompanyId));
+        // Birimleri sil
+        if (companyUnitIds.length > 0) {
+          await db.delete(unitsTable).where(eq(unitsTable.companyId, sessionCompanyId));
+        }
+        // Kullanıcıları sil — kendi hesabı hariç
+        await db.delete(usersTable).where(
+          and(eq(usersTable.companyId, sessionCompanyId), ne(usersTable.id, currentUserId))
+        );
+      }
       res.json({ ok: true, mode: "all" });
       return;
     }
 
     // mode === "demo": sadece is_demo=true olan verileri sil
-    await db.delete(usersTable).where(eq(usersTable.isDemo, true));
-
-    const demoUnits = await db
-      .select({ id: unitsTable.id })
-      .from(unitsTable)
-      .where(eq(unitsTable.isDemo, true));
-
-    if (demoUnits.length > 0) {
-      const demoUnitIds = demoUnits.map((u) => u.id);
-      // meters'ın cascade'i yok, önce sil (consumption cascade ile silinir)
-      await db.delete(metersTable).where(inArray(metersTable.unitId, demoUnitIds));
-      // unitsTable silince: sub_units, energy_sources, swot, risks, seu cascade ile silinir
-      await db.delete(unitsTable).where(eq(unitsTable.isDemo, true));
+    if (isSuperAdmin) {
+      // Superadmin: tüm firmaların demo verilerini sil
+      await db.delete(usersTable).where(eq(usersTable.isDemo, true));
+      const demoUnits = await db
+        .select({ id: unitsTable.id })
+        .from(unitsTable)
+        .where(eq(unitsTable.isDemo, true));
+      if (demoUnits.length > 0) {
+        const demoUnitIds = demoUnits.map((u) => u.id);
+        await db.delete(metersTable).where(inArray(metersTable.unitId, demoUnitIds));
+        await db.delete(unitsTable).where(eq(unitsTable.isDemo, true));
+      }
+    } else {
+      // Admin: sadece kendi firmasının demo verilerini sil
+      await db.delete(usersTable).where(
+        and(eq(usersTable.isDemo, true), eq(usersTable.companyId, sessionCompanyId))
+      );
+      const demoUnits = await db
+        .select({ id: unitsTable.id })
+        .from(unitsTable)
+        .where(and(eq(unitsTable.isDemo, true), eq(unitsTable.companyId, sessionCompanyId)));
+      if (demoUnits.length > 0) {
+        const demoUnitIds = demoUnits.map((u) => u.id);
+        await db.delete(metersTable).where(inArray(metersTable.unitId, demoUnitIds));
+        await db.delete(unitsTable).where(
+          and(eq(unitsTable.isDemo, true), eq(unitsTable.companyId, sessionCompanyId))
+        );
+      }
     }
 
     res.json({ ok: true, mode: "demo" });
