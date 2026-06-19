@@ -447,7 +447,7 @@ export default function Risks() {
                           )}
                           <span className="text-xs">
                             {item.responseType === "aksiyon" && <ClipboardList className="w-3 h-3 inline mr-1 text-blue-400" />}
-                            {item.responseType === "aksiyon" ? "Aksiyon" : item.responseType === "kabul" ? "Kabul" : "İzleme"}
+                            {item.responseType === "aksiyon" ? "Aksiyon" : "İzleme"}
                           </span>
                           {item.owner && <span className="text-xs text-muted-foreground"><Building2 className="w-3 h-3 inline mr-1" />{item.owner}</span>}
                           <Badge variant="outline" className="text-[10px] h-5 px-1.5">
@@ -534,10 +534,6 @@ export default function Risks() {
                   <RadioGroupItem value="aksiyon" id="r-aksiyon" />
                   <Label htmlFor="r-aksiyon" className="font-normal cursor-pointer">Aksiyon</Label>
                 </div>
-                <div className="flex items-center gap-2">
-                  <RadioGroupItem value="kabul" id="r-kabul" />
-                  <Label htmlFor="r-kabul" className="font-normal cursor-pointer">Kabul</Label>
-                </div>
               </RadioGroup>
             </div>
 
@@ -593,7 +589,7 @@ export default function Risks() {
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <MessageSquarePlus className="w-4 h-4 text-muted-foreground" />
-                    <Label className="text-sm font-semibold">Gerçekleşme Notları</Label>
+                    <Label className="text-sm font-semibold">Notlar</Label>
                     {editingNotes.length > 0 && (
                       <Badge variant="secondary" className="text-xs">{editingNotes.length}</Badge>
                     )}
