@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUnit } from "@/context/UnitContext";
 import { useAuth } from "@/context/AuthContext";
@@ -22,63 +22,206 @@ interface RiskForm {
 }
 const EMPTY: RiskForm = { type: "risk", title: "", description: "", probability: 3, severity: 3, mitigationPlan: "", owner: "", status: "acik" };
 
-function ScoreBadge({ score }: { score: number }) {
-  const color = score >= 15 ? "bg-red-500/10 text-red-400 border-red-500/20" : score >= 8 ? "bg-amber-500/10 text-amber-400 border-amber-500/20" : "bg-green-500/10 text-green-400 border-green-500/20";
-  const label = score >= 15 ? "Kritik" : score >= 8 ? "Yüksek" : "Düşük";
-  return <Badge variant="outline" className={`text-xs ${color}`}>{label} ({score})</Badge>;
+const LEVEL_LABELS: Record<number, string> = {
+  1: "Çok Düşük", 2: "Düşük", 3: "Orta", 4: "Yüksek", 5: "Çok Yüksek",
+};
+
+function getRiskCellStyle(score: number): string {
+  if (score === 25) return "bg-red-700/30 border-red-600/50";
+  if (score >= 15)  return "bg-orange-500/25 border-orange-500/40";
+  if (score >= 8)   return "bg-yellow-500/20 border-yellow-500/35";
+  if (score >= 4)   return "bg-green-500/20 border-green-500/35";
+  return "bg-green-900/30 border-green-700/40";
 }
 
-function RiskMatrix({ risks }: { risks: any[] }) {
-  const cells: Record<string, { count: number; types: string[] }> = {};
-  for (const r of risks) {
-    const key = `${r.probability}-${r.severity}`;
-    if (!cells[key]) cells[key] = { count: 0, types: [] };
-    cells[key].count++;
-    cells[key].types.push(r.type);
+function getOpportunityCellStyle(score: number): string {
+  if (score === 25) return "bg-green-700/35 border-green-600/50";
+  if (score >= 15)  return "bg-green-500/20 border-green-500/35";
+  if (score >= 8)   return "bg-yellow-500/20 border-yellow-500/35";
+  if (score >= 4)   return "bg-orange-500/25 border-orange-500/40";
+  return "bg-red-700/20 border-red-600/40";
+}
+
+const RISK_LEGEND = [
+  { label: "Önemsiz (1–3)",    style: "bg-green-900/30 border-green-700/40" },
+  { label: "Katlanılabilir (4–6)", style: "bg-green-500/20 border-green-500/35" },
+  { label: "Orta (8–12)",      style: "bg-yellow-500/20 border-yellow-500/35" },
+  { label: "Önemli (15–20)",   style: "bg-orange-500/25 border-orange-500/40" },
+  { label: "Katlanılamaz (25)", style: "bg-red-700/30 border-red-600/50" },
+];
+
+const OPP_LEGEND = [
+  { label: "Önemsiz (1–3)",   style: "bg-red-700/20 border-red-600/40" },
+  { label: "Düşük (4–6)",     style: "bg-orange-500/25 border-orange-500/40" },
+  { label: "Orta (8–12)",     style: "bg-yellow-500/20 border-yellow-500/35" },
+  { label: "Yüksek (15–20)",  style: "bg-green-500/20 border-green-500/35" },
+  { label: "Çok Yüksek (25)", style: "bg-green-700/35 border-green-600/50" },
+];
+
+function MatrixGrid({
+  items, getStyle, title, subtitle, legend,
+}: {
+  items: any[];
+  getStyle: (score: number) => string;
+  title: string;
+  subtitle: string;
+  legend: { label: string; style: string }[];
+}) {
+  const cellMap: Record<string, number> = {};
+  for (const item of items) {
+    const key = `${item.probability}-${item.severity}`;
+    cellMap[key] = (cellMap[key] ?? 0) + 1;
   }
-  function cellColor(p: number, s: number) {
-    const score = p * s;
-    if (score >= 15) return "bg-red-500/20 border-red-500/30";
-    if (score >= 8) return "bg-amber-500/20 border-amber-500/30";
-    if (score >= 4) return "bg-yellow-500/10 border-yellow-500/20";
-    return "bg-green-500/10 border-green-500/20";
-  }
+
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base">Risk Matrisi (Olasılık × Etki)</CardTitle>
-        <CardDescription>Kırmızı = Kritik ≥15 | Sarı = Yüksek ≥8 | Yeşil = Düşük</CardDescription>
+    <Card className="w-full shrink-0">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription className="text-xs">{subtitle}</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
         <div className="overflow-x-auto">
           <div className="min-w-[320px]">
-            <div className="flex items-center mb-1">
-              <div className="w-20 text-xs text-muted-foreground text-right pr-2">Olasılık</div>
-              {[1, 2, 3, 4, 5].map(s => <div key={s} className="flex-1 text-center text-xs text-muted-foreground">{s}</div>)}
+            {/* ETKİ başlık satırı */}
+            <div className="flex items-end mb-1 ml-[52px]">
+              <div className="flex-1 text-center text-[10px] font-semibold text-muted-foreground tracking-widest mb-1">ETKİ</div>
             </div>
-            {[5, 4, 3, 2, 1].map(p => (
-              <div key={p} className="flex items-center mb-1">
-                <div className="w-20 text-xs text-muted-foreground text-right pr-2">{p}</div>
-                {[1, 2, 3, 4, 5].map(s => {
-                  const key = `${p}-${s}`;
-                  const cell = cells[key];
-                  return (
-                    <div key={s} className={`flex-1 mx-0.5 h-10 rounded border flex items-center justify-center text-xs font-bold ${cellColor(p, s)}`}>
-                      {cell ? cell.count : ""}
-                    </div>
-                  );
-                })}
+            <div className="flex items-end mb-1">
+              <div className="w-[52px] shrink-0" />
+              {[1, 2, 3, 4, 5].map(impact => (
+                <div key={impact} className="flex-1 min-w-[44px] text-center px-0.5">
+                  <div className="text-[9px] text-muted-foreground leading-tight">{LEVEL_LABELS[impact]}</div>
+                  <div className="text-[11px] font-bold text-muted-foreground">{impact}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Satırlar: Olasılık 5→1 */}
+            <div className="flex gap-0">
+              {/* OLASILIK dikey etiketi */}
+              <div className="flex items-center justify-center shrink-0" style={{ width: 14 }}>
+                <span
+                  className="text-[9px] font-semibold text-muted-foreground tracking-widest whitespace-nowrap"
+                  style={{ transform: "rotate(-90deg)", transformOrigin: "center" }}
+                >
+                  OLASILIK
+                </span>
               </div>
-            ))}
-            <div className="flex items-center mt-1">
-              <div className="w-20" />
-              <div className="flex-1 text-center text-xs text-muted-foreground">Etki (1–5)</div>
+
+              <div className="flex-1">
+                {[5, 4, 3, 2, 1].map(prob => (
+                  <div key={prob} className="flex items-stretch mb-1">
+                    <div className="w-[38px] shrink-0 flex flex-col items-end justify-center pr-1.5">
+                      <div className="text-[9px] text-muted-foreground leading-tight text-right">{LEVEL_LABELS[prob]}</div>
+                      <div className="text-[11px] font-bold text-muted-foreground">{prob}</div>
+                    </div>
+                    {[1, 2, 3, 4, 5].map(impact => {
+                      const score = prob * impact;
+                      const count = cellMap[`${prob}-${impact}`] ?? 0;
+                      return (
+                        <div
+                          key={impact}
+                          className={`flex-1 min-w-[44px] mx-0.5 h-11 rounded border flex flex-col items-center justify-center relative ${getStyle(score)}`}
+                        >
+                          <span className="absolute top-[3px] left-[4px] text-[8px] opacity-40 leading-none">{score}</span>
+                          {count > 0 && (
+                            <span className="text-xs font-bold">{count}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
+        </div>
+
+        {/* Renk skalası */}
+        <div className="flex flex-wrap gap-x-3 gap-y-1.5 pt-1 border-t border-border/40">
+          {legend.map(({ label, style }) => (
+            <div key={label} className="flex items-center gap-1.5">
+              <div className={`w-3 h-3 rounded-sm border ${style}`} />
+              <span className="text-[10px] text-muted-foreground">{label}</span>
+            </div>
+          ))}
         </div>
       </CardContent>
     </Card>
   );
+}
+
+function RiskOpportunityMatrices({ risks }: { risks: any[] }) {
+  const [active, setActive] = useState(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const riskItems   = risks.filter(r => r.type === "risk");
+  const firsatItems = risks.filter(r => r.type === "firsat");
+
+  function goTo(idx: number) {
+    setActive(idx);
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ left: idx * scrollRef.current.offsetWidth, behavior: "smooth" });
+    }
+  }
+
+  function handleScroll() {
+    if (scrollRef.current) {
+      const idx = Math.round(scrollRef.current.scrollLeft / scrollRef.current.offsetWidth);
+      setActive(idx);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="flex overflow-x-auto snap-x snap-mandatory scrollbar-none"
+        style={{ scrollbarWidth: "none" }}
+      >
+        <div className="snap-start shrink-0 w-full">
+          <MatrixGrid
+            items={riskItems}
+            getStyle={getRiskCellStyle}
+            title="Risk Değerlendirme Matrisi"
+            subtitle={`${riskItems.length} risk • Olasılık × Etki skoru`}
+            legend={RISK_LEGEND}
+          />
+        </div>
+        <div className="snap-start shrink-0 w-full">
+          <MatrixGrid
+            items={firsatItems}
+            getStyle={getOpportunityCellStyle}
+            title="Fırsat Değerlendirme Matrisi"
+            subtitle={`${firsatItems.length} fırsat • Olasılık × Etki skoru`}
+            legend={OPP_LEGEND}
+          />
+        </div>
+      </div>
+
+      {/* Dot göstergeler */}
+      <div className="flex justify-center items-center gap-2">
+        {[0, 1].map(i => (
+          <button
+            key={i}
+            onClick={() => goTo(i)}
+            className={`rounded-full transition-all duration-200 ${
+              active === i
+                ? "w-6 h-2.5 bg-teal-400"
+                : "w-2.5 h-2.5 bg-muted-foreground/30 hover:bg-muted-foreground/50"
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScoreBadge({ score }: { score: number }) {
+  const color = score >= 15 ? "bg-red-500/10 text-red-400 border-red-500/20" : score >= 8 ? "bg-amber-500/10 text-amber-400 border-amber-500/20" : "bg-green-500/10 text-green-400 border-green-500/20";
+  const label = score >= 15 ? "Kritik" : score >= 8 ? "Yüksek" : "Düşük";
+  return <Badge variant="outline" className={`text-xs ${color}`}>{label} ({score})</Badge>;
 }
 
 export default function Risks() {
@@ -135,7 +278,7 @@ export default function Risks() {
         <Button onClick={openCreate} className="gap-2"><Plus className="h-4 w-4" /> Ekle</Button>
       </div>
 
-      <RiskMatrix risks={risks ?? []} />
+      <RiskOpportunityMatrices risks={risks ?? []} />
 
       <div className="flex items-center gap-3">
         <Select value={filterType} onValueChange={setFilterType}>
