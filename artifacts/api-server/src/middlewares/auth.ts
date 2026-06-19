@@ -6,6 +6,7 @@ export interface SessionUser {
   name: string;
   role: string;
   unitId: number | null;
+  companyId: number;
 }
 
 declare global {

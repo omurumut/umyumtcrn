@@ -48,7 +48,10 @@ export default function UsersTab({ unitFilter }: { unitFilter?: number }) {
       if (companyId !== null) params.set("companyId", companyId.toString());
       const qs = params.toString();
       const url = qs ? `/api/users?${qs}` : "/api/users";
-      return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} }).then(r => r.json());
+      return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} }).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      });
     },
   });
   const users = unitFilter !== undefined
