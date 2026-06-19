@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
-import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
+import { useListUnits, getListUnitsQueryKey, useListCompanies, getListCompaniesQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Pencil, Trash2, Zap } from "lucide-react";
+import { Plus, Pencil, Trash2, Zap, Building2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -24,7 +24,7 @@ const ENERGY_TYPES = [
 ];
 const UNITS_LIST = ["kWh", "MWh", "GJ", "m3", "ton", "litre"];
 
-interface EnergySource { id: number; unitId: number; type: string; name: string; unit: string; active: boolean; }
+interface EnergySource { id: number; unitId: number; companyId: number; type: string; name: string; unit: string; active: boolean; }
 interface ESForm { unitId: string; type: string; name: string; unit: string; active: boolean; }
 
 const API = (token: string | null, method: string, body?: unknown, id?: number) =>
@@ -42,11 +42,14 @@ export default function EnergySourcesTab({ unitId }: { unitId?: number }) {
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
 
+  const isSuperAdmin = user?.role === "superadmin";
   const effectiveUnitId = user?.role !== "admin" && user?.role !== "superadmin" ? user?.unitId : unitId;
   const EMPTY: ESForm = { unitId: effectiveUnitId?.toString() ?? "", type: "elektrik", name: "Elektrik", unit: "kWh", active: true };
   const [form, setForm] = useState<ESForm>(EMPTY);
 
   const { data: allUnits } = useListUnits({ query: { queryKey: [...getListUnitsQueryKey(), companyId] } });
+  const { data: allCompanies } = useListCompanies({ query: { queryKey: getListCompaniesQueryKey(), enabled: isSuperAdmin } });
+
   const qKey = ["energy-sources", effectiveUnitId, companyId];
   const { data: sources, isLoading } = useQuery<EnergySource[]>({
     queryKey: qKey,
@@ -56,13 +59,20 @@ export default function EnergySourcesTab({ unitId }: { unitId?: number }) {
       if (companyId !== null) params.set("companyId", companyId.toString());
       const qs = params.toString();
       const url = qs ? `/api/energy-sources?${qs}` : "/api/energy-sources";
-      return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} }).then(r => r.json());
+      return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+        .then(r => r.ok ? r.json() : []);
     },
   });
 
   const createMut = useMutation({ mutationFn: (d: ESForm) => API(token, "POST", { ...d, unitId: parseInt(d.unitId) }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: qKey }); setOpen(false); toast({ title: "Enerji kaynağı eklendi" }); }, onError: (e: any) => toast({ title: e.message, variant: "destructive" }) });
   const updateMut = useMutation({ mutationFn: (d: ESForm) => API(token, "PATCH", { type: d.type, name: d.name, unit: d.unit, active: d.active }, editingId!), onSuccess: () => { queryClient.invalidateQueries({ queryKey: qKey }); setOpen(false); toast({ title: "Güncellendi" }); }, onError: (e: any) => toast({ title: e.message, variant: "destructive" }) });
   const deleteMut = useMutation({ mutationFn: (id: number) => API(token, "DELETE", undefined, id), onSuccess: () => { queryClient.invalidateQueries({ queryKey: qKey }); toast({ title: "Silindi" }); }, onError: (e: any) => toast({ title: e.message, variant: "destructive" }) });
+
+  function getCompanyName(cId: number): string {
+    if (!allCompanies) return `Firma #${cId}`;
+    const found = (allCompanies as any[]).find((c: any) => c.id === cId);
+    return found?.name ?? `Firma #${cId}`;
+  }
 
   function openCreate() { setEditingId(null); setForm({ ...EMPTY, unitId: effectiveUnitId?.toString() ?? "" }); setOpen(true); }
   function openEdit(s: EnergySource) { setEditingId(s.id); setForm({ unitId: s.unitId.toString(), type: s.type, name: s.name, unit: s.unit, active: s.active }); setOpen(true); }
@@ -108,6 +118,12 @@ export default function EnergySourcesTab({ unitId }: { unitId?: number }) {
                         {!unitId && parentUnit && (
                           <span className="inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-400 border border-teal-500/20">
                             {parentUnit.name}
+                          </span>
+                        )}
+                        {isSuperAdmin && s.companyId && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                            <Building2 className="h-2.5 w-2.5" />
+                            {getCompanyName(s.companyId)}
                           </span>
                         )}
                       </div>

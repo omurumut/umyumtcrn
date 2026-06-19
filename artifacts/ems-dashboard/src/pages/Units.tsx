@@ -354,6 +354,12 @@ function AdminUnitsTab() {
                     </div>
                   )}
                 </div>
+                {companyId === null && u.companyId && (
+                  <div className="mt-2 flex items-center gap-1 text-[10px] font-medium text-blue-400">
+                    <Building2 className="h-2.5 w-2.5" />
+                    <span>{(companies ?? []).find((c: any) => c.id === u.companyId)?.name ?? `Firma #${u.companyId}`}</span>
+                  </div>
+                )}
                 <div className="flex items-center justify-end gap-1 mt-3 opacity-0 group-hover:opacity-100 transition-opacity">
                   <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => openEdit(u)}><Pencil className="h-3.5 w-3.5" /></Button>
                   <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive" onClick={() => handleDelete(u.id)}><Trash2 className="h-3.5 w-3.5" /></Button>

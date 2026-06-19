@@ -8,26 +8,36 @@ const router = Router();
 // GET /api/units
 router.get("/units", requireAuth, async (req, res) => {
   try {
-    const role = req.user!.role;
-    const companyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const queryCompanyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
 
-    if (role !== "admin" && role !== "superadmin" && req.user!.unitId !== null) {
+    // Normal kullanıcı: sadece kendi birimi
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
       const units = await db.select().from(unitsTable)
-        .where(eq(unitsTable.id, req.user!.unitId!))
+        .where(eq(unitsTable.id, sessionUnitId!))
         .orderBy(unitsTable.name);
       res.json(units);
       return;
     }
 
-    if (role === "superadmin" && companyId !== undefined) {
-      const units = await db.select().from(unitsTable)
-        .where(eq(unitsTable.companyId, companyId))
-        .orderBy(unitsTable.name);
+    // Superadmin: isteğe bağlı companyId filtresi
+    if (role === "superadmin") {
+      if (queryCompanyId !== undefined) {
+        const units = await db.select().from(unitsTable)
+          .where(eq(unitsTable.companyId, queryCompanyId))
+          .orderBy(unitsTable.name);
+        res.json(units);
+        return;
+      }
+      const units = await db.select().from(unitsTable).orderBy(unitsTable.name);
       res.json(units);
       return;
     }
 
-    const units = await db.select().from(unitsTable).orderBy(unitsTable.name);
+    // Admin: sadece kendi firması
+    const units = await db.select().from(unitsTable)
+      .where(eq(unitsTable.companyId, sessionCompanyId))
+      .orderBy(unitsTable.name);
     res.json(units);
   } catch (err) {
     req.log.error(err);
@@ -38,14 +48,16 @@ router.get("/units", requireAuth, async (req, res) => {
 // POST /api/units — admin only
 router.post("/units", requireAdmin, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId } = req.user!;
     const { name, location, type, city, responsible, description, active, companyId } = req.body;
     if (!name || !location) { res.status(400).json({ error: "Ad ve lokasyon zorunludur" }); return; }
-    const effectiveCompanyId = req.user!.role === "superadmin" && companyId ? parseInt(companyId) : 1;
+    // Admin kendi firmasına ekler; superadmin body'deki companyId'yi kullanır
+    const targetCompanyId = role === "superadmin" && companyId ? parseInt(companyId) : sessionCompanyId;
     const [unit] = await db.insert(unitsTable).values({
       name, location, type: type || "fabrika", city: city || "Istanbul",
       responsible: responsible || null, description: description || null,
       active: active !== undefined ? Boolean(active) : true,
-      companyId: effectiveCompanyId,
+      companyId: targetCompanyId,
     }).returning();
     res.status(201).json(unit);
   } catch (err) {
@@ -57,12 +69,16 @@ router.post("/units", requireAdmin, async (req, res) => {
 // GET /api/units/:id
 router.get("/units/:id", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
-    if (req.user!.role !== "admin" && req.user!.unitId !== id) {
-      res.status(403).json({ error: "Yetki yok" }); return;
-    }
     const [unit] = await db.select().from(unitsTable).where(eq(unitsTable.id, id));
     if (!unit) { res.status(404).json({ error: "Birim bulunamadı" }); return; }
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== id) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+    if (role === "admin" && unit.companyId !== sessionCompanyId) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
     res.json(unit);
   } catch (err) {
     req.log.error(err);
@@ -73,7 +89,13 @@ router.get("/units/:id", requireAuth, async (req, res) => {
 // PATCH /api/units/:id — admin only
 router.patch("/units/:id", requireAdmin, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId } = req.user!;
     const id = parseInt(req.params.id as string);
+    const [existing] = await db.select().from(unitsTable).where(eq(unitsTable.id, id));
+    if (!existing) { res.status(404).json({ error: "Birim bulunamadı" }); return; }
+    if (role === "admin" && existing.companyId !== sessionCompanyId) {
+      res.status(403).json({ error: "Bu birimi düzenleme yetkiniz yok" }); return;
+    }
     const { name, location, type, city, responsible, description, active } = req.body;
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
@@ -95,7 +117,13 @@ router.patch("/units/:id", requireAdmin, async (req, res) => {
 // DELETE /api/units/:id — admin only
 router.delete("/units/:id", requireAdmin, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId } = req.user!;
     const id = parseInt(req.params.id as string);
+    const [existing] = await db.select().from(unitsTable).where(eq(unitsTable.id, id));
+    if (!existing) { res.status(404).send(); return; }
+    if (role === "admin" && existing.companyId !== sessionCompanyId) {
+      res.status(403).json({ error: "Bu birimi silme yetkiniz yok" }); return;
+    }
     await db.delete(unitsTable).where(eq(unitsTable.id, id));
     res.status(204).send();
   } catch (err) {
