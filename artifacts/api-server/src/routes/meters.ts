@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { db, metersTable, consumptionTable, subUnitsTable, energySourcesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { db, metersTable, consumptionTable, subUnitsTable, energySourcesTable, unitsTable } from "@workspace/db";
+import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -8,6 +8,7 @@ const router = Router();
 // GET /api/meters?unitId=1&subUnitId=2&energySourceId=3
 router.get("/meters", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
     const subUnitId = req.query.subUnitId ? parseInt(req.query.subUnitId as string) : undefined;
     const energySourceId = req.query.energySourceId ? parseInt(req.query.energySourceId as string) : undefined;
@@ -15,6 +16,7 @@ router.get("/meters", requireAuth, async (req, res) => {
     const rows = await db
       .select({
         id: metersTable.id,
+        companyId: metersTable.companyId,
         unitId: metersTable.unitId,
         subUnitId: metersTable.subUnitId,
         energySourceId: metersTable.energySourceId,
@@ -34,7 +36,11 @@ router.get("/meters", requireAuth, async (req, res) => {
       .orderBy(metersTable.createdAt);
 
     const filtered = rows.filter(m => {
-      if (req.user!.role !== "admin" && req.user!.unitId !== null && m.unitId !== req.user!.unitId) return false;
+      // Normal kullanıcı: sadece kendi birimi
+      if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && m.unitId !== sessionUnitId) return false;
+      // Admin: sadece kendi firması
+      if (role === "admin" && m.companyId !== sessionCompanyId) return false;
+      // Ek filtreler
       if (unitId !== undefined && m.unitId !== unitId) return false;
       if (subUnitId !== undefined && m.subUnitId !== subUnitId) return false;
       if (energySourceId !== undefined && m.energySourceId !== energySourceId) return false;
@@ -51,24 +57,43 @@ router.get("/meters", requireAuth, async (req, res) => {
 // POST /api/meters
 router.post("/meters", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId } = req.body;
     if (!name || !type || !location || !unit) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
     }
     const parsedUnitId = unitId ? parseInt(unitId) : null;
-    if (req.user!.role !== "admin" && req.user!.unitId !== null && parsedUnitId !== req.user!.unitId) {
+
+    // Normal kullanıcı: sadece kendi birimine ekleyebilir
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && parsedUnitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
+
+    // Admin: hedef birimin kendi firmasına ait olduğunu kontrol et
+    if (role === "admin" && parsedUnitId !== null) {
+      const [parentUnit] = await db.select({ companyId: unitsTable.companyId })
+        .from(unitsTable).where(eq(unitsTable.id, parsedUnitId));
+      if (!parentUnit || parentUnit.companyId !== sessionCompanyId) {
+        res.status(403).json({ error: "Bu birime sayaç ekleme yetkiniz yok" }); return;
+      }
+    }
+
+    // companyId'yi belirle
+    let targetCompanyId = sessionCompanyId;
+    if (role === "superadmin" && parsedUnitId !== null) {
+      const [parentUnit] = await db.select({ companyId: unitsTable.companyId })
+        .from(unitsTable).where(eq(unitsTable.id, parsedUnitId));
+      if (parentUnit) targetCompanyId = parentUnit.companyId;
+    }
+
     const [meter] = await db.insert(metersTable).values({
-      name,
-      type,
-      location,
+      name, type, location,
       city: city || "Istanbul",
-      unit,
-      description: description || null,
+      unit, description: description || null,
       unitId: parsedUnitId,
       subUnitId: subUnitId ? parseInt(subUnitId) : null,
       energySourceId: energySourceId ? parseInt(energySourceId) : null,
+      companyId: targetCompanyId,
     }).returning();
     res.status(201).json(meter);
   } catch (err) {
@@ -80,10 +105,14 @@ router.post("/meters", requireAuth, async (req, res) => {
 // GET /api/meters/:id
 router.get("/meters/:id", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
     const [meter] = await db.select().from(metersTable).where(eq(metersTable.id, id));
     if (!meter) { res.status(404).json({ error: "Sayaç bulunamadı" }); return; }
-    if (req.user!.role !== "admin" && req.user!.unitId !== null && meter.unitId !== req.user!.unitId) {
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && meter.unitId !== sessionUnitId) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+    if (role === "admin" && meter.companyId !== sessionCompanyId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
     res.json(meter);
@@ -96,11 +125,15 @@ router.get("/meters/:id", requireAuth, async (req, res) => {
 // PATCH /api/meters/:id
 router.patch("/meters/:id", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
     const [existing] = await db.select().from(metersTable).where(eq(metersTable.id, id));
     if (!existing) { res.status(404).json({ error: "Sayaç bulunamadı" }); return; }
-    if (req.user!.role !== "admin" && req.user!.unitId !== null && existing.unitId !== req.user!.unitId) {
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.unitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
+    }
+    if (role === "admin" && existing.companyId !== sessionCompanyId) {
+      res.status(403).json({ error: "Bu sayacı düzenleme yetkiniz yok" }); return;
     }
     const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId } = req.body;
     const updates: Record<string, unknown> = {};
@@ -124,11 +157,15 @@ router.patch("/meters/:id", requireAuth, async (req, res) => {
 // DELETE /api/meters/:id
 router.delete("/meters/:id", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
     const [existing] = await db.select().from(metersTable).where(eq(metersTable.id, id));
     if (!existing) { res.status(404).send(); return; }
-    if (req.user!.role !== "admin" && req.user!.unitId !== null && existing.unitId !== req.user!.unitId) {
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.unitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
+    }
+    if (role === "admin" && existing.companyId !== sessionCompanyId) {
+      res.status(403).json({ error: "Bu sayacı silme yetkiniz yok" }); return;
     }
     await db.delete(consumptionTable).where(eq(consumptionTable.meterId, id));
     await db.delete(metersTable).where(eq(metersTable.id, id));

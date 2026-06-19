@@ -26,12 +26,15 @@ function linearRegression(xs: number[], ys: number[]): { slope: number; intercep
 // GET /api/analysis/regression
 router.get("/analysis/regression", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const meterId = req.query.meterId ? parseInt(req.query.meterId as string) : undefined;
 
-    const effectiveUnitId = req.user!.role !== "admin" && req.user!.unitId !== null
-      ? req.user!.unitId
+    // Normal kullanıcı: kendi birimi; admin: kendi firması; superadmin: tümü
+    const effectiveUnitId = role !== "admin" && role !== "superadmin" && sessionUnitId !== null
+      ? sessionUnitId
       : undefined;
+    const effectiveCompanyId = role === "admin" ? sessionCompanyId : undefined;
 
     let consumptionRows = await db
       .select({
@@ -40,6 +43,7 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
         hdd: consumptionTable.hdd,
         meterId: consumptionTable.meterId,
         meterUnitId: metersTable.unitId,
+        meterCompanyId: metersTable.companyId,
       })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
@@ -47,6 +51,7 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
 
     consumptionRows = consumptionRows.filter(r => {
       if (effectiveUnitId !== undefined && r.meterUnitId !== effectiveUnitId) return false;
+      if (effectiveCompanyId !== undefined && r.meterCompanyId !== effectiveCompanyId) return false;
       if (meterId !== undefined && r.meterId !== meterId) return false;
       return true;
     });
@@ -110,23 +115,29 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
 // GET /api/analysis/performance
 router.get("/analysis/performance", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
 
-    const effectiveUnitId = req.user!.role !== "admin" && req.user!.unitId !== null
-      ? req.user!.unitId
+    const effectiveUnitId = role !== "admin" && role !== "superadmin" && sessionUnitId !== null
+      ? sessionUnitId
       : undefined;
+    const effectiveCompanyId = role === "admin" ? sessionCompanyId : undefined;
 
     const filterByUnit = async (y: number) => {
-      if (effectiveUnitId === undefined) {
-        return db.select().from(consumptionTable).where(eq(consumptionTable.year, y));
-      }
       const conds: SQL[] = [eq(consumptionTable.year, y)];
-      const rows = await db
-        .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2, meterUnitId: metersTable.unitId })
-        .from(consumptionTable)
-        .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-        .where(and(...conds));
-      return rows.filter(r => r.meterUnitId === effectiveUnitId);
+      if (effectiveUnitId !== undefined || effectiveCompanyId !== undefined) {
+        const rows = await db
+          .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2, meterUnitId: metersTable.unitId, meterCompanyId: metersTable.companyId })
+          .from(consumptionTable)
+          .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+          .where(and(...conds));
+        return rows.filter(r => {
+          if (effectiveUnitId !== undefined && r.meterUnitId !== effectiveUnitId) return false;
+          if (effectiveCompanyId !== undefined && r.meterCompanyId !== effectiveCompanyId) return false;
+          return true;
+        });
+      }
+      return db.select().from(consumptionTable).where(conds[0]);
     };
 
     const rows = await filterByUnit(year);

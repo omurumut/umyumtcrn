@@ -1,19 +1,25 @@
 import { Router } from "express";
 import { db, unitsTable, metersTable, consumptionTable, seuTable, swotTable, risksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
+import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
 // GET /api/summary?year=2026
-router.get("/summary", async (req, res) => {
+router.get("/summary", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const prevYear = year - 1;
 
-    const units = await db.select().from(unitsTable).where(eq(unitsTable.active, true)).orderBy(unitsTable.name);
+    // Admin: sadece kendi firmasının birimleri; superadmin: tümü
+    const unitsConds = [eq(unitsTable.active, true)];
+    if (role === "admin") unitsConds.push(eq(unitsTable.companyId, sessionCompanyId));
+    const units = await db.select().from(unitsTable)
+      .where(and(...unitsConds))
+      .orderBy(unitsTable.name);
 
     const summaryItems = await Promise.all(units.map(async (unit) => {
-      // Current year consumption via meters join
       const currRows = await db
         .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2 })
         .from(consumptionTable)
@@ -70,7 +76,6 @@ router.get("/summary", async (req, res) => {
       };
     }));
 
-    // Sort by totalKwh descending
     summaryItems.sort((a, b) => b.totalKwh - a.totalKwh);
 
     const grandTotalKwh = summaryItems.reduce((a, u) => a + u.totalKwh, 0);

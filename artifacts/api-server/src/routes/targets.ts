@@ -6,15 +6,12 @@ import { requireAuth } from "../middlewares/auth.js";
 const router = Router();
 
 async function calcProgress(unitId: number | null, baselineYear: number, targetYear: number) {
-  // Fetch yearly kWh sums for this unit from baselineYear to current year
   const currentYear = new Date().getFullYear();
   const endYear = Math.min(targetYear, currentYear);
-
   const years: number[] = [];
   for (let y = baselineYear; y <= endYear; y++) years.push(y);
   if (years.length === 0) return { baselineKwh: null, yearlyProgress: [] };
 
-  // Get meterIds for this unit
   const meterRows = unitId
     ? await db.select({ id: metersTable.id }).from(metersTable).where(eq(metersTable.unitId, unitId))
     : await db.select({ id: metersTable.id }).from(metersTable);
@@ -22,26 +19,19 @@ async function calcProgress(unitId: number | null, baselineYear: number, targetY
   if (meterRows.length === 0) return { baselineKwh: null, yearlyProgress: [] };
   const meterIds = meterRows.map((m) => m.id);
 
-  // Sum kWh per year
   const rows = await db
     .select({
       year: consumptionTable.year,
       totalKwh: sql<number>`sum(${consumptionTable.kwh})`.as("total_kwh"),
     })
     .from(consumptionTable)
-    .where(
-      and(
-        inArray(consumptionTable.meterId, meterIds),
-        inArray(consumptionTable.year, years)
-      )
-    )
+    .where(and(inArray(consumptionTable.meterId, meterIds), inArray(consumptionTable.year, years)))
     .groupBy(consumptionTable.year);
 
   const kwhByYear: Record<number, number> = {};
   for (const r of rows) kwhByYear[r.year] = r.totalKwh ?? 0;
 
   const baselineKwh = kwhByYear[baselineYear] ?? null;
-
   const yearlyProgress = years.map((y) => {
     const actualKwh = kwhByYear[y] ?? null;
     const reductionPercent =
@@ -50,25 +40,29 @@ async function calcProgress(unitId: number | null, baselineYear: number, targetY
         : null;
     return { year: y, actualKwh, reductionPercent };
   });
-
   return { baselineKwh, yearlyProgress };
 }
 
 // GET /api/targets
 router.get("/targets", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const conditions: SQL[] = [];
-    if (req.user!.role !== "admin" && req.user!.unitId !== null) {
-      conditions.push(eq(energyTargetsTable.unitId, req.user!.unitId));
+
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
+      conditions.push(eq(energyTargetsTable.unitId, sessionUnitId));
+    } else if (role === "admin") {
+      conditions.push(eq(energyTargetsTable.companyId, sessionCompanyId));
+      const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
+      if (unitId !== undefined) conditions.push(eq(energyTargetsTable.unitId, unitId));
     } else {
       const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
       if (unitId !== undefined) conditions.push(eq(energyTargetsTable.unitId, unitId));
     }
 
-    const targets =
-      conditions.length > 0
-        ? await db.select().from(energyTargetsTable).where(conditions.length === 1 ? conditions[0] : and(...conditions)).orderBy(energyTargetsTable.createdAt)
-        : await db.select().from(energyTargetsTable).orderBy(energyTargetsTable.createdAt);
+    const targets = conditions.length > 0
+      ? await db.select().from(energyTargetsTable).where(conditions.length === 1 ? conditions[0] : and(...conditions)).orderBy(energyTargetsTable.createdAt)
+      : await db.select().from(energyTargetsTable).orderBy(energyTargetsTable.createdAt);
 
     const result = await Promise.all(
       targets.map(async (t) => {
@@ -76,7 +70,6 @@ router.get("/targets", requireAuth, async (req, res) => {
         return { ...t, ...progress };
       })
     );
-
     res.json(result);
   } catch (err) {
     req.log.error(err);
@@ -87,16 +80,14 @@ router.get("/targets", requireAuth, async (req, res) => {
 // POST /api/targets
 router.post("/targets", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const { name, baselineYear, targetYear, targetReductionPercent, notes, unitId } = req.body;
     if (!name || !baselineYear || !targetYear || targetReductionPercent === undefined) {
-      res.status(400).json({ error: "Zorunlu alanlar eksik" });
-      return;
+      res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
     }
-    const resolvedUnitId =
-      req.user!.role !== "admin" && req.user!.unitId !== null
-        ? req.user!.unitId
-        : unitId ? parseInt(unitId) : null;
-
+    const resolvedUnitId = role !== "admin" && role !== "superadmin" && sessionUnitId !== null
+      ? sessionUnitId
+      : unitId ? parseInt(unitId) : null;
     const [item] = await db.insert(energyTargetsTable).values({
       name,
       baselineYear: parseInt(baselineYear),
@@ -104,6 +95,7 @@ router.post("/targets", requireAuth, async (req, res) => {
       targetReductionPercent: parseFloat(targetReductionPercent),
       notes: notes || null,
       unitId: resolvedUnitId,
+      companyId: sessionCompanyId,
     }).returning();
     res.status(201).json(item);
   } catch (err) {
@@ -115,17 +107,25 @@ router.post("/targets", requireAuth, async (req, res) => {
 // PATCH /api/targets/:id
 router.patch("/targets/:id", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
-    const updates: Record<string, unknown> = {};
+    const [existing] = await db.select().from(energyTargetsTable).where(eq(energyTargetsTable.id, id));
+    if (!existing) { res.status(404).json({ error: "Bulunamadı" }); return; }
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.unitId !== sessionUnitId) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+    if (role === "admin" && existing.companyId !== sessionCompanyId) {
+      res.status(403).json({ error: "Bu kaydı düzenleme yetkiniz yok" }); return;
+    }
     const { name, baselineYear, targetYear, targetReductionPercent, notes, unitId } = req.body;
+    const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
     if (baselineYear !== undefined) updates.baselineYear = parseInt(baselineYear);
     if (targetYear !== undefined) updates.targetYear = parseInt(targetYear);
     if (targetReductionPercent !== undefined) updates.targetReductionPercent = parseFloat(targetReductionPercent);
     if (notes !== undefined) updates.notes = notes || null;
-    if (req.user!.role === "admin" && unitId !== undefined) updates.unitId = unitId ? parseInt(unitId) : null;
+    if ((role === "admin" || role === "superadmin") && unitId !== undefined) updates.unitId = unitId ? parseInt(unitId) : null;
     const [item] = await db.update(energyTargetsTable).set(updates).where(eq(energyTargetsTable.id, id)).returning();
-    if (!item) { res.status(404).json({ error: "Bulunamadı" }); return; }
     res.json(item);
   } catch (err) {
     req.log.error(err);
@@ -136,7 +136,16 @@ router.patch("/targets/:id", requireAuth, async (req, res) => {
 // DELETE /api/targets/:id
 router.delete("/targets/:id", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
+    const [existing] = await db.select().from(energyTargetsTable).where(eq(energyTargetsTable.id, id));
+    if (!existing) { res.status(404).send(); return; }
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.unitId !== sessionUnitId) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+    if (role === "admin" && existing.companyId !== sessionCompanyId) {
+      res.status(403).json({ error: "Bu kaydı silme yetkiniz yok" }); return;
+    }
     await db.delete(energyTargetsTable).where(eq(energyTargetsTable.id, id));
     res.status(204).send();
   } catch (err) {

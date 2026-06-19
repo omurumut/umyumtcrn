@@ -1,25 +1,31 @@
 import { Router } from "express";
-import { db, consumptionTable, metersTable, seuTable, weatherTable } from "@workspace/db";
+import { db, consumptionTable, metersTable, seuTable, weatherTable, unitsTable } from "@workspace/db";
 import { eq, and, SQL } from "drizzle-orm";
+import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
 const MONTH_NAMES = ["", "Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
 
-function buildConsumptionConditions(year: number, unitId?: number): SQL[] {
+function buildConsumptionConditions(year: number, unitId?: number, companyId?: number): SQL[] {
   const conds: SQL[] = [eq(consumptionTable.year, year)];
   if (unitId !== undefined) conds.push(eq(metersTable.unitId, unitId));
+  if (companyId !== undefined) conds.push(eq(metersTable.companyId, companyId));
   return conds;
 }
 
 // GET /api/dashboard/kpi?year=2026&unitId=1
-router.get("/dashboard/kpi", async (req, res) => {
+router.get("/dashboard/kpi", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
 
-    const currConds = buildConsumptionConditions(year, unitId);
-    const prevConds = buildConsumptionConditions(year - 1, unitId);
+    // Admin: kendi firması; superadmin: tümü
+    const effectiveCompanyId = role === "admin" ? sessionCompanyId : undefined;
+
+    const currConds = buildConsumptionConditions(year, unitId, effectiveCompanyId);
+    const prevConds = buildConsumptionConditions(year - 1, unitId, effectiveCompanyId);
 
     const rows = await db
       .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2 })
@@ -33,18 +39,21 @@ router.get("/dashboard/kpi", async (req, res) => {
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
       .where(prevConds.length === 1 ? prevConds[0] : and(...prevConds));
 
-    // meters and SEU counts filtered by unit
     const metersConds: SQL[] = [];
     const seuConds: SQL[] = [];
     if (unitId !== undefined) {
       metersConds.push(eq(metersTable.unitId, unitId));
       seuConds.push(eq(seuTable.unitId, unitId));
     }
+    if (effectiveCompanyId !== undefined) {
+      metersConds.push(eq(metersTable.companyId, effectiveCompanyId));
+      seuConds.push(eq(seuTable.companyId, effectiveCompanyId));
+    }
     const meters = metersConds.length > 0
-      ? await db.select().from(metersTable).where(metersConds[0])
+      ? await db.select().from(metersTable).where(metersConds.length === 1 ? metersConds[0] : and(...metersConds))
       : await db.select().from(metersTable);
     const seuItems = seuConds.length > 0
-      ? await db.select().from(seuTable).where(seuConds[0])
+      ? await db.select().from(seuTable).where(seuConds.length === 1 ? seuConds[0] : and(...seuConds))
       : await db.select().from(seuTable);
 
     const totalKwh = rows.reduce((a, r) => a + r.kwh, 0);
@@ -76,12 +85,14 @@ router.get("/dashboard/kpi", async (req, res) => {
 });
 
 // GET /api/dashboard/monthly-trend?year=2026&unitId=1
-router.get("/dashboard/monthly-trend", async (req, res) => {
+router.get("/dashboard/monthly-trend", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
+    const effectiveCompanyId = role === "admin" ? sessionCompanyId : undefined;
 
-    const conds = buildConsumptionConditions(year, unitId);
+    const conds = buildConsumptionConditions(year, unitId, effectiveCompanyId);
     const rows = await db
       .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2, month: consumptionTable.month })
       .from(consumptionTable)
@@ -121,26 +132,24 @@ router.get("/dashboard/monthly-trend", async (req, res) => {
 });
 
 // GET /api/dashboard/seu-breakdown?year=2026&unitId=1
-router.get("/dashboard/seu-breakdown", async (req, res) => {
+router.get("/dashboard/seu-breakdown", requireAuth, async (req, res) => {
   try {
+    const { role, companyId: sessionCompanyId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
+    const effectiveCompanyId = role === "admin" ? sessionCompanyId : undefined;
 
     const seuConds: SQL[] = [];
     if (unitId !== undefined) seuConds.push(eq(seuTable.unitId, unitId));
+    if (effectiveCompanyId !== undefined) seuConds.push(eq(seuTable.companyId, effectiveCompanyId));
     const seuItems = seuConds.length > 0
-      ? await db.select().from(seuTable).where(seuConds[0]).orderBy(seuTable.priority)
+      ? await db.select().from(seuTable).where(seuConds.length === 1 ? seuConds[0] : and(...seuConds)).orderBy(seuTable.priority)
       : await db.select().from(seuTable).orderBy(seuTable.priority);
 
     if (seuItems.length === 0) {
-      // Fall back to consumption by meter (filtered by unit if provided)
-      const conds = buildConsumptionConditions(year, unitId);
+      const conds = buildConsumptionConditions(year, unitId, effectiveCompanyId);
       const rows = await db
-        .select({
-          meterName: metersTable.name,
-          kwh: consumptionTable.kwh,
-          category: metersTable.type,
-        })
+        .select({ meterName: metersTable.name, kwh: consumptionTable.kwh, category: metersTable.type })
         .from(consumptionTable)
         .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
         .where(conds.length === 1 ? conds[0] : and(...conds));
