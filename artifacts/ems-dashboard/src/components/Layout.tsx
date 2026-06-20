@@ -18,39 +18,39 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Activity, AlertTriangle, BarChart2, Building2, CloudLightning, FileText,
-  Gauge, Home, LayoutDashboard, Lightbulb, ShieldAlert, Target, User, LogOut, Globe, Building,
+  Gauge, Home, LayoutDashboard, Lightbulb, ShieldAlert, Target, User, LogOut, Globe, Building, Layers,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const ADMIN_NAV = [
   {
-    title: "Yönetim",
+    title: "Veri Yönetimi",
     items: [
       { title: "Birim Yönetimi", url: "/birimler", icon: Building2 },
+      { title: "Enerji Kullanım Grupları", url: "/enerji-kullanim-gruplari", icon: Layers },
       { title: "Sayaç Yönetimi", url: "/sayaclar", icon: Gauge },
+      { title: "Tüketim Verileri", url: "/tuketim", icon: Activity },
+      { title: "Meteoroloji", url: "/meteoroloji", icon: CloudLightning },
+      { title: "Regresyon Analizi", url: "/analiz", icon: BarChart2 },
     ],
   },
 ];
 
 const USER_NAV = [
   {
-    title: "Yönetim",
+    title: "Veri Yönetimi",
     items: [
       { title: "Birimim", url: "/birimler", icon: Building2 },
+      { title: "Enerji Kullanım Grupları", url: "/enerji-kullanim-gruplari", icon: Layers },
       { title: "Sayaç Yönetimi", url: "/sayaclar", icon: Gauge },
-    ],
-  },
-];
-
-const COMMON_NAV = [
-  {
-    title: "Enerji Yönetimi",
-    items: [
       { title: "Tüketim Verileri", url: "/tuketim", icon: Activity },
       { title: "Meteoroloji", url: "/meteoroloji", icon: CloudLightning },
       { title: "Regresyon Analizi", url: "/analiz", icon: BarChart2 },
     ],
   },
+];
+
+const COMMON_NAV = [
   {
     title: "ISO 50001",
     items: [

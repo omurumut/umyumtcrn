@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, consumptionTable, metersTable, subUnitsTable } from "@workspace/db";
+import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
@@ -21,6 +21,9 @@ router.get("/consumption", requireAuth, async (req, res) => {
         meterName: metersTable.name,
         meterUnitId: metersTable.unitId,
         meterCompanyId: metersTable.companyId,
+        meterType: metersTable.type,
+        energyUseGroupId: metersTable.energyUseGroupId,
+        energyUseGroupName: energyUseGroupsTable.name,
         year: consumptionTable.year,
         month: consumptionTable.month,
         kwh: consumptionTable.kwh,
@@ -33,6 +36,7 @@ router.get("/consumption", requireAuth, async (req, res) => {
       })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+      .leftJoin(energyUseGroupsTable, eq(metersTable.energyUseGroupId, energyUseGroupsTable.id))
       .orderBy(consumptionTable.year, consumptionTable.month);
 
     const filtered = rows.filter(r => {
@@ -48,6 +52,7 @@ router.get("/consumption", requireAuth, async (req, res) => {
     });
 
     res.json(filtered.map(({ meterUnitId, meterCompanyId, ...r }) => r));
+    // response içerir: meterName, meterType, energyUseGroupId, energyUseGroupName — ileride EnPI/ÖEK/regresyon analizlerinde kullanılabilir
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });

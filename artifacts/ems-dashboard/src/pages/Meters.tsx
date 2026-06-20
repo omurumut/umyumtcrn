@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Pencil, Trash2, Gauge, MapPin, CloudLightning } from "lucide-react";
+import { Plus, Pencil, Trash2, Gauge, MapPin, CloudLightning, Layers } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const UNITS = ["kWh", "m3", "ton", "litre", "MWh", "GJ"];
@@ -27,13 +27,36 @@ const TYPE_COLORS: Record<string, string> = {
   diger: "bg-slate-500/10 text-slate-400 border-slate-500/20",
 };
 
+const GROUP_TYPES = [
+  { value: "production", label: "Üretim" },
+  { value: "building", label: "Bina" },
+  { value: "utility", label: "Yardımcı Hizmet" },
+  { value: "vehicle", label: "Araç" },
+  { value: "process", label: "Proses" },
+  { value: "hvac", label: "HVAC" },
+  { value: "lighting", label: "Aydınlatma" },
+  { value: "other", label: "Diğer" },
+];
+
 interface SubUnit { id: number; name: string; city: string; }
 interface EnergySource { id: number; type: string; name: string; unit: string; }
+interface EnergyUseGroup { id: number; name: string; groupType: string; isActive: boolean; }
+
 interface MeterForm {
   name: string; type: string; energySourceId: string; subUnitId: string;
-  location: string; city: string; unit: string; description: string; unitId: string;
+  location: string; city: string; unit: string; description: string;
+  unitId: string; energyUseGroupId: string;
 }
-const EMPTY_FORM: MeterForm = { name: "", type: "elektrik", energySourceId: "", subUnitId: "", location: "", city: "İstanbul", unit: "kWh", description: "", unitId: "" };
+const EMPTY_FORM: MeterForm = {
+  name: "", type: "elektrik", energySourceId: "", subUnitId: "",
+  location: "", city: "İstanbul", unit: "kWh", description: "",
+  unitId: "", energyUseGroupId: "",
+};
+
+interface QuickGroupForm {
+  name: string; groupType: string;
+}
+const EMPTY_QUICK_GROUP: QuickGroupForm = { name: "", groupType: "other" };
 
 const apiFetch = (token: string | null, url: string) =>
   fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
@@ -57,6 +80,10 @@ export default function Meters() {
   const [filterSubUnit, setFilterSubUnit] = useState("all");
   const [filterSource, setFilterSource] = useState("all");
 
+  // Hızlı grup oluşturma modali
+  const [quickGroupOpen, setQuickGroupOpen] = useState(false);
+  const [quickGroupForm, setQuickGroupForm] = useState<QuickGroupForm>(EMPTY_QUICK_GROUP);
+
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
   const isSuperAdmin = user?.role === "superadmin";
   const effectiveUnitId = isAdmin ? undefined : (user?.unitId ?? undefined);
@@ -66,7 +93,6 @@ export default function Meters() {
   const [selectedAdminUnit, setSelectedAdminUnit] = useState<string>("");
 
   const workingUnitId = isAdmin ? (selectedAdminUnit ? parseInt(selectedAdminUnit) : undefined) : effectiveUnitId;
-
   const effectiveCompanyId = isSuperAdmin && !workingUnitId ? companyId : undefined;
 
   const subUnitsKey = ["sub-units", workingUnitId, effectiveCompanyId];
@@ -91,6 +117,13 @@ export default function Meters() {
     enabled: workingUnitId !== undefined || effectiveCompanyId !== null || !isAdmin,
   });
 
+  const energyUseGroupsKey = ["energy-use-groups-active"];
+  const { data: energyUseGroups, refetch: refetchGroups } = useQuery<EnergyUseGroup[]>({
+    queryKey: energyUseGroupsKey,
+    queryFn: () => apiFetch(token, "/api/energy-use-groups?isActive=true"),
+    enabled: !!token,
+  });
+
   const metersKey = ["meters", workingUnitId, effectiveCompanyId, filterSubUnit, filterSource];
   const { data: meters, isLoading } = useQuery<any[]>({
     queryKey: metersKey,
@@ -112,23 +145,41 @@ export default function Meters() {
       unitId: d.unitId || workingUnitId,
       subUnitId: d.subUnitId || undefined,
       energySourceId: d.energySourceId || undefined,
+      energyUseGroupId: d.energyUseGroupId || undefined,
     }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["meters"] }); setOpen(false); toast({ title: "Sayaç eklendi" }); },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
   });
+
   const updateMut = useMutation({
     mutationFn: (d: MeterForm) => apiMutate(token, "PATCH", `/api/meters/${editing}`, {
       name: d.name, type: d.type, location: d.location, city: d.city, unit: d.unit,
       description: d.description || undefined,
       subUnitId: d.subUnitId || null,
       energySourceId: d.energySourceId || null,
+      energyUseGroupId: d.energyUseGroupId || null,
     }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["meters"] }); setOpen(false); toast({ title: "Sayaç güncellendi" }); },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
   });
+
   const deleteMut = useMutation({
     mutationFn: (id: number) => apiMutate(token, "DELETE", `/api/meters/${id}`),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["meters"] }); toast({ title: "Sayaç silindi" }); },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const quickGroupMut = useMutation({
+    mutationFn: (d: QuickGroupForm) => apiMutate(token, "POST", "/api/energy-use-groups", {
+      name: d.name, groupType: d.groupType,
+    }),
+    onSuccess: async (newGroup: any) => {
+      await refetchGroups();
+      setForm(f => ({ ...f, energyUseGroupId: newGroup.id.toString() }));
+      setQuickGroupOpen(false);
+      setQuickGroupForm(EMPTY_QUICK_GROUP);
+      toast({ title: "Grup oluşturuldu ve seçildi" });
+    },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -157,6 +208,7 @@ export default function Meters() {
       location: m.location, city: m.city ?? "İstanbul",
       unit: m.unit, description: m.description ?? "",
       unitId: m.unitId?.toString() ?? "",
+      energyUseGroupId: m.energyUseGroupId?.toString() ?? "",
     });
     setOpen(true);
   }
@@ -174,6 +226,11 @@ export default function Meters() {
   function handleSave() {
     if (!form.name || !form.location) { toast({ title: "Ad ve lokasyon zorunludur", variant: "destructive" }); return; }
     editing !== null ? updateMut.mutate(form) : createMut.mutate(form);
+  }
+
+  function handleQuickGroupSave() {
+    if (!quickGroupForm.name.trim()) { toast({ title: "Grup adı zorunludur", variant: "destructive" }); return; }
+    quickGroupMut.mutate(quickGroupForm);
   }
 
   const filteredMeters = meters ?? [];
@@ -252,6 +309,15 @@ export default function Meters() {
                     {m.energySourceName ?? m.type}
                   </Badge>
                 </div>
+                {m.energyUseGroupName && (
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground mb-2">
+                    <Layers className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{m.energyUseGroupName}</span>
+                  </div>
+                )}
+                {!m.energyUseGroupName && (
+                  <div className="text-xs text-muted-foreground/50 mb-2">Grup yok</div>
+                )}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="text-xs bg-secondary text-secondary-foreground px-2 py-0.5 rounded font-mono">{m.unit}</span>
@@ -273,6 +339,7 @@ export default function Meters() {
         </div>
       )}
 
+      {/* Sayaç Oluştur / Düzenle Dialogu */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader><DialogTitle>{editing !== null ? "Sayaç Düzenle" : "Yeni Sayaç Ekle"}</DialogTitle></DialogHeader>
@@ -302,6 +369,29 @@ export default function Meters() {
                 </Select>
               </div>
             )}
+            <div className="space-y-1.5">
+              <Label>Enerji Kullanım Grubu</Label>
+              <div className="flex gap-2">
+                <Select
+                  value={form.energyUseGroupId || "none"}
+                  onValueChange={v => setForm(f => ({ ...f, energyUseGroupId: v === "none" ? "" : v }))}
+                >
+                  <SelectTrigger className="flex-1"><SelectValue placeholder="Grup seçin (opsiyonel)" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">—</SelectItem>
+                    {(energyUseGroups ?? []).map(g => (
+                      <SelectItem key={g.id} value={g.id.toString()}>{g.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button" variant="outline" size="sm" className="shrink-0 gap-1 px-2"
+                  onClick={() => { setQuickGroupForm(EMPTY_QUICK_GROUP); setQuickGroupOpen(true); }}
+                >
+                  <Plus className="h-3.5 w-3.5" /> Yeni
+                </Button>
+              </div>
+            </div>
             <div className="space-y-1.5">
               <Label>Sayaç Adı *</Label>
               <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="ör. Ana Elektrik Panosu" />
@@ -336,6 +426,37 @@ export default function Meters() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>İptal</Button>
             <Button onClick={handleSave} disabled={createMut.isPending || updateMut.isPending}>{editing !== null ? "Güncelle" : "Ekle"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Hızlı Grup Oluşturma Modali */}
+      <Dialog open={quickGroupOpen} onOpenChange={setQuickGroupOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader><DialogTitle>Hızlı Grup Oluştur</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Grup Adı *</Label>
+              <Input
+                value={quickGroupForm.name}
+                onChange={e => setQuickGroupForm(f => ({ ...f, name: e.target.value }))}
+                placeholder="ör. Kazan Dairesi"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Grup Tipi</Label>
+              <Select value={quickGroupForm.groupType} onValueChange={v => setQuickGroupForm(f => ({ ...f, groupType: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {GROUP_TYPES.map(g => <SelectItem key={g.value} value={g.value}>{g.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setQuickGroupOpen(false)}>İptal</Button>
+            <Button onClick={handleQuickGroupSave} disabled={quickGroupMut.isPending}>Oluştur ve Seç</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

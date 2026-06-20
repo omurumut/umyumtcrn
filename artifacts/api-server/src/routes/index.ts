@@ -18,6 +18,7 @@ import energySourcesRouter from "./energy-sources";
 import seedRouter from "./seed";
 import targetsRouter from "./targets";
 import companiesRouter from "./companies";
+import energyUseGroupsRouter from "./energy-use-groups";
 
 const router: IRouter = Router();
 
@@ -26,6 +27,7 @@ router.use(authRouter);
 router.use(unitsRouter);
 router.use(subUnitsRouter);
 router.use(energySourcesRouter);
+router.use(energyUseGroupsRouter);
 router.use(metersRouter);
 router.use(consumptionRouter);
 router.use(weatherRouter);

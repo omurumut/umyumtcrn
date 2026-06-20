@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, metersTable, consumptionTable, subUnitsTable, energySourcesTable, unitsTable } from "@workspace/db";
+import { db, metersTable, consumptionTable, subUnitsTable, energySourcesTable, unitsTable, energyUseGroupsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
@@ -21,6 +21,7 @@ router.get("/meters", requireAuth, async (req, res) => {
         unitId: metersTable.unitId,
         subUnitId: metersTable.subUnitId,
         energySourceId: metersTable.energySourceId,
+        energyUseGroupId: metersTable.energyUseGroupId,
         name: metersTable.name,
         type: metersTable.type,
         location: metersTable.location,
@@ -30,10 +31,12 @@ router.get("/meters", requireAuth, async (req, res) => {
         createdAt: metersTable.createdAt,
         subUnitName: subUnitsTable.name,
         energySourceName: energySourcesTable.name,
+        energyUseGroupName: energyUseGroupsTable.name,
       })
       .from(metersTable)
       .leftJoin(subUnitsTable, eq(metersTable.subUnitId, subUnitsTable.id))
       .leftJoin(energySourcesTable, eq(metersTable.energySourceId, energySourcesTable.id))
+      .leftJoin(energyUseGroupsTable, eq(metersTable.energyUseGroupId, energyUseGroupsTable.id))
       .orderBy(metersTable.createdAt);
 
     const filtered = rows.filter(m => {
@@ -61,7 +64,7 @@ router.get("/meters", requireAuth, async (req, res) => {
 router.post("/meters", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId } = req.body;
+    const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId } = req.body;
     if (!name || !type || !location || !unit) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
     }
@@ -89,6 +92,17 @@ router.post("/meters", requireAuth, async (req, res) => {
       if (parentUnit) targetCompanyId = parentUnit.companyId;
     }
 
+    // energyUseGroupId cross-company doğrulama
+    let parsedGroupId: number | null = null;
+    if (energyUseGroupId) {
+      parsedGroupId = parseInt(energyUseGroupId);
+      const [grp] = await db.select({ companyId: energyUseGroupsTable.companyId })
+        .from(energyUseGroupsTable).where(eq(energyUseGroupsTable.id, parsedGroupId));
+      if (!grp || grp.companyId !== targetCompanyId) {
+        res.status(400).json({ error: "Geçersiz enerji kullanım grubu" }); return;
+      }
+    }
+
     const [meter] = await db.insert(metersTable).values({
       name, type, location,
       city: city || "Istanbul",
@@ -96,6 +110,7 @@ router.post("/meters", requireAuth, async (req, res) => {
       unitId: parsedUnitId,
       subUnitId: subUnitId ? parseInt(subUnitId) : null,
       energySourceId: energySourceId ? parseInt(energySourceId) : null,
+      energyUseGroupId: parsedGroupId,
       companyId: targetCompanyId,
     }).returning();
     res.status(201).json(meter);
@@ -138,7 +153,7 @@ router.patch("/meters/:id", requireAuth, async (req, res) => {
     if (role === "admin" && existing.companyId !== sessionCompanyId) {
       res.status(403).json({ error: "Bu sayacı düzenleme yetkiniz yok" }); return;
     }
-    const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId } = req.body;
+    const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId } = req.body;
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
     if (type !== undefined) updates.type = type;
@@ -149,6 +164,19 @@ router.patch("/meters/:id", requireAuth, async (req, res) => {
     if (unitId !== undefined) updates.unitId = unitId ? parseInt(unitId) : null;
     if (subUnitId !== undefined) updates.subUnitId = subUnitId ? parseInt(subUnitId) : null;
     if (energySourceId !== undefined) updates.energySourceId = energySourceId ? parseInt(energySourceId) : null;
+    if (energyUseGroupId !== undefined) {
+      if (energyUseGroupId === null || energyUseGroupId === "") {
+        updates.energyUseGroupId = null;
+      } else {
+        const gid = parseInt(energyUseGroupId);
+        const [grp] = await db.select({ companyId: energyUseGroupsTable.companyId })
+          .from(energyUseGroupsTable).where(eq(energyUseGroupsTable.id, gid));
+        if (!grp || grp.companyId !== existing.companyId) {
+          res.status(400).json({ error: "Geçersiz enerji kullanım grubu" }); return;
+        }
+        updates.energyUseGroupId = gid;
+      }
+    }
     const [meter] = await db.update(metersTable).set(updates).where(eq(metersTable.id, id)).returning();
     res.json(meter);
   } catch (err) {

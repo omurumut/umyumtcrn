@@ -84,6 +84,28 @@ export const insertEnergySourceSchema = createInsertSchema(energySourcesTable).o
 export type InsertEnergySource = z.infer<typeof insertEnergySourceSchema>;
 export type EnergySource = typeof energySourcesTable.$inferSelect;
 
+// ── Energy Use Groups (Enerji Kullanım Grupları) ──────────
+export const energyUseGroupsTable = pgTable("energy_use_groups", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
+  name: text("name").notNull(),
+  code: text("code"),
+  groupType: text("group_type").notNull().default("other"), // production | building | utility | vehicle | process | hvac | lighting | other
+  energySourceId: integer("energy_source_id").references(() => energySourcesTable.id, { onDelete: "set null" }),
+  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "set null" }),
+  subUnitId: integer("sub_unit_id").references(() => subUnitsTable.id, { onDelete: "set null" }),
+  description: text("description"),
+  isSeuCandidate: boolean("is_seu_candidate").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertEnergyUseGroupSchema = createInsertSchema(energyUseGroupsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEnergyUseGroup = z.infer<typeof insertEnergyUseGroupSchema>;
+export type EnergyUseGroup = typeof energyUseGroupsTable.$inferSelect;
+
 // ── Meters ───────────────────────────────────────────────
 export const metersTable = pgTable("meters", {
   id: serial("id").primaryKey(),
@@ -91,6 +113,7 @@ export const metersTable = pgTable("meters", {
   unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "set null" }),
   subUnitId: integer("sub_unit_id").references(() => subUnitsTable.id, { onDelete: "set null" }),
   energySourceId: integer("energy_source_id").references(() => energySourcesTable.id, { onDelete: "set null" }),
+  energyUseGroupId: integer("energy_use_group_id").references(() => energyUseGroupsTable.id, { onDelete: "set null" }),
   name: text("name").notNull(),
   type: text("type").notNull(), // elektrik | dogalgaz | buhar | su | diger
   location: text("location").notNull(),

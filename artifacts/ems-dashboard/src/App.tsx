@@ -24,6 +24,7 @@ import Units from "@/pages/Units";
 import Summary from "@/pages/Summary";
 import Targets from "@/pages/Targets";
 import Companies from "@/pages/Companies";
+import EnergyUseGroups from "@/pages/EnergyUseGroups";
 
 const logoutRef = { fn: () => {} };
 
@@ -63,6 +64,7 @@ function Router() {
         {() => <AdminRoute component={Summary} />}
       </Route>
       <Route path="/birimler" component={Units} />
+      <Route path="/enerji-kullanim-gruplari" component={EnergyUseGroups} />
       <Route path="/sayaclar" component={Meters} />
       <Route path="/tuketim" component={Consumption} />
       <Route path="/meteoroloji" component={Weather} />

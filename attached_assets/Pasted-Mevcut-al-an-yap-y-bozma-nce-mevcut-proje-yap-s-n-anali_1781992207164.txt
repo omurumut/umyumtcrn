@@ -1,0 +1,277 @@
+Mevcut çalışan yapıyı bozma. Önce mevcut proje yapısını analiz et. Gereksiz refactor yapma. Sadece gerekli dosyalarda değişiklik yap.
+
+Proje mimarisi:
+
+- React + Vite frontend
+- Node.js backend
+- PostgreSQL
+- Drizzle ORM
+- pnpm Workspace
+- REST API
+- Authentication mevcut
+- Context API mevcut
+- Multi-tenant yapı var
+- Tüm veriler companyId ile şirket bazlı ayrılmalı
+- Bir şirketin verisi başka şirket tarafından asla görülmemeli
+- Mevcut çalışan authentication yapısını değiştirme
+- Migration / drizzle push / db push işlemlerini kullanıcı onayı olmadan çalıştırma
+
+Amaç:
+Mevcut Enerji Yönetim Sistemi uygulamasına “Enerji Kullanım Grupları” yapısını ekle. Bu yapı sayaçların ISO 50001 analiz amacıyla gruplandırılması için kullanılacak.
+
+Mevcut yapı:
+
+- Birim Yönetimi ekranında birimler ve alt birimler / lokasyonlar tanımlanıyor.
+- Sayaç Yönetimi ekranında sayaçlar tanımlanıyor ve alt birime bağlanabiliyor.
+- Tüketim Verileri ekranında sayaçlara ait aylık tüketimler giriliyor.
+- Bu yapı korunacak.
+- Yeni yapı mevcut yapıya ek olarak çalışacak.
+
+İstenen yeni mantık:
+Birim / Alt Birim = Tüketim nerede gerçekleşiyor?
+Sayaç = Tüketim nasıl ölçülüyor?
+Enerji Kullanım Grubu = Tüketim hangi sistem, proses, faaliyet veya analiz başlığına ait?
+
+Örnek enerji kullanım grupları:
+
+- Kazan Dairesi
+- Araç Yakıtları
+- Üretim Elektriği
+- Chiller Sistemi
+- Kampüs Elektrik
+- Kampüs Doğalgaz
+
+1. Veritabanı değişikliği:
+
+Drizzle schema içinde yeni bir tablo oluştur:
+
+energyUseGroups
+
+Alanlar:
+
+- id
+- companyId: zorunlu, multi-tenant veri ayrımı için
+- name: grup adı
+- code: kısa kod, opsiyonel ama benzersiz olmalı
+- groupType: production, building, utility, vehicle, process, hvac, lighting, other
+- energySourceId: nullable
+- unitId: nullable
+- subUnitId: nullable
+- description: nullable
+- isSeuCandidate: boolean, default false
+- isActive: boolean, default true
+- createdBy
+- createdAt
+- updatedAt
+
+Kurallar:
+
+- Aynı companyId altında aynı name ile mükerrer aktif grup oluşmasın.
+- Tüm sorgularda companyId filtresi zorunlu olsun.
+- Başka şirkete ait grup görüntülenmesin, güncellenmesin, silinmesin.
+
+Mevcut meters / sayaç tablosuna şu alanı ekle:
+
+- energyUseGroupId: nullable foreign key
+
+Bu alan opsiyonel olmalı. Mevcut sayaç kayıtlarını bozma.
+
+Migration veya drizzle push çalıştırma. Sadece schema değişikliğini hazırla ve yapılması gereken komutu raporla.
+
+2. Backend REST API:
+
+Aşağıdaki endpointleri ekle:
+
+GET /api/energy-use-groups
+
+- Sadece kullanıcının companyId değerine ait aktif/pasif grupları döndürsün.
+- Filtreler desteklensin:
+  - isActive
+  - groupType
+  - energySourceId
+  - unitId
+  - subUnitId
+
+POST /api/energy-use-groups
+
+- Yeni enerji kullanım grubu oluştursun.
+- companyId kullanıcı oturumundan alınsın, frontend’den gelen companyId’ye güvenilmesin.
+- name zorunlu olsun.
+- groupType zorunlu olsun.
+- createdBy kullanıcıdan alınsın.
+
+PUT /api/energy-use-groups/
+
+- Sadece aynı companyId içindeki kayıt güncellensin.
+- Başka şirket kaydı bulunursa 404 veya yetkisiz cevap dönsün.
+
+PATCH /api/energy-use-groups//status
+
+- Aktif/pasif durumunu değiştirsin.
+- Fiziksel silme yapma, pasifleştir.
+
+GET /api/energy-use-groups//meters
+
+- Bu gruba bağlı sayaçları listele.
+- Sadece kullanıcının companyId değerine ait sayaçları döndür.
+
+Mevcut sayaç oluşturma ve güncelleme endpointlerine energyUseGroupId desteği ekle:
+
+- Sayaç oluştururken enerji kullanım grubu seçilebilsin.
+- Sayaç güncellenirken enerji kullanım grubu değiştirilebilsin.
+- energyUseGroupId boş/null olabilir.
+- Seçilen energyUseGroupId mutlaka aynı companyId içinde var olmalı.
+
+3. Frontend:
+
+Yönetim ve Enerji Yönetimi Başlıklarını birleştir ve Veri Yönetimi olsun. Menüsüne yeni modül ekle:
+
+Enerji Kullanım Grupları
+
+Modül sıralaması şu şekilde olsun:
+
+- Birim Yönetimi
+- Enerji Kullanım Grupları
+- Sayaç Yönetimi
+- Tüketim Verileri
+- Meteoroloji Verileri
+- Regresyon Analizi
+
+Enerji Kullanım Grupları ekranında şu özellikler olsun:
+
+- Listeleme
+- Yeni grup ekleme
+- Grup düzenleme
+- Aktif/pasif yapma
+- Filtreleme:
+  - Grup tipi
+  - Enerji kaynağı
+  - Birim
+  - Alt birim
+  - Aktif/pasif
+- Her grup kartında veya satırında şu bilgiler görünsün:
+  - Grup adı
+  - Grup tipi
+  - Enerji kaynağı
+  - Birim / alt birim
+  - ÖEK adayı mı?
+  - Aktif/pasif
+  - Bağlı sayaç sayısı
+
+Form alanları:
+
+- Grup adı
+- Kısa kod
+- Grup tipi
+- Enerji kaynağı
+- Bağlı birim
+- Bağlı alt birim
+- Açıklama
+- ÖEK adayı mı?
+- Aktif/pasif
+
+Kullanıcı deneyimi:
+
+- Form sade olsun.
+- Grup tipi için select kullan.
+- Enerji kaynağı, birim ve alt birim mevcut tablolardan gelsin.
+- Alt birim seçimi, seçilen birime göre filtrelenebiliyorsa filtrele.
+- Grup pasif yapılırsa yeni sayaçlarda seçilemesin ama geçmiş sayaçlarda veri bozulmasın.
+
+4. Sayaç Yönetimi entegrasyonu:
+
+Sayaç tanım / düzenleme formuna yeni opsiyonel alan ekle:
+
+Enerji Kullanım Grubu
+
+Kurallar:
+
+- Dropdown sadece aktif enerji kullanım gruplarını göstersin.
+- Sayaç oluştururken seçilebilir olsun.
+- Sayaç düzenlerken değiştirilebilir olsun.
+- Boş bırakılabilir.
+- Dropdown yanında küçük “+ Yeni Grup” butonu ekle.
+- Bu butona basıldığında modal açılarak hızlı enerji kullanım grubu oluşturulabilsin.
+- Modal başarılı kayıt sonrası dropdown listesini yenilesin ve yeni oluşturulan grubu seçili hale getirsin.
+
+Sayaç liste kartlarında veya tablosunda enerji kullanım grubu bilgisi görünsün:
+
+- Grup yoksa “Grup yok” veya benzeri sade bir ifade göster.
+- Mevcut sayaç liste tasarımını bozma.
+
+5. Tüketim Verileri entegrasyonu:
+
+Tüketim Verileri ekranının temel çalışma mantığını değiştirme.
+
+Sadece tüketim listesinde mümkünse sayaç bilgisi yanında enerji kullanım grubu bilgisini göster:
+
+- Sayaç adı
+- Enerji kullanım grubu
+- Birim / alt birim
+- Ay
+- Tüketim
+
+Bu bilgi daha sonra EnPI, ÖEK ve regresyon analizlerinde kullanılabilecek şekilde backend response içinde de hazır gelsin.
+
+6. Önemli Enerji Kullanımları ve Regresyon için hazırlık:
+
+Bu geliştirmede ÖEK veya regresyon hesaplama mantığını yeniden yazma.
+
+Ancak veri modelini ve API response yapılarını ileride şu bağlantılara uygun olacak şekilde temiz tasarla:
+
+- Enerji kullanım grubu → bağlı sayaçlar
+- Enerji kullanım grubu → tüketim toplamları
+- Enerji kullanım grubu → değişkenler
+- Enerji kullanım grubu → EnPI
+- Enerji kullanım grubu → ÖEK değerlendirmesi
+- Enerji kullanım grubu → regresyon analizi
+
+Şimdilik sadece enerji kullanım grubu yapısını ve sayaç bağlantısını uygula.
+
+7. Güvenlik ve validasyon:
+
+- Tüm backend sorgularında companyId filtresi zorunlu olsun.
+- Frontend’den gelen companyId’ye güvenme.
+- companyId oturumdaki kullanıcıdan alınsın.
+- Başka şirkete ait energyUseGroupId ile sayaç oluşturulamasın.
+- name boş olmasın.
+- groupType boş olmasın.
+- Silme yerine pasifleştirme kullan.
+- Mevcut kayıtları bozacak işlem yapma.
+
+8. Tasarım dili:
+
+Mevcut koyu tema, kart yapısı, buton stilleri, tablo/list görünümü ve genel UI yapısını koru.
+Yeni ekran mevcut uygulamanın görsel diline uyumlu olsun.
+Gereksiz yeni UI kütüphanesi ekleme.
+
+9. Test / kontrol:
+
+İş bittikten sonra şu kontrolleri yap:
+
+- Yeni enerji kullanım grubu oluşturulabiliyor mu?
+- Grup düzenlenebiliyor mu?
+- Grup pasif yapılabiliyor mu?
+- Sayaç oluştururken grup seçilebiliyor mu?
+- Sayaç düzenlerken grup değiştirilebiliyor mu?
+- Farklı companyId verileri birbirine karışmıyor mu?
+- Tüketim Verileri ekranında sayaçla ilişkili grup bilgisi görünüyor mu?
+- Mevcut sayaçlar energyUseGroupId boş olsa bile sorunsuz çalışıyor mu?
+
+10. Raporlama:
+
+İş bittikten sonra bana şu formatta rapor ver:
+
+- Değiştirilen frontend dosyaları
+- Değiştirilen backend dosyaları
+- Değiştirilen database/schema dosyaları
+- Eklenen endpointler
+- Migration için çalıştırılması gereken komutlar
+- Dikkat edilmesi gereken noktalar
+
+Tekrar hatırlatma:
+Migration, drizzle push veya database push komutlarını kullanıcı onayı olmadan çalıştırma.
+Mevcut çalışan yapıyı bozma.
+Authentication yapısını değiştirme.
+Gereksiz refactor yapma.
+Sadece bu geliştirme için gerekli değişiklikleri yap.

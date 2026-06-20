@@ -26,7 +26,7 @@ const TYPE_COLORS: Record<string, string> = {
 
 interface EnergySource { id: number; type: string; name: string; unit: string; }
 interface SubUnit { id: number; name: string; city: string; }
-interface Meter { id: number; name: string; type: string; subUnitId?: number | null; energySourceId?: number | null; unit: string; city?: string; }
+interface Meter { id: number; name: string; type: string; subUnitId?: number | null; energySourceId?: number | null; energyUseGroupId?: number | null; energyUseGroupName?: string | null; unit: string; city?: string; }
 
 const apiFetch = (token: string | null, url: string) =>
   fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
@@ -228,6 +228,11 @@ export default function Consumption() {
     return (subUnits ?? []).find(s => s.id === m.subUnitId)?.name ?? null;
   };
 
+  const getGroupName = (meterId: number) => {
+    const m = (allMeters ?? []).find(m => m.id === meterId);
+    return m?.energyUseGroupName ?? null;
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -279,6 +284,7 @@ export default function Consumption() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Kaynak</TableHead>
+                  <TableHead>Grup</TableHead>
                   <TableHead>Alt Birim</TableHead>
                   <TableHead>Sayaç</TableHead>
                   <TableHead>Ay</TableHead>
@@ -292,16 +298,18 @@ export default function Consumption() {
               </TableHeader>
               <TableBody>
                 {filteredRecords.length === 0 ? (
-                  <TableRow><TableCell colSpan={10} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı. Veri ekleyin.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={11} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı. Veri ekleyin.</TableCell></TableRow>
                 ) : filteredRecords.map((r: any) => {
                   const srcName = getSourceName(r.meterId);
                   const suName = getSubUnitName(r.meterId);
+                  const grpName = getGroupName(r.meterId);
                   const m = (allMeters ?? []).find(m => m.id === r.meterId);
                   return (
                     <TableRow key={r.id}>
                       <TableCell>
                         {srcName && <Badge className={`text-xs ${TYPE_COLORS[m?.type ?? "diger"]}`} variant="outline">{srcName}</Badge>}
                       </TableCell>
+                      <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">{grpName ?? <span className="opacity-40">—</span>}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">{suName ?? "—"}</TableCell>
                       <TableCell className="font-medium text-sm">{r.meterName ?? "—"}</TableCell>
                       <TableCell className="text-sm">{MONTHS[(r.month ?? 1) - 1]}</TableCell>
