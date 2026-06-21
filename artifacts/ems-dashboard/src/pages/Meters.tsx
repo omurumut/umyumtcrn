@@ -42,15 +42,34 @@ interface SubUnit { id: number; name: string; city: string; }
 interface EnergySource { id: number; type: string; name: string; unit: string; }
 interface EnergyUseGroup { id: number; name: string; groupType: string; isActive: boolean; }
 
+// UI'da kullanıcıya gösterilen 2 seçenek; backend'e uiRecordType olarak gönderilir
+const UI_RECORD_TYPES = [
+  { value: "measurement", label: "Ölçüm Noktası", description: "Fiziksel veya sanal sayaç" },
+  { value: "manual", label: "Manuel / Fatura / Tahmini Tüketim", description: "Fatura bazlı, manuel veya hesaplanan tüketim" },
+] as const;
+
+// DB'deki 5 tip → UI 2 seçeneğe dönüştürme
+function dbToUiRecordType(rt: string | null | undefined): "measurement" | "manual" {
+  if (!rt) return "measurement";
+  return ["invoice_based", "manual_consumption_point", "calculated"].includes(rt) ? "manual" : "measurement";
+}
+
+// Liste ekranında gösterilecek sade etiket
+function uiRecordTypeLabel(rt: string | null | undefined): string {
+  return dbToUiRecordType(rt) === "manual" ? "Manuel Tüketim Noktası" : "Ölçüm Noktası";
+}
+
 interface MeterForm {
   name: string; type: string; energySourceId: string; subUnitId: string;
   location: string; city: string; unit: string; description: string;
   unitId: string; energyUseGroupId: string;
+  uiRecordType: "measurement" | "manual";
 }
 const EMPTY_FORM: MeterForm = {
   name: "", type: "elektrik", energySourceId: "", subUnitId: "",
   location: "", city: "İstanbul", unit: "kWh", description: "",
   unitId: "", energyUseGroupId: "",
+  uiRecordType: "measurement",
 };
 
 interface QuickGroupForm {
@@ -146,6 +165,7 @@ export default function Meters() {
       subUnitId: d.subUnitId || undefined,
       energySourceId: d.energySourceId || undefined,
       energyUseGroupId: d.energyUseGroupId || undefined,
+      uiRecordType: d.uiRecordType,
     }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["meters"] }); setOpen(false); toast({ title: "Sayaç eklendi" }); },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
@@ -158,6 +178,7 @@ export default function Meters() {
       subUnitId: d.subUnitId || null,
       energySourceId: d.energySourceId || null,
       energyUseGroupId: d.energyUseGroupId || null,
+      uiRecordType: d.uiRecordType,
     }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["meters"] }); setOpen(false); toast({ title: "Sayaç güncellendi" }); },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
@@ -209,6 +230,7 @@ export default function Meters() {
       unit: m.unit, description: m.description ?? "",
       unitId: m.unitId?.toString() ?? "",
       energyUseGroupId: m.energyUseGroupId?.toString() ?? "",
+      uiRecordType: dbToUiRecordType(m.recordType),
     });
     setOpen(true);
   }
@@ -310,14 +332,23 @@ export default function Meters() {
                   </Badge>
                 </div>
                 {m.energyUseGroupName && (
-                  <div className="flex items-center gap-1 text-xs text-muted-foreground mb-2">
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
                     <Layers className="h-3 w-3 shrink-0" />
                     <span className="truncate">{m.energyUseGroupName}</span>
                   </div>
                 )}
                 {!m.energyUseGroupName && (
-                  <div className="text-xs text-muted-foreground/50 mb-2">Grup yok</div>
+                  <div className="text-xs text-muted-foreground/50 mb-1">Grup yok</div>
                 )}
+                <div className="mb-2">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                    dbToUiRecordType(m.recordType) === "manual"
+                      ? "bg-orange-500/10 text-orange-400 border-orange-500/20"
+                      : "bg-teal-500/10 text-teal-400 border-teal-500/20"
+                  }`}>
+                    {uiRecordTypeLabel(m.recordType)}
+                  </span>
+                </div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="text-xs bg-secondary text-secondary-foreground px-2 py-0.5 rounded font-mono">{m.unit}</span>
@@ -391,6 +422,22 @@ export default function Meters() {
                   <Plus className="h-3.5 w-3.5" /> Yeni
                 </Button>
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Kayıt Tipi *</Label>
+              <Select value={form.uiRecordType} onValueChange={v => setForm(f => ({ ...f, uiRecordType: v as "measurement" | "manual" }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {UI_RECORD_TYPES.map(rt => (
+                    <SelectItem key={rt.value} value={rt.value}>
+                      <div>
+                        <div className="font-medium text-sm">{rt.label}</div>
+                        <div className="text-xs text-muted-foreground">{rt.description}</div>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-1.5">
               <Label>Sayaç Adı *</Label>

@@ -24,6 +24,7 @@ router.get("/meters", requireAuth, async (req, res) => {
         energyUseGroupId: metersTable.energyUseGroupId,
         name: metersTable.name,
         type: metersTable.type,
+        recordType: metersTable.recordType,
         location: metersTable.location,
         city: metersTable.city,
         unit: metersTable.unit,
@@ -64,10 +65,11 @@ router.get("/meters", requireAuth, async (req, res) => {
 router.post("/meters", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId } = req.body;
+    const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId, uiRecordType } = req.body;
     if (!name || !type || !location || !unit) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
     }
+    const recordType = uiRecordType === "manual" ? "manual_consumption_point" : "physical_meter";
     const parsedUnitId = unitId ? parseInt(unitId) : null;
 
     // Normal kullanıcı: sadece kendi birimine ekleyebilir
@@ -104,7 +106,7 @@ router.post("/meters", requireAuth, async (req, res) => {
     }
 
     const [meter] = await db.insert(metersTable).values({
-      name, type, location,
+      name, type, recordType, location,
       city: city || "Istanbul",
       unit, description: description || null,
       unitId: parsedUnitId,
@@ -153,10 +155,11 @@ router.patch("/meters/:id", requireAuth, async (req, res) => {
     if (role === "admin" && existing.companyId !== sessionCompanyId) {
       res.status(403).json({ error: "Bu sayacı düzenleme yetkiniz yok" }); return;
     }
-    const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId } = req.body;
+    const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId, uiRecordType } = req.body;
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
     if (type !== undefined) updates.type = type;
+    if (uiRecordType !== undefined) updates.recordType = uiRecordType === "manual" ? "manual_consumption_point" : "physical_meter";
     if (location !== undefined) updates.location = location;
     if (city !== undefined) updates.city = city;
     if (unit !== undefined) updates.unit = unit;

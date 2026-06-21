@@ -116,6 +116,7 @@ export const metersTable = pgTable("meters", {
   energyUseGroupId: integer("energy_use_group_id").references(() => energyUseGroupsTable.id, { onDelete: "set null" }),
   name: text("name").notNull(),
   type: text("type").notNull(), // elektrik | dogalgaz | buhar | su | diger
+  recordType: text("record_type").notNull().default("physical_meter"), // physical_meter | virtual_meter | invoice_based | manual_consumption_point | calculated
   location: text("location").notNull(),
   city: text("city").notNull().default("Istanbul"),
   unit: text("unit").notNull(), // kWh | m3 | ton | litre
