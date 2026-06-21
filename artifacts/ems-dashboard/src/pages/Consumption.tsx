@@ -113,14 +113,26 @@ export default function Consumption() {
   const consParams = new URLSearchParams();
   consParams.set("year", year.toString());
   if (filterMeter !== "all") consParams.set("meterId", filterMeter);
-  else if (filteredMeters.length > 0 && filteredMeters.length < 100) {
-    // no additional filtering - handled client side
-  }
   const { data: records, isLoading } = useQuery<any[]>({
     queryKey: ["consumption", year, filterMeter, filterEnergySource, filterSubUnit],
     queryFn: () => apiFetch(token, `/api/consumption?${consParams}`),
     enabled: !!token,
   });
+
+  const prevParams = new URLSearchParams();
+  prevParams.set("year", (year - 1).toString());
+  if (filterMeter !== "all") prevParams.set("meterId", filterMeter);
+  const { data: prevRecords } = useQuery<any[]>({
+    queryKey: ["consumption", year - 1, filterMeter, filterEnergySource, filterSubUnit],
+    queryFn: () => apiFetch(token, `/api/consumption?${prevParams}`),
+    enabled: !!token,
+  });
+
+  const prevMap: Record<number, Record<number, number>> = {};
+  for (const r of Array.isArray(prevRecords) ? prevRecords : []) {
+    if (!prevMap[r.meterId]) prevMap[r.meterId] = {};
+    prevMap[r.meterId][r.month] = r.kwh ?? 0;
+  }
 
   const filteredRecords = (Array.isArray(records) ? records : []).filter(r => {
     if (filterMeter !== "all") return r.meterId?.toString() === filterMeter;
@@ -364,12 +376,13 @@ export default function Consumption() {
                   <TableHead className="text-right">CO₂ (ton)</TableHead>
                   <TableHead className="text-right">HDD</TableHead>
                   <TableHead className="text-right">CDD</TableHead>
+                  <TableHead className="text-right">YoY %</TableHead>
                   <TableHead className="text-right w-20"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredRecords.length === 0 ? (
-                  <TableRow><TableCell colSpan={11} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı. Veri ekleyin.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={12} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı. Veri ekleyin.</TableCell></TableRow>
                 ) : filteredRecords.map((r: any) => {
                   const srcName = getSourceName(r.meterId);
                   const suName = getSubUnitName(r.meterId);
@@ -389,6 +402,18 @@ export default function Consumption() {
                       <TableCell className="text-right font-mono text-sm">{(r.co2 ?? 0).toFixed(2)}</TableCell>
                       <TableCell className="text-right text-sm">{r.hdd ?? "—"}</TableCell>
                       <TableCell className="text-right text-sm">{r.cdd ?? "—"}</TableCell>
+                      <TableCell className="text-right text-sm font-mono">
+                        {(() => {
+                          const prev = prevMap[r.meterId]?.[r.month];
+                          if (prev === undefined || prev === null) return <span className="text-muted-foreground opacity-40">—</span>;
+                          if (prev === 0) return <span className="text-muted-foreground opacity-40">—</span>;
+                          const pct = ((r.kwh - prev) / prev) * 100;
+                          const abs = Math.abs(pct).toFixed(1);
+                          if (pct > 0) return <span className="text-red-400">▲ {abs}%</span>;
+                          if (pct < 0) return <span className="text-emerald-400">▼ {abs}%</span>;
+                          return <span className="text-muted-foreground">= 0%</span>;
+                        })()}
+                      </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
                           <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => openEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>
@@ -418,7 +443,7 @@ export default function Consumption() {
                       <TableCell className="text-right font-mono">
                         {totalCo2.toFixed(2)}
                       </TableCell>
-                      <TableCell colSpan={3} />
+                      <TableCell colSpan={4} />
                     </TableRow>
                   </TableFooter>
                 );
