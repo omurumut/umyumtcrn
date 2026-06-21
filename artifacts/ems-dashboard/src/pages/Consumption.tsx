@@ -11,9 +11,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Pencil, Trash2, Loader2, Building2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Building2, Upload } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useYear } from "@/context/YearContext";
+import ConsumptionImport from "@/components/ConsumptionImport";
 
 const MONTHS = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"];
 const TYPE_COLORS: Record<string, string> = {
@@ -58,6 +59,7 @@ export default function Consumption() {
   const [filterSubUnit, setFilterSubUnit] = useState("all");
   const [filterMeter, setFilterMeter] = useState("all");
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM(year));
   const [formEnergySource, setFormEnergySource] = useState("");
@@ -240,7 +242,10 @@ export default function Consumption() {
           <h1 className="text-2xl font-bold">Tüketim Verileri</h1>
           <p className="text-sm text-muted-foreground mt-1">{year} yılı enerji tüketim kayıtları</p>
         </div>
-        <Button onClick={openCreate} className="gap-2"><Plus className="h-4 w-4" /> Veri Ekle</Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)} className="gap-2"><Upload className="h-4 w-4" /> Toplu İçe Aktar</Button>
+          <Button onClick={openCreate} className="gap-2"><Plus className="h-4 w-4" /> Veri Ekle</Button>
+        </div>
       </div>
 
       {isAdmin && unitId === null ? (
@@ -333,6 +338,8 @@ export default function Consumption() {
         </CardContent>
       </Card>
       </>)}
+
+      <ConsumptionImport open={importOpen} onOpenChange={setImportOpen} />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-lg">

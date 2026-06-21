@@ -140,6 +140,78 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/consumption/batch — toplu içe aktarma
+router.post("/consumption/batch", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const { rows } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      res.status(400).json({ error: "Geçerli satır dizisi gerekli" }); return;
+    }
+    if (rows.length > 5000) {
+      res.status(400).json({ error: "En fazla 5000 satır içe aktarılabilir" }); return;
+    }
+
+    const allMeters = await db.select().from(metersTable).where(eq(metersTable.companyId, sessionCompanyId));
+
+    let imported = 0;
+    const errors: { row: number; message: string }[] = [];
+
+    for (const [i, row] of rows.entries()) {
+      const rowNum = i + 1;
+      try {
+        let meter = allMeters.find(m => {
+          if (row.meterId) return m.id === parseInt(String(row.meterId));
+          if (row.meterName) return m.name.toLowerCase().trim() === String(row.meterName).toLowerCase().trim();
+          return false;
+        });
+        if (!meter) {
+          errors.push({ row: rowNum, message: `Sayaç bulunamadı: "${row.meterName ?? row.meterId}"` });
+          continue;
+        }
+        if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && meter.unitId !== sessionUnitId) {
+          errors.push({ row: rowNum, message: "Bu sayaç için yetkiniz yok" });
+          continue;
+        }
+        const year = parseInt(String(row.year));
+        const month = parseInt(String(row.month));
+        if (!year || !month || month < 1 || month > 12) {
+          errors.push({ row: rowNum, message: "Geçersiz yıl/ay değeri" });
+          continue;
+        }
+        const kwh = parseFloat(String(row.kwh)) || 0;
+        const tepFactor = meter.type === "dogalgaz" ? 0.00086 : 0.000086;
+        const co2Factor = meter.type === "dogalgaz" ? 0.202 : 0.4;
+        const tepVal = row.tep !== undefined && row.tep !== "" ? parseFloat(String(row.tep)) : kwh * tepFactor;
+        const co2Val = row.co2 !== undefined && row.co2 !== "" ? parseFloat(String(row.co2)) : kwh * co2Factor;
+        const hddVal = row.hdd !== undefined && row.hdd !== "" ? parseFloat(String(row.hdd)) : null;
+        const cddVal = row.cdd !== undefined && row.cdd !== "" ? parseFloat(String(row.cdd)) : null;
+
+        await db.insert(consumptionTable).values({
+          meterId: meter.id,
+          companyId: meter.companyId,
+          year,
+          month,
+          kwh,
+          tep: tepVal,
+          co2: co2Val,
+          hdd: hddVal,
+          cdd: cddVal,
+          notes: row.notes ? String(row.notes) : null,
+        });
+        imported++;
+      } catch (rowErr: any) {
+        errors.push({ row: rowNum, message: rowErr?.message ?? "Bilinmeyen hata" });
+      }
+    }
+
+    res.json({ imported, total: rows.length, errors });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
 // DELETE /api/consumption/:id
 router.delete("/consumption/:id", requireAuth, async (req, res) => {
   try {
