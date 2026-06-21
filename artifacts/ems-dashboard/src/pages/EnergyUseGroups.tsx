@@ -9,49 +9,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Plus, Pencil, Layers, Power, PowerOff } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const GROUP_TYPES = [
-  { value: "production", label: "Üretim" },
-  { value: "building", label: "Bina" },
-  { value: "utility", label: "Yardımcı Hizmet" },
-  { value: "vehicle", label: "Araç" },
-  { value: "process", label: "Proses" },
-  { value: "hvac", label: "HVAC" },
-  { value: "lighting", label: "Aydınlatma" },
-  { value: "other", label: "Diğer" },
-];
-
-const GROUP_TYPE_COLORS: Record<string, string> = {
-  production: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-  building: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-  utility: "bg-purple-500/10 text-purple-400 border-purple-500/20",
-  vehicle: "bg-orange-500/10 text-orange-400 border-orange-500/20",
-  process: "bg-cyan-500/10 text-cyan-400 border-cyan-500/20",
-  hvac: "bg-sky-500/10 text-sky-400 border-sky-500/20",
-  lighting: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
-  other: "bg-slate-500/10 text-slate-400 border-slate-500/20",
-};
-
-function groupTypeLabel(v: string) {
-  return GROUP_TYPES.find(g => g.value === v)?.label ?? v;
-}
-
 interface SubUnit { id: number; name: string; }
 interface EnergySource { id: number; name: string; type: string; }
 
 interface GroupForm {
-  name: string; code: string; groupType: string;
+  name: string; code: string;
   energySourceId: string; unitId: string; subUnitId: string;
   description: string; isSeuCandidate: boolean; isActive: boolean;
 }
 
 const EMPTY_FORM: GroupForm = {
-  name: "", code: "", groupType: "other",
+  name: "", code: "",
   energySourceId: "", unitId: "", subUnitId: "",
   description: "", isSeuCandidate: false, isActive: true,
 };
@@ -76,7 +49,6 @@ export default function EnergyUseGroups() {
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<GroupForm>(EMPTY_FORM);
-  const [filterGroupType, setFilterGroupType] = useState("all");
   const [filterUnit, setFilterUnit] = useState("all");
   const [filterSource, setFilterSource] = useState("all");
   const [filterActive, setFilterActive] = useState("all");
@@ -98,13 +70,12 @@ export default function EnergyUseGroups() {
     enabled: !!token,
   });
 
-  const groupsKey = ["energy-use-groups", filterGroupType, filterUnit, filterSource, filterActive, companyId];
+  const groupsKey = ["energy-use-groups", filterUnit, filterSource, filterActive, companyId];
   const { data: groups, isLoading } = useQuery<any[]>({
     queryKey: groupsKey,
     queryFn: () => {
       const p = new URLSearchParams();
       if (filterActive !== "all") p.set("isActive", filterActive);
-      if (filterGroupType !== "all") p.set("groupType", filterGroupType);
       if (filterUnit !== "all") p.set("unitId", filterUnit);
       if (filterSource !== "all") p.set("energySourceId", filterSource);
       if (companyId) p.set("companyId", companyId.toString());
@@ -115,7 +86,7 @@ export default function EnergyUseGroups() {
 
   const createMut = useMutation({
     mutationFn: (d: GroupForm) => apiMutate(token, "POST", "/api/energy-use-groups", {
-      name: d.name, code: d.code || undefined, groupType: d.groupType,
+      name: d.name, code: d.code || undefined,
       energySourceId: d.energySourceId || undefined,
       unitId: d.unitId || undefined, subUnitId: d.subUnitId || undefined,
       description: d.description || undefined,
@@ -127,7 +98,7 @@ export default function EnergyUseGroups() {
 
   const updateMut = useMutation({
     mutationFn: (d: GroupForm) => apiMutate(token, "PUT", `/api/energy-use-groups/${editingId}`, {
-      name: d.name, code: d.code || undefined, groupType: d.groupType,
+      name: d.name, code: d.code || undefined,
       energySourceId: d.energySourceId || undefined,
       unitId: d.unitId || undefined, subUnitId: d.subUnitId || undefined,
       description: d.description || undefined,
@@ -154,7 +125,6 @@ export default function EnergyUseGroups() {
     setEditingId(g.id);
     setForm({
       name: g.name, code: g.code ?? "",
-      groupType: g.groupType,
       energySourceId: g.energySourceId?.toString() ?? "",
       unitId: g.unitId?.toString() ?? "",
       subUnitId: g.subUnitId?.toString() ?? "",
@@ -167,7 +137,6 @@ export default function EnergyUseGroups() {
 
   function handleSave() {
     if (!form.name.trim()) { toast({ title: "Grup adı zorunludur", variant: "destructive" }); return; }
-    if (!form.groupType) { toast({ title: "Grup tipi zorunludur", variant: "destructive" }); return; }
     editingId !== null ? updateMut.mutate(form) : createMut.mutate(form);
   }
 
@@ -199,13 +168,6 @@ export default function EnergyUseGroups() {
             <SelectItem value="false">Pasif</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={filterGroupType} onValueChange={setFilterGroupType}>
-          <SelectTrigger className="w-44"><SelectValue placeholder="Grup tipi" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Tüm Tipler</SelectItem>
-            {GROUP_TYPES.map(g => <SelectItem key={g.value} value={g.value}>{g.label}</SelectItem>)}
-          </SelectContent>
-        </Select>
         <Select value={filterUnit} onValueChange={setFilterUnit}>
           <SelectTrigger className="w-44"><SelectValue placeholder="Birim" /></SelectTrigger>
           <SelectContent>
@@ -226,7 +188,7 @@ export default function EnergyUseGroups() {
       {/* Liste */}
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-44" />)}
+          {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-36" />)}
         </div>
       ) : displayedGroups.length === 0 ? (
         <Card>
@@ -242,7 +204,7 @@ export default function EnergyUseGroups() {
             <Card key={g.id} className={`group transition-opacity ${!g.isActive ? "opacity-60" : ""}`}>
               <CardContent className="p-5">
                 <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1 min-w-0 mr-2">
+                  <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <h3 className="font-semibold text-sm truncate">{g.name}</h3>
                       {!g.isActive && (
@@ -251,12 +213,6 @@ export default function EnergyUseGroups() {
                     </div>
                     {g.code && <p className="text-xs text-muted-foreground font-mono mt-0.5">{g.code}</p>}
                   </div>
-                  <Badge
-                    className={`text-xs shrink-0 ${GROUP_TYPE_COLORS[g.groupType] ?? GROUP_TYPE_COLORS.other}`}
-                    variant="outline"
-                  >
-                    {groupTypeLabel(g.groupType)}
-                  </Badge>
                 </div>
 
                 <div className="space-y-1 text-xs text-muted-foreground">
@@ -333,16 +289,6 @@ export default function EnergyUseGroups() {
                   placeholder="ör. KD-01"
                 />
               </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>Grup Tipi *</Label>
-              <Select value={form.groupType} onValueChange={v => setForm(f => ({ ...f, groupType: v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {GROUP_TYPES.map(g => <SelectItem key={g.value} value={g.value}>{g.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
             </div>
 
             <div className="space-y-1.5">

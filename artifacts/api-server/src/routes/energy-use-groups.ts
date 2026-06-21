@@ -58,9 +58,6 @@ router.post("/energy-use-groups", requireAuth, async (req, res) => {
     if (!name || !name.trim()) {
       res.status(400).json({ error: "Grup adı zorunludur" }); return;
     }
-    if (!groupType) {
-      res.status(400).json({ error: "Grup tipi zorunludur" }); return;
-    }
 
     // Aynı companyId altında aynı name kontrolü (aktif kayıtlar)
     const existing = await db.select({ id: energyUseGroupsTable.id })
@@ -78,7 +75,7 @@ router.post("/energy-use-groups", requireAuth, async (req, res) => {
       companyId: sessionCompanyId,
       name: name.trim(),
       code: code?.trim() || null,
-      groupType,
+      groupType: groupType ?? "other",
       energySourceId: energySourceId ? parseInt(energySourceId) : null,
       unitId: unitId ? parseInt(unitId) : null,
       subUnitId: subUnitId ? parseInt(subUnitId) : null,
@@ -110,9 +107,6 @@ router.put("/energy-use-groups/:id", requireAuth, async (req, res) => {
     if (!name || !name.trim()) {
       res.status(400).json({ error: "Grup adı zorunludur" }); return;
     }
-    if (!groupType) {
-      res.status(400).json({ error: "Grup tipi zorunludur" }); return;
-    }
 
     // Mükerrer isim kontrolü (aynı isimde başka aktif grup var mı?)
     const duplicate = await db.select({ id: energyUseGroupsTable.id })
@@ -129,7 +123,7 @@ router.put("/energy-use-groups/:id", requireAuth, async (req, res) => {
     const [updated] = await db.update(energyUseGroupsTable).set({
       name: name.trim(),
       code: code?.trim() || null,
-      groupType,
+      groupType: groupType ?? existing.groupType ?? "other",
       energySourceId: energySourceId ? parseInt(energySourceId) : null,
       unitId: unitId ? parseInt(unitId) : null,
       subUnitId: subUnitId ? parseInt(subUnitId) : null,
