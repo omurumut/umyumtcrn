@@ -141,12 +141,59 @@ export const consumptionTable = pgTable("consumption", {
   hdd: real("hdd"),
   cdd: real("cdd"),
   notes: text("notes"),
+  weatherStationName: text("weather_station_name"),
+  weatherStationNote: text("weather_station_note"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const insertConsumptionSchema = createInsertSchema(consumptionTable).omit({ id: true, createdAt: true });
 export type InsertConsumption = z.infer<typeof insertConsumptionSchema>;
 export type ConsumptionRecord = typeof consumptionTable.$inferSelect;
+
+// ── MGM Stations (Global, not per company) ───────────────
+export const mgmStationsTable = pgTable("mgm_stations", {
+  id: serial("id").primaryKey(),
+  stationCode: text("station_code").notNull().unique(),
+  name: text("name").notNull(),
+  il: text("il").notNull(),
+  ilce: text("ilce"),
+  lat: real("lat").notNull(),
+  lon: real("lon").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertMgmStationSchema = createInsertSchema(mgmStationsTable).omit({ id: true, createdAt: true });
+export type InsertMgmStation = z.infer<typeof insertMgmStationSchema>;
+export type MgmStation = typeof mgmStationsTable.$inferSelect;
+
+// ── MGM Degree Data (HDD/CDD pool, global) ───────────────
+export const mgmDegreeDataTable = pgTable("mgm_degree_data", {
+  id: serial("id").primaryKey(),
+  stationCode: text("station_code").notNull(),
+  year: integer("year").notNull(),
+  month: integer("month").notNull(),
+  hdd: real("hdd").notNull().default(0),
+  cdd: real("cdd").notNull().default(0),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertMgmDegreeDataSchema = createInsertSchema(mgmDegreeDataTable).omit({ id: true });
+export type InsertMgmDegreeData = z.infer<typeof insertMgmDegreeDataSchema>;
+export type MgmDegreeData = typeof mgmDegreeDataTable.$inferSelect;
+
+// ── MGM Sync Log ─────────────────────────────────────────
+export const mgmSyncLogTable = pgTable("mgm_sync_log", {
+  id: serial("id").primaryKey(),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+  status: text("status").notNull().default("running"), // running | success | error
+  stationsSynced: integer("stations_synced").notNull().default(0),
+  errorCount: integer("error_count").notNull().default(0),
+  notes: text("notes"),
+});
+
+export type MgmSyncLog = typeof mgmSyncLogTable.$inferSelect;
 
 // ── Weather ──────────────────────────────────────────────
 export const weatherTable = pgTable("weather", {
