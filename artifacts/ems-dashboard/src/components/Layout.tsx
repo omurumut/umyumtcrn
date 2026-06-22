@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Activity, AlertTriangle, BarChart2, Building2, CloudLightning, FileText,
-  Gauge, Home, LayoutDashboard, Lightbulb, ShieldAlert, Target, User, LogOut, Globe, Building, Layers,
+  Gauge, Home, LayoutDashboard, Lightbulb, ShieldAlert, Target, User, LogOut, Globe, Building, Layers, Variable,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -30,6 +30,7 @@ const ADMIN_NAV = [
       { title: "Enerji Kullanım Grupları", url: "/enerji-kullanim-gruplari", icon: Layers },
       { title: "Sayaç Yönetimi", url: "/sayaclar", icon: Gauge },
       { title: "Tüketim Verileri", url: "/tuketim", icon: Activity },
+      { title: "Değişken Yönetimi", url: "/degiskenler", icon: Variable },
       { title: "Meteoroloji", url: "/meteoroloji", icon: CloudLightning },
       { title: "Regresyon Analizi", url: "/analiz", icon: BarChart2 },
     ],
@@ -44,6 +45,7 @@ const USER_NAV = [
       { title: "Enerji Kullanım Grupları", url: "/enerji-kullanim-gruplari", icon: Layers },
       { title: "Sayaç Yönetimi", url: "/sayaclar", icon: Gauge },
       { title: "Tüketim Verileri", url: "/tuketim", icon: Activity },
+      { title: "Değişken Yönetimi", url: "/degiskenler", icon: Variable },
       { title: "Meteoroloji", url: "/meteoroloji", icon: CloudLightning },
       { title: "Regresyon Analizi", url: "/analiz", icon: BarChart2 },
     ],

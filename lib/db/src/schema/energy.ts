@@ -307,6 +307,74 @@ export const insertEnergyTargetSchema = createInsertSchema(energyTargetsTable).o
 export type InsertEnergyTarget = z.infer<typeof insertEnergyTargetSchema>;
 export type EnergyTarget = typeof energyTargetsTable.$inferSelect;
 
+// ── Variables (Değişkenler) ───────────────────────────────
+export const variablesTable = pgTable("variables", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
+  name: text("name").notNull(),
+  code: text("code"),
+  category: text("category").notNull().default("operational"), // climate | operational | production | calculated | other
+  unitLabel: text("unit_label"), // ölçü birimi etiketi (adet, saat, ton, vb.)
+  variableType: text("variable_type").notNull().default("numeric"), // numeric | percentage | boolean
+  sourceType: text("source_type").notNull().default("operation_manual"), // weather_auto | weather_manual | production_manual | operation_manual | calculated
+  scopeType: text("scope_type").notNull().default("company"), // company | unit | sub_unit | meter
+  description: text("description"),
+  isSystemVariable: boolean("is_system_variable").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertVariableSchema = createInsertSchema(variablesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertVariable = z.infer<typeof insertVariableSchema>;
+export type Variable = typeof variablesTable.$inferSelect;
+
+// ── Variable Values (Değişken Değerleri) ──────────────────
+export const variableValuesTable = pgTable("variable_values", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
+  variableId: integer("variable_id").references(() => variablesTable.id, { onDelete: "cascade" }).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "set null" }),
+  subUnitId: integer("sub_unit_id").references(() => subUnitsTable.id, { onDelete: "set null" }),
+  meterId: integer("meter_id").references(() => metersTable.id, { onDelete: "set null" }),
+  periodStart: text("period_start").notNull(), // ISO date string YYYY-MM-DD
+  periodEnd: text("period_end").notNull(),
+  periodType: text("period_type").notNull().default("monthly"), // daily | monthly | yearly
+  value: real("value").notNull(),
+  source: text("source"),
+  locationProvince: text("location_province"),
+  locationDistrict: text("location_district"),
+  dataQuality: text("data_quality"), // good | estimated | uncertain
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertVariableValueSchema = createInsertSchema(variableValuesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertVariableValue = z.infer<typeof insertVariableValueSchema>;
+export type VariableValue = typeof variableValuesTable.$inferSelect;
+
+// ── Weather Degree Days (İklim Veri Tablosu) ──────────────
+export const weatherDegreeDaysTable = pgTable("weather_degree_days", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id),
+  province: text("province").notNull(),
+  district: text("district"),
+  date: text("date").notNull(), // YYYY-MM for monthly, YYYY for yearly
+  periodType: text("period_type").notNull().default("monthly"), // daily | monthly | yearly
+  baseTemperatureHeating: real("base_temperature_heating").notNull().default(18),
+  baseTemperatureCooling: real("base_temperature_cooling").notNull().default(22),
+  hdd: real("hdd").notNull().default(0),
+  cdd: real("cdd").notNull().default(0),
+  avgTemperature: real("avg_temperature"),
+  source: text("source").notNull().default("mgm"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertWeatherDegreeDaySchema = createInsertSchema(weatherDegreeDaysTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertWeatherDegreeDay = z.infer<typeof insertWeatherDegreeDaySchema>;
+export type WeatherDegreeDay = typeof weatherDegreeDaysTable.$inferSelect;
+
 // ── Reports ───────────────────────────────────────────────
 export const reportsTable = pgTable("reports", {
   id: serial("id").primaryKey(),

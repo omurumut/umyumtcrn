@@ -20,6 +20,7 @@ import targetsRouter from "./targets";
 import companiesRouter from "./companies";
 import energyUseGroupsRouter from "./energy-use-groups";
 import mgmRouter from "./mgm";
+import variablesRouter from "./variables";
 
 const router: IRouter = Router();
 
@@ -44,5 +45,6 @@ router.use(seedRouter);
 router.use(targetsRouter);
 router.use(companiesRouter);
 router.use(mgmRouter);
+router.use(variablesRouter);
 
 export default router;

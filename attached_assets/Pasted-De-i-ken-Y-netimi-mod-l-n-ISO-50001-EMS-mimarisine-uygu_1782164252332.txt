@@ -1,0 +1,137 @@
+Değişken Yönetimi modülünü ISO 50001 EMS mimarisine uygun şekilde geliştir.
+
+Amaç:
+Enerji tüketimini etkileyen değişkenlerin tanımlanması, dönemsel değerlerinin girilmesi ve özellikle HDD/CDD iklim değişkenlerinin sayaç lokasyonuna göre yönetilmesi.
+
+Genel kurgu:
+- Değişkenler company bazlı multi-tenant yapıda tutulmalı.
+- HDD ve CDD sistem değişkeni olarak hazır gelmeli.
+- Kullanıcı HDD/CDD değişkenlerini silememeli, sadece aktif/pasif yapabilmeli.
+- Kullanıcı operasyonel değişkenler tanımlayabilmeli: üretim miktarı, çalışma saati, vardiya sayısı, doluluk oranı vb.
+- Değişken değerleri dönemsel olarak girilebilmeli.
+- Değişken değerleri şirket, birim, alt birim veya sayaç bazında ilişkilendirilebilmeli.
+.
+
+Backend:
+Aşağıdaki tabloları Drizzle ORM ile oluştur veya mevcut yapıya uygun şekilde genişlet:
+
+1. variables
+Alanlar:
+- id
+- companyId
+- name
+- code
+- category: climate | operational | production | calculated | other
+- unitId nullable
+- variableType
+- sourceType: weather_auto | weather_manual | production_manual | operation_manual | calculated
+- scopeType: company | unit | sub_unit | meter
+- description nullable
+- isSystemVariable boolean
+- isActive boolean
+- createdAt
+- updatedAt
+
+2. variable_values
+Alanlar:
+- id
+- companyId
+- variableId
+- unitId nullable
+- subUnitId nullable
+- meterId nullable
+- periodStart
+- periodEnd
+- periodType: daily | monthly | yearly
+- value numeric
+- source
+- locationProvince nullable
+- locationDistrict nullable
+- dataQuality nullable
+- createdAt
+- updatedAt
+
+3. weather_degree_days
+Alanlar:
+- id
+- companyId nullable olabilir
+- province
+- district
+- date
+- periodType
+- baseTemperatureHeating
+- baseTemperatureCooling
+- hdd
+- cdd
+- avgTemperature nullable
+- source
+- createdAt
+- updatedAt
+
+API endpointleri:
+- GET /api/variables
+- POST /api/variables
+- PUT /api/variables/:id
+- DELETE /api/variables/:id
+- GET /api/variable-values
+- POST /api/variable-values
+- PUT /api/variable-values/:id
+- DELETE /api/variable-values/:id
+- GET /api/weather-degree-days
+
+Kurallar:
+- Sistem değişkenleri silinemez.
+- HDD ve CDD her company için otomatik seed edilmeli.
+- Şirket oluşturulduğunda veya ilk girişte HDD/CDD değişkenleri yoksa oluşturulmalı.
+- Kullanıcı sadece kendi companyId verilerini görebilmeli.
+- Tüm endpointlerde authentication ve company isolation korunmalı.
+
+Frontend:
+Değişken Yönetimi adında yeni modül oluştur.
+
+Sekmeler:
+1. Değişkenler
+2. Değer Girişi
+3. İklim Verileri
+
+Değişkenler ekranı:
+- Değişken adı
+- Kategori
+- Birim
+- Kaynak
+- Kapsam
+- Aktif/Pasif
+- İşlemler
+
+Değişken tanımlama formu:
+- Değişken adı
+- Kategori
+- Ölçü birimi
+- Veri kaynağı
+- Kapsam tipi
+- Açıklama
+- Aktif/Pasif
+
+Değer girişi ekranı:
+- Dönem başlangıç
+- Dönem bitiş
+- Değişken seçimi
+- Kapsam seçimi: şirket / birim / alt birim / sayaç
+- Değer
+- Kaynak açıklaması
+
+İklim verileri ekranı:
+- Sayaç
+- Sayaç lokasyonu
+- Dönem
+- HDD
+- CDD
+- Veri kaynağı
+- Son güncelleme
+
+
+Önemli:
+
+- UI sade ve kullanıcı dostu olsun.
+- Kullanıcıya teknik sourceType detaylarını karmaşık göstermeyin.
+- Kod mevcut proje mimarisine, uygun geliştirilsin.
