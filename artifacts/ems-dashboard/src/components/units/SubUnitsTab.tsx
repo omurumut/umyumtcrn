@@ -13,7 +13,8 @@ import { Switch } from "@/components/ui/switch";
 import { Plus, Pencil, Trash2, MapPin, Building2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { IL_NAMES, getIlceler, parseIlIlce, buildCityValue } from "@/data/turkiyeIlIlce";
+import { parseIlIlce, buildCityValue } from "@/data/turkiyeIlIlce";
+import { IlIlceSelector } from "@/components/ui/IlIlceSelector";
 
 interface SubUnit { id: number; unitId: number; companyId: number; name: string; city: string; description?: string | null; active: boolean; }
 interface SubUnitForm { unitId: string; name: string; city: string; il: string; ilce: string; description: string; active: boolean; }
@@ -158,26 +159,14 @@ export default function SubUnitsTab({ unitId }: { unitId?: number }) {
               <Label>Alt Birim / Lokasyon Adı *</Label>
               <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="ör. A Blok, Üretim Sahası, Depo 2" />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>İl * (HDD/CDD için)</Label>
-                <Select value={form.il} onValueChange={v => setForm(f => ({ ...f, il: v, ilce: "" }))}>
-                  <SelectTrigger><SelectValue placeholder="İl seçin" /></SelectTrigger>
-                  <SelectContent className="max-h-60">
-                    {IL_NAMES.map(il => <SelectItem key={il} value={il}>{il}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label>İlçe</Label>
-                <Select value={form.ilce} onValueChange={v => setForm(f => ({ ...f, ilce: v }))} disabled={!form.il}>
-                  <SelectTrigger><SelectValue placeholder="İlçe seçin" /></SelectTrigger>
-                  <SelectContent className="max-h-60">
-                    {getIlceler(form.il).map(ilce => <SelectItem key={ilce} value={ilce}>{ilce}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            <IlIlceSelector
+              il={form.il}
+              ilce={form.ilce}
+              onIlChange={v => setForm(f => ({ ...f, il: v, ilce: "" }))}
+              onIlceChange={v => setForm(f => ({ ...f, ilce: v }))}
+              ilLabel="İl (HDD/CDD için)"
+              ilRequired
+            />
             <div className="space-y-1.5">
               <Label>Açıklama</Label>
               <Input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="İsteğe bağlı" />

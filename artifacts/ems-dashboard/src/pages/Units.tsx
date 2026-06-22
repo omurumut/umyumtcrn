@@ -26,7 +26,8 @@ import { useToast } from "@/hooks/use-toast";
 import SubUnitsTab from "@/components/units/SubUnitsTab";
 import EnergySourcesTab from "@/components/units/EnergySourcesTab";
 import UsersTab from "@/components/units/UsersTab";
-import { IL_NAMES, getIlceler, parseIlIlce, buildCityValue } from "@/data/turkiyeIlIlce";
+import { parseIlIlce, buildCityValue } from "@/data/turkiyeIlIlce";
+import { IlIlceSelector } from "@/components/ui/IlIlceSelector";
 
 const UNIT_TYPES = [
   { value: "fabrika", label: "Fabrika" },
@@ -381,26 +382,13 @@ function AdminUnitsTab() {
               <Label>Lokasyon / Adres *</Label>
               <Input value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="ör. Organize Sanayi Bölgesi, Blok 5" />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>İl *</Label>
-                <Select value={form.il} onValueChange={v => setForm(f => ({ ...f, il: v, ilce: "" }))}>
-                  <SelectTrigger><SelectValue placeholder="İl seçin" /></SelectTrigger>
-                  <SelectContent className="max-h-60">
-                    {IL_NAMES.map(il => <SelectItem key={il} value={il}>{il}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label>İlçe</Label>
-                <Select value={form.ilce} onValueChange={v => setForm(f => ({ ...f, ilce: v }))} disabled={!form.il}>
-                  <SelectTrigger><SelectValue placeholder="İlçe seçin" /></SelectTrigger>
-                  <SelectContent className="max-h-60">
-                    {getIlceler(form.il).map(ilce => <SelectItem key={ilce} value={ilce}>{ilce}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            <IlIlceSelector
+              il={form.il}
+              ilce={form.ilce}
+              onIlChange={v => setForm(f => ({ ...f, il: v, ilce: "" }))}
+              onIlceChange={v => setForm(f => ({ ...f, ilce: v }))}
+              ilRequired
+            />
             <div className="space-y-1.5">
               <Label>Sorumlu Kişi</Label>
               <Input value={form.responsible} onChange={e => setForm(f => ({ ...f, responsible: e.target.value }))} placeholder="ör. Enerji Yöneticisi" />
