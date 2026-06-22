@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { useAuth } from "@/context/AuthContext";
 import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
@@ -11,10 +11,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Pencil, Trash2, Gauge, MapPin, CloudLightning, Layers } from "lucide-react";
+import { Plus, Pencil, Trash2, Gauge, MapPin, CloudLightning, Layers, Download, Upload, FileSpreadsheet, CheckCircle2, AlertCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { parseIlIlce, buildCityValue } from "@/data/turkiyeIlIlce";
 import { IlIlceSelector } from "@/components/ui/IlIlceSelector";
+import * as XLSX from "xlsx";
 
 const TYPE_COLORS: Record<string, string> = {
   elektrik: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
@@ -97,6 +98,10 @@ export default function Meters() {
   const [form, setForm] = useState<MeterForm>(EMPTY_FORM);
   const [filterSubUnit, setFilterSubUnit] = useState("all");
   const [filterSource, setFilterSource] = useState("all");
+  const [importOpen, setImportOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ success: number; errors: string[] } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Hızlı grup oluşturma modali
   const [quickGroupOpen, setQuickGroupOpen] = useState(false);
@@ -268,6 +273,110 @@ export default function Meters() {
     quickGroupMut.mutate(quickGroupForm);
   }
 
+  function handleExport() {
+    if (!filteredMeters.length) { toast({ title: "Dışa aktarılacak sayaç yok", variant: "destructive" }); return; }
+    const rows = filteredMeters.map((m: any) => {
+      const parsed = parseIlIlce(m.city ?? "");
+      return {
+        "Sayaç Adı": m.name,
+        "Kayıt Tipi": dbToUiRecordType(m.recordType) === "manual" ? "manuel" : "olcum",
+        "Enerji Kaynağı": m.energySourceName ?? "",
+        "Alt Birim": m.subUnitName ?? "",
+        "Enerji Kullanım Grubu": m.energyUseGroupName ?? "",
+        "İl": parsed.il || m.city || "",
+        "İlçe": parsed.ilce || "",
+        "Açıklama": m.description ?? "",
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [{ wch: 30 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 15 }, { wch: 15 }, { wch: 30 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sayaçlar");
+    XLSX.writeFile(wb, "sayaclar.xlsx");
+    toast({ title: `${rows.length} sayaç dışa aktarıldı` });
+  }
+
+  function downloadTemplate() {
+    const rows = [
+      {
+        "Sayaç Adı": "Ana Elektrik Panosu",
+        "Kayıt Tipi": "olcum",
+        "Enerji Kaynağı": (energySources ?? [])[0]?.name ?? "",
+        "Alt Birim": (subUnits ?? [])[0]?.name ?? "",
+        "Enerji Kullanım Grubu": "",
+        "İl": "İstanbul",
+        "İlçe": "Beşiktaş",
+        "Açıklama": "İsteğe bağlı açıklama",
+      },
+    ];
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [{ wch: 30 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 15 }, { wch: 15 }, { wch: 30 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Şablon");
+    XLSX.writeFile(wb, "sayac_sablonu.xlsx");
+  }
+
+  async function handleImportFile(file: File) {
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const data = await file.arrayBuffer();
+      const wb = XLSX.read(data);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws) as any[];
+      if (!rows.length) { setImportResult({ success: 0, errors: ["Dosyada veri satırı bulunamadı"] }); setImporting(false); return; }
+
+      let success = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const rowNum = i + 2;
+        const name = row["Sayaç Adı"]?.toString().trim();
+        if (!name) { errors.push(`Satır ${rowNum}: "Sayaç Adı" sütunu boş`); continue; }
+
+        const esName = row["Enerji Kaynağı"]?.toString().trim();
+        const es = esName ? (energySources ?? []).find((s: EnergySource) => s.name === esName) : undefined;
+
+        const suName = row["Alt Birim"]?.toString().trim();
+        const su = suName ? (subUnits ?? []).find((s: SubUnit) => s.name === suName) : undefined;
+
+        const eugName = row["Enerji Kullanım Grubu"]?.toString().trim();
+        const eug = eugName ? (energyUseGroups ?? []).find((g: EnergyUseGroup) => g.name === eugName) : undefined;
+
+        const uiRecordType = row["Kayıt Tipi"]?.toString().trim() === "manuel" ? "manual" : "measurement";
+        const il = row["İl"]?.toString().trim() || "İstanbul";
+        const ilce = row["İlçe"]?.toString().trim() || "";
+        const city = buildCityValue(il, ilce);
+
+        try {
+          await apiMutate(token, "POST", "/api/meters", {
+            name,
+            type: es?.type ?? "diger",
+            unit: es?.unit ?? "kWh",
+            city,
+            description: row["Açıklama"]?.toString().trim() || undefined,
+            unitId: workingUnitId,
+            subUnitId: su?.id || undefined,
+            energySourceId: es?.id || undefined,
+            energyUseGroupId: eug?.id || undefined,
+            uiRecordType,
+          });
+          success++;
+        } catch (e: any) {
+          errors.push(`Satır ${rowNum} (${name}): ${e.message}`);
+        }
+      }
+
+      queryClient.invalidateQueries({ queryKey: ["meters"] });
+      setImportResult({ success, errors });
+    } catch {
+      setImportResult({ success: 0, errors: ["Dosya okunamadı veya desteklenmeyen format"] });
+    } finally {
+      setImporting(false);
+    }
+  }
+
   const filteredMeters = meters ?? [];
 
   return (
@@ -277,9 +386,18 @@ export default function Meters() {
           <h1 className="text-2xl font-bold">Sayaç Yönetimi</h1>
           <p className="text-sm text-muted-foreground mt-1">Enerji ölçüm cihazlarını yönetin</p>
         </div>
-        <Button onClick={openCreate} className="gap-2" disabled={workingUnitId === undefined && isAdmin}>
-          <Plus className="h-4 w-4" /> Yeni Sayaç
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="gap-2" onClick={handleExport} disabled={!filteredMeters.length}>
+            <Download className="h-4 w-4" /> Dışa Aktar
+          </Button>
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => { setImportResult(null); setImportOpen(true); }} disabled={workingUnitId === undefined && isAdmin}>
+            <Upload className="h-4 w-4" /> İçe Aktar
+          </Button>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleImportFile(f); e.target.value = ""; }} />
+          <Button onClick={openCreate} className="gap-2" disabled={workingUnitId === undefined && isAdmin}>
+            <Plus className="h-4 w-4" /> Yeni Sayaç
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -471,6 +589,59 @@ export default function Meters() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>İptal</Button>
             <Button onClick={handleSave} disabled={createMut.isPending || updateMut.isPending}>{editing !== null ? "Güncelle" : "Ekle"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* İçe Aktarma Dialogu */}
+      <Dialog open={importOpen} onOpenChange={o => { if (!importing) setImportOpen(o); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><FileSpreadsheet className="h-5 w-5" /> Excel ile Toplu Sayaç İçe Aktar</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-2">
+            {!importResult ? (
+              <>
+                <p className="text-sm text-muted-foreground">Şablonu indirip doldurun, ardından dosyayı yükleyin. Sütunlar: <span className="font-mono text-xs">Sayaç Adı, Kayıt Tipi, Enerji Kaynağı, Alt Birim, Enerji Kullanım Grubu, İl, İlçe, Açıklama</span></p>
+                <div className="bg-muted/40 rounded-lg p-3 text-xs space-y-1">
+                  <p><span className="font-medium">Kayıt Tipi:</span> <code>olcum</code> veya <code>manuel</code></p>
+                  <p><span className="font-medium">Enerji Kaynağı / Alt Birim:</span> sistemdeki isimle tam eşleşmeli</p>
+                  <p><span className="font-medium">İl / İlçe:</span> Türkiye il/ilçe adları</p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" className="gap-2 flex-1" onClick={downloadTemplate}>
+                    <Download className="h-4 w-4" /> Şablon İndir (.xlsx)
+                  </Button>
+                  <Button size="sm" className="gap-2 flex-1" onClick={() => fileInputRef.current?.click()} disabled={importing}>
+                    <Upload className="h-4 w-4" /> {importing ? "Yükleniyor..." : "Dosya Seç & Yükle"}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-3">
+                {importResult.success > 0 && (
+                  <div className="flex items-center gap-2 text-sm text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2">
+                    <CheckCircle2 className="h-4 w-4 shrink-0" />
+                    <span><strong>{importResult.success}</strong> sayaç başarıyla eklendi</span>
+                  </div>
+                )}
+                {importResult.errors.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 text-sm text-destructive">
+                      <AlertCircle className="h-4 w-4 shrink-0" />
+                      <span>{importResult.errors.length} satırda hata</span>
+                    </div>
+                    <div className="max-h-40 overflow-y-auto rounded-lg border border-destructive/20 bg-destructive/5 p-2 space-y-1">
+                      {importResult.errors.map((e, i) => <p key={i} className="text-xs text-destructive/80">{e}</p>)}
+                    </div>
+                  </div>
+                )}
+                <Button variant="outline" size="sm" className="w-full gap-2" onClick={() => fileInputRef.current?.click()}>
+                  <Upload className="h-4 w-4" /> Başka Dosya Yükle
+                </Button>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importing}>Kapat</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
