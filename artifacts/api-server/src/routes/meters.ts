@@ -66,7 +66,7 @@ router.post("/meters", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId, uiRecordType } = req.body;
-    if (!name || !type || !location || !unit) {
+    if (!name || !type || !unit) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
     }
     const recordType = uiRecordType === "manual" ? "manual_consumption_point" : "physical_meter";
