@@ -12,7 +12,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Pencil, Trash2, Loader2, Building2, Upload, Download, FileSpreadsheet, FileText } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Building2, Upload, Download, FileSpreadsheet, FileText, CheckSquare } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { useYear } from "@/context/YearContext";
 import ConsumptionImport from "@/components/ConsumptionImport";
@@ -63,6 +64,8 @@ export default function Consumption() {
   const [open, setOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM(year));
   const [formEnergySource, setFormEnergySource] = useState("");
   const [formSubUnit, setFormSubUnit] = useState("");
@@ -271,6 +274,45 @@ export default function Consumption() {
     });
   }
 
+  const allVisibleIds = filteredRecords.map((r: any) => r.id);
+  const allSelected = allVisibleIds.length > 0 && allVisibleIds.every((id: number) => selectedIds.has(id));
+  const someSelected = allVisibleIds.some((id: number) => selectedIds.has(id));
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(allVisibleIds));
+    }
+  }
+
+  function toggleSelect(id: number) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  async function handleBulkDelete() {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`${selectedIds.size} kayıt kalıcı olarak silinsin mi?`)) return;
+    setBulkDeleting(true);
+    const ids = Array.from(selectedIds);
+    let failed = 0;
+    await Promise.all(ids.map(id =>
+      apiMutate(token, "DELETE", `/api/consumption/${id}`).catch(() => { failed++; })
+    ));
+    await queryClient.invalidateQueries({ queryKey: ["consumption"] });
+    setSelectedIds(new Set());
+    setBulkDeleting(false);
+    if (failed === 0) {
+      toast({ title: `${ids.length} kayıt silindi` });
+    } else {
+      toast({ title: `${ids.length - failed} silindi, ${failed} başarısız`, variant: "destructive" });
+    }
+  }
+
   function exportExcel() {
     const rows = buildExportRows();
     const ws = XLSX.utils.json_to_sheet(rows);
@@ -356,6 +398,22 @@ export default function Consumption() {
           </SelectContent>
         </Select>
         <span className="text-sm text-muted-foreground">{filteredRecords.length} kayıt</span>
+        {selectedIds.size > 0 && (
+          <div className="flex items-center gap-2 ml-auto bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-1.5">
+            <CheckSquare className="h-4 w-4 text-destructive" />
+            <span className="text-sm font-medium text-destructive">{selectedIds.size} kayıt seçildi</span>
+            <Button
+              size="sm" variant="destructive" className="h-7 gap-1.5 text-xs"
+              onClick={handleBulkDelete} disabled={bulkDeleting}
+            >
+              {bulkDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              Seçilenleri Sil
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setSelectedIds(new Set())}>
+              Seçimi Kaldır
+            </Button>
+          </div>
+        )}
       </div>
 
       <Card>
@@ -366,6 +424,14 @@ export default function Consumption() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      checked={allSelected}
+                      data-state={someSelected && !allSelected ? "indeterminate" : undefined}
+                      onCheckedChange={toggleSelectAll}
+                      aria-label="Tümünü seç"
+                    />
+                  </TableHead>
                   <TableHead>Kaynak</TableHead>
                   <TableHead>Grup</TableHead>
                   <TableHead>Alt Birim</TableHead>
@@ -382,14 +448,18 @@ export default function Consumption() {
               </TableHeader>
               <TableBody>
                 {filteredRecords.length === 0 ? (
-                  <TableRow><TableCell colSpan={12} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı. Veri ekleyin.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={13} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı. Veri ekleyin.</TableCell></TableRow>
                 ) : filteredRecords.map((r: any) => {
                   const srcName = getSourceName(r.meterId);
                   const suName = getSubUnitName(r.meterId);
                   const grpName = getGroupName(r.meterId);
                   const m = (allMeters ?? []).find(m => m.id === r.meterId);
+                  const isSelected = selectedIds.has(r.id);
                   return (
-                    <TableRow key={r.id}>
+                    <TableRow key={r.id} className={isSelected ? "bg-destructive/5" : undefined}>
+                      <TableCell>
+                        <Checkbox checked={isSelected} onCheckedChange={() => toggleSelect(r.id)} aria-label="Satırı seç" />
+                      </TableCell>
                       <TableCell>
                         {srcName && <Badge className={`text-xs ${TYPE_COLORS[m?.type ?? "diger"]}`} variant="outline">{srcName}</Badge>}
                       </TableCell>
@@ -431,6 +501,7 @@ export default function Consumption() {
                 return (
                   <TableFooter>
                     <TableRow className="font-semibold text-sm bg-muted/30">
+                      <TableCell />
                       <TableCell colSpan={5} className="text-muted-foreground text-xs">
                         TOPLAM ({filteredRecords.length} kayıt)
                       </TableCell>
