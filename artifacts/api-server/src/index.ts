@@ -4,6 +4,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { runMigrations } from "@workspace/db";
 import { seedAdminUser } from "./routes/auth.js";
+import { seedStationsIfEmpty, seedDegreeDataIfEmpty, startMgmDailyScheduler } from "./services/mgm-sync.js";
 
 const rawPort = process.env["PORT"];
 
@@ -33,6 +34,11 @@ runMigrations(migrationsFolder)
       }
       logger.info({ port }, "Server listening");
       seedAdminUser();
+      // MGM Gün Derece Havuzu: ilk çalışmada seed et, sonra günlük güncelle
+      seedStationsIfEmpty()
+        .then(() => seedDegreeDataIfEmpty())
+        .then(() => startMgmDailyScheduler())
+        .catch(err => logger.error({ err }, "MGM seed/scheduler hatası"));
     });
   })
   .catch((err) => {

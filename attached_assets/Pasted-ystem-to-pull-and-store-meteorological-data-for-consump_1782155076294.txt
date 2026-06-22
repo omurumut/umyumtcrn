@@ -1,0 +1,36 @@
+ystem to pull and store meteorological data for consumption records
+evet isterim, ayrıca sayaç ekleme formunda bulunan lokasyon seçimi zorunluluğunu kaldır ve pasife çek kullanıcıya görünmesin. Ölçü birimi enerji kaynağı seçiminde zaten seçiliyordu, bu yüzden sayaç ekleme formunda tekrar eklemeye gerek yok kaldırabilirsin
+
+7 hours ago
+sayaç eklerken zorunlu alanlar eksik diye hata veriyor, büyük ihtimal lokasyon zorunluluğunu kaldırmadın.
+
+7 hours ago
+Sayaçlara Dışa aktarma ve içe aktarma özelliği ekle
+
+7 hours ago
+tüketim sayfasına toplu silme özelliği ekle
+
+6 hours ago
+tüketim verileri görünmüyor
+
+6 hours ago
+Yeni sayaç eklenirken seçilen alt birime ait il ilçe otomatik gelmektedir. Ama bazı durumlarda sayaça ait il ilçe alt birimden farklı olabilir. sayaça ait il ve ilçe alt birime ait il ilçeden farklı seçilirse altında anında bir uyarı belirsin istiyorum ki kullanıcı bunu bilerek ekleme yapsın.
+"Seçtiğiniz sayaç lokasyonu, bağlı alt birimin lokasyonundan farklı.
+Alt birim: Iğdır / Merkez
+Sayaç lokasyonu: Ağrı / Doğubeyazıt
+HDD/CDD değerleri sayaç lokasyonuna göre hesaplanacaktır."
+
+5 hours ago
+MGM verisini (HDD/CDD) anlık her tüketim girişinde çekme.
+Onun yerine sistemde bir MGM Gün Derece Veri Havuzu oluştur. Çünkü MGM sayfası yapısı değişirse tüketim kaydı ekranı ve regrasyon analizleri vs bozulmasın.
+
+Akış:
+
+Sistem https://mgm.gov.tr/veridegerlendirme/gun-derece.aspxMGM adresindeki son 10 yıla ait bütün veri listesini tutsun. Her gün bu liste güncellensin ve tüm firmalar için ortak olsun. Her firmaya ayrı dosya oluşturmaya gerek yok.
+
+Kullanıcı sayaç lokasyonu seçince uygun MGM merkezini eşleştirir.
+Tüketim kaydı girildiğinde önce kendi veritabanındaki MGM gün derece tablosuna bakar.
+İlgili yıl/ay verisi varsa oradan getirir.
+Yoksa o il/ilçeye km olarak en yakın istasyon verisi gelsin “İl/ilçe için MGM verisi bulunamadı. Bu yüzden en yakın istasyon olan "Yüksekova" verisi otomatik olarak çekilmiştir.” desin.
+Veri geldikten sonra tüketim kaydına snapshot olarak bağlasın.
+

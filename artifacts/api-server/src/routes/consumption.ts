@@ -2,8 +2,59 @@ import { Router } from "express";
 import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { findStationByCity, findNearestStation, haversineDistance } from "../services/mgm-stations-data.js";
+import { lookupDegreeData } from "../services/mgm-sync.js";
 
 const router = Router();
+
+// ── MGM Gün Derece Havuzu'ndan HDD/CDD otomatik çekme ────────────
+interface MgmLookupResult {
+  hdd: number;
+  cdd: number;
+  stationName: string;
+  stationNote: string | null;
+}
+
+async function autoLookupHddCdd(city: string, year: number, month: number): Promise<MgmLookupResult | null> {
+  try {
+    const found = findStationByCity(city);
+    if (found) {
+      const data = await lookupDegreeData(found.stationCode, year, month);
+      if (data) {
+        return {
+          hdd: data.hdd,
+          cdd: data.cdd,
+          stationName: found.name,
+          stationNote: null,
+        };
+      }
+    }
+
+    // Şehir bulunamadı veya veri yok → en yakın istasyona fallback
+    // Şehre ait istasyonu bulamadıysak koordinat merkezinden arar
+    let nearest = found ?? findNearestStation(39.0, 35.0);
+
+    // Eğer şehri bulduk ama veri yoksa, nearest arama için o istasyonun koordinatlarını kullan
+    if (found && !found) nearest = findNearestStation(found.lat, found.lon);
+
+    const data = await lookupDegreeData(nearest.stationCode, year, month);
+    if (data) {
+      const note = found
+        ? null
+        : `"${city}" için MGM verisi bulunamadı. Bu yüzden en yakın istasyon olan "${nearest.name}" verisi otomatik olarak çekilmiştir.`;
+      return {
+        hdd: data.hdd,
+        cdd: data.cdd,
+        stationName: nearest.name,
+        stationNote: note,
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // GET /api/consumption
 router.get("/consumption", requireAuth, async (req, res) => {
@@ -32,6 +83,8 @@ router.get("/consumption", requireAuth, async (req, res) => {
         hdd: consumptionTable.hdd,
         cdd: consumptionTable.cdd,
         notes: consumptionTable.notes,
+        weatherStationName: consumptionTable.weatherStationName,
+        weatherStationNote: consumptionTable.weatherStationNote,
         createdAt: consumptionTable.createdAt,
       })
       .from(consumptionTable)
@@ -40,11 +93,8 @@ router.get("/consumption", requireAuth, async (req, res) => {
       .orderBy(consumptionTable.year, consumptionTable.month);
 
     const filtered = rows.filter(r => {
-      // Normal kullanıcı: sadece kendi birimi
       if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && r.meterUnitId !== sessionUnitId) return false;
-      // Admin: sadece kendi firması
       if (role === "admin" && r.meterCompanyId !== sessionCompanyId) return false;
-      // Ek filtreler
       if (meterId !== undefined && r.meterId !== meterId) return false;
       if (year !== undefined && r.year !== year) return false;
       if (month !== undefined && r.month !== month) return false;
@@ -52,7 +102,6 @@ router.get("/consumption", requireAuth, async (req, res) => {
     });
 
     res.json(filtered.map(({ meterUnitId, meterCompanyId, ...r }) => r));
-    // response içerir: meterName, meterType, energyUseGroupId, energyUseGroupName — ileride EnPI/ÖEK/regresyon analizlerinde kullanılabilir
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
@@ -71,11 +120,9 @@ router.post("/consumption", requireAuth, async (req, res) => {
     const [meter] = await db.select().from(metersTable).where(eq(metersTable.id, parseInt(meterId)));
     if (!meter) { res.status(404).json({ error: "Sayaç bulunamadı" }); return; }
 
-    // Normal kullanıcı: sadece kendi birimi
     if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && meter.unitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    // Admin: sadece kendi firması
     if (role === "admin" && meter.companyId !== sessionCompanyId) {
       res.status(403).json({ error: "Bu sayaca tüketim girme yetkiniz yok" }); return;
     }
@@ -84,20 +131,54 @@ router.post("/consumption", requireAuth, async (req, res) => {
     const tepVal = tep !== undefined ? parseFloat(tep) : kwhVal * 0.000086;
     const co2Val = co2 !== undefined ? parseFloat(co2) : kwhVal * 0.4;
 
+    const yr = parseInt(year);
+    const mo = parseInt(month);
+
+    // HDD/CDD: kullanıcı manuel girdiyse kullan, yoksa MGM havuzundan otomatik çek
+    let hddVal: number | null = null;
+    let cddVal: number | null = null;
+    let weatherStationName: string | null = null;
+    let weatherStationNote: string | null = null;
+
+    if (hdd !== undefined && hdd !== null && hdd !== "") {
+      hddVal = parseFloat(hdd);
+    }
+    if (cdd !== undefined && cdd !== null && cdd !== "") {
+      cddVal = parseFloat(cdd);
+    }
+
+    // Otomatik çekme: hem hdd hem cdd boşsa
+    if (hddVal === null && cddVal === null && meter.city) {
+      const mgmResult = await autoLookupHddCdd(meter.city, yr, mo);
+      if (mgmResult) {
+        hddVal = mgmResult.hdd;
+        cddVal = mgmResult.cdd;
+        weatherStationName = mgmResult.stationName;
+        weatherStationNote = mgmResult.stationNote;
+      }
+    }
+
     const [record] = await db.insert(consumptionTable).values({
       meterId: meter.id,
       companyId: meter.companyId,
-      year: parseInt(year),
-      month: parseInt(month),
+      year: yr,
+      month: mo,
       kwh: kwhVal,
       tep: tepVal,
       co2: co2Val,
-      hdd: hdd !== undefined ? parseFloat(hdd) : null,
-      cdd: cdd !== undefined ? parseFloat(cdd) : null,
+      hdd: hddVal,
+      cdd: cddVal,
       notes: notes || null,
+      weatherStationName: weatherStationName || null,
+      weatherStationNote: weatherStationNote || null,
     }).returning();
 
-    res.status(201).json({ ...record, meterName: meter.name });
+    res.status(201).json({
+      ...record,
+      meterName: meter.name,
+      weatherStationName,
+      weatherStationNote,
+    });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
@@ -110,7 +191,6 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
 
-    // Yetki kontrolü için mevcut kaydı ve sayacını bul
     const [existing] = await db
       .select({ companyId: consumptionTable.companyId, meterUnitId: metersTable.unitId, meterCompanyId: metersTable.companyId })
       .from(consumptionTable)
@@ -160,7 +240,7 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
     for (const [i, row] of rows.entries()) {
       const rowNum = i + 1;
       try {
-        let meter = allMeters.find(m => {
+        const meter = allMeters.find(m => {
           if (row.meterId) return m.id === parseInt(String(row.meterId));
           if (row.meterName) return m.name.toLowerCase().trim() === String(row.meterName).toLowerCase().trim();
           return false;
@@ -184,8 +264,22 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
         const co2Factor = meter.type === "dogalgaz" ? 0.202 : 0.4;
         const tepVal = row.tep !== undefined && row.tep !== "" ? parseFloat(String(row.tep)) : kwh * tepFactor;
         const co2Val = row.co2 !== undefined && row.co2 !== "" ? parseFloat(String(row.co2)) : kwh * co2Factor;
-        const hddVal = row.hdd !== undefined && row.hdd !== "" ? parseFloat(String(row.hdd)) : null;
-        const cddVal = row.cdd !== undefined && row.cdd !== "" ? parseFloat(String(row.cdd)) : null;
+
+        let hddVal: number | null = row.hdd !== undefined && row.hdd !== "" ? parseFloat(String(row.hdd)) : null;
+        let cddVal: number | null = row.cdd !== undefined && row.cdd !== "" ? parseFloat(String(row.cdd)) : null;
+        let weatherStationName: string | null = null;
+        let weatherStationNote: string | null = null;
+
+        // Batch'te de HDD/CDD boşsa otomatik çek
+        if (hddVal === null && cddVal === null && meter.city) {
+          const mgmResult = await autoLookupHddCdd(meter.city, year, month);
+          if (mgmResult) {
+            hddVal = mgmResult.hdd;
+            cddVal = mgmResult.cdd;
+            weatherStationName = mgmResult.stationName;
+            weatherStationNote = mgmResult.stationNote;
+          }
+        }
 
         await db.insert(consumptionTable).values({
           meterId: meter.id,
@@ -198,6 +292,8 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
           hdd: hddVal,
           cdd: cddVal,
           notes: row.notes ? String(row.notes) : null,
+          weatherStationName: weatherStationName || null,
+          weatherStationNote: weatherStationNote || null,
         });
         imported++;
       } catch (rowErr: any) {

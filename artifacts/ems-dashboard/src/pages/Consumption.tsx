@@ -12,7 +12,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Pencil, Trash2, Loader2, Building2, Upload, Download, FileSpreadsheet, FileText, CheckSquare } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Building2, Upload, Download, FileSpreadsheet, FileText, CheckSquare, MapPin, Info } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { useYear } from "@/context/YearContext";
@@ -70,6 +70,7 @@ export default function Consumption() {
   const [formEnergySource, setFormEnergySource] = useState("");
   const [formSubUnit, setFormSubUnit] = useState("");
   const [hddFetching, setHddFetching] = useState(false);
+  const [mgmStation, setMgmStation] = useState<{ name: string; note: string | null } | null>(null);
 
   const { unitId } = useUnit();
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
@@ -161,22 +162,19 @@ export default function Consumption() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["consumption"] }); toast({ title: "Silindi" }); },
   });
 
-  async function fetchHddCdd(city: string) {
+  async function fetchHddCdd(city: string, year: string, month: string) {
     if (!city) return;
     setHddFetching(true);
+    setMgmStation(null);
     try {
-      const res = await fetch("/api/weather", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ location: city, year: parseInt(form.year) }),
+      const params = new URLSearchParams({ city, year, month });
+      const res = await fetch(`/api/mgm/lookup?${params}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (res.ok) {
-        const data: any[] = await res.json();
-        const monthData = data.find(d => d.month === parseInt(form.month));
-        if (monthData) {
-          setForm(f => ({ ...f, hdd: monthData.hdd?.toString() ?? "", cdd: monthData.cdd?.toString() ?? "" }));
-          toast({ title: `HDD/CDD çekildi (${city})` });
-        }
+        const data = await res.json();
+        setForm(f => ({ ...f, hdd: data.hdd?.toString() ?? "", cdd: data.cdd?.toString() ?? "" }));
+        setMgmStation({ name: data.stationName, note: data.note ?? null });
       }
     } catch {}
     setHddFetching(false);
@@ -184,6 +182,7 @@ export default function Consumption() {
 
   function openCreate() {
     setEditingId(null);
+    setMgmStation(null);
     setFormEnergySource(filterEnergySource !== "all" ? filterEnergySource : "");
     setFormSubUnit(filterSubUnit !== "all" ? filterSubUnit : "");
     setForm({ ...EMPTY_FORM(year), meterId: filterMeter !== "all" ? filterMeter : "" });
@@ -193,6 +192,7 @@ export default function Consumption() {
   function openEdit(r: any) {
     const m = (allMeters ?? []).find(m => m.id === r.meterId);
     setEditingId(r.id);
+    setMgmStation(r.weatherStationName ? { name: r.weatherStationName, note: r.weatherStationNote ?? null } : null);
     setFormEnergySource(m?.energySourceId?.toString() ?? "");
     setFormSubUnit(m?.subUnitId?.toString() ?? "");
     setForm({ meterId: r.meterId.toString(), year: r.year.toString(), month: r.month.toString(), kwh: r.kwh.toString(), tep: r.tep.toString(), co2: r.co2.toString(), hdd: r.hdd?.toString() ?? "", cdd: r.cdd?.toString() ?? "", notes: r.notes ?? "" });
@@ -203,14 +203,14 @@ export default function Consumption() {
     if (!open) return;
     const m = (allMeters ?? []).find(m => m.id.toString() === form.meterId);
     if (m?.city && !form.hdd && !form.cdd && !editingId) {
-      fetchHddCdd(m.city);
+      fetchHddCdd(m.city, form.year, form.month);
     }
   }, [form.meterId]);
 
   useEffect(() => {
     if (!open || !form.meterId) return;
     const m = (allMeters ?? []).find(m => m.id.toString() === form.meterId);
-    if (m?.city) fetchHddCdd(m.city);
+    if (m?.city) fetchHddCdd(m.city, form.year, form.month);
   }, [form.month, form.year]);
 
   function handleKwhChange(v: string) {
@@ -470,8 +470,19 @@ export default function Consumption() {
                       <TableCell className="text-right font-mono text-sm">{(r.kwh ?? 0).toLocaleString("tr-TR")} <span className="text-xs text-muted-foreground">{m?.unit}</span></TableCell>
                       <TableCell className="text-right font-mono text-sm">{(r.tep ?? 0).toFixed(4)}</TableCell>
                       <TableCell className="text-right font-mono text-sm">{(r.co2 ?? 0).toFixed(2)}</TableCell>
-                      <TableCell className="text-right text-sm">{r.hdd ?? "—"}</TableCell>
-                      <TableCell className="text-right text-sm">{r.cdd ?? "—"}</TableCell>
+                      <TableCell className="text-right text-sm">
+                        {r.hdd != null ? (
+                          <span className="group relative">
+                            {r.hdd}
+                            {r.weatherStationName && (
+                              <span className="ml-1 inline-flex items-center text-muted-foreground/50 cursor-default" title={r.weatherStationNote ? `${r.weatherStationName} — ${r.weatherStationNote}` : r.weatherStationName}>
+                                <MapPin className="h-2.5 w-2.5" />
+                              </span>
+                            )}
+                          </span>
+                        ) : "—"}
+                      </TableCell>
+                      <TableCell className="text-right text-sm">{r.cdd != null ? r.cdd : "—"}</TableCell>
                       <TableCell className="text-right text-sm font-mono">
                         {(() => {
                           const prev = prevMap[r.meterId]?.[r.month];
@@ -611,9 +622,28 @@ export default function Consumption() {
               </div>
             </div>
             {form.meterId && (
-              <p className="text-xs text-muted-foreground">
-                HDD/CDD sayacın şehrine ({(allMeters ?? []).find(m => m.id.toString() === form.meterId)?.city ?? "?"}) göre meteorolojiden otomatik çekilir.
-              </p>
+              <div className="space-y-1.5">
+                {mgmStation ? (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2 space-y-1">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <MapPin className="h-3 w-3 shrink-0 text-emerald-400" />
+                      <span className="font-medium text-foreground/80">MGM İstasyonu:</span>
+                      <span>{mgmStation.name}</span>
+                    </div>
+                    {mgmStation.note && (
+                      <div className="flex items-start gap-1.5 text-xs text-amber-400/90">
+                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
+                        <span>{mgmStation.note}</span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    HDD/CDD sayacın şehrine ({(allMeters ?? []).find(m => m.id.toString() === form.meterId)?.city ?? "?"}) göre MGM Gün Derece Havuzu'ndan otomatik çekilir.
+                    {hddFetching && <span className="ml-1 text-primary">Yükleniyor...</span>}
+                  </p>
+                )}
+              </div>
             )}
             <div className="space-y-1.5">
               <Label>Not</Label>
