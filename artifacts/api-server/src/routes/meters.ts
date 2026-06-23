@@ -105,13 +105,41 @@ router.post("/meters", requireAuth, async (req, res) => {
       }
     }
 
+    // subUnitId cross-company/unit doğrulama
+    let parsedSubUnitId: number | null = null;
+    if (subUnitId) {
+      parsedSubUnitId = parseInt(subUnitId);
+      const [su] = await db.select({ companyId: subUnitsTable.companyId, unitId: subUnitsTable.unitId })
+        .from(subUnitsTable).where(eq(subUnitsTable.id, parsedSubUnitId));
+      if (!su || su.companyId !== targetCompanyId) {
+        res.status(400).json({ error: "Geçersiz alt birim" }); return;
+      }
+      if (parsedUnitId !== null && su.unitId !== null && su.unitId !== parsedUnitId) {
+        res.status(400).json({ error: "Alt birim bu birime ait değil" }); return;
+      }
+    }
+
+    // energySourceId cross-company/unit doğrulama
+    let parsedEnergySourceId: number | null = null;
+    if (energySourceId) {
+      parsedEnergySourceId = parseInt(energySourceId);
+      const [es] = await db.select({ companyId: energySourcesTable.companyId, unitId: energySourcesTable.unitId })
+        .from(energySourcesTable).where(eq(energySourcesTable.id, parsedEnergySourceId));
+      if (!es || es.companyId !== targetCompanyId) {
+        res.status(400).json({ error: "Geçersiz enerji kaynağı" }); return;
+      }
+      if (parsedUnitId !== null && es.unitId !== null && es.unitId !== parsedUnitId) {
+        res.status(400).json({ error: "Enerji kaynağı bu birime ait değil" }); return;
+      }
+    }
+
     const [meter] = await db.insert(metersTable).values({
       name, type, recordType, location: location ?? "",
       city: city || "Istanbul",
       unit, description: description || null,
       unitId: parsedUnitId,
-      subUnitId: subUnitId ? parseInt(subUnitId) : null,
-      energySourceId: energySourceId ? parseInt(energySourceId) : null,
+      subUnitId: parsedSubUnitId,
+      energySourceId: parsedEnergySourceId,
       energyUseGroupId: parsedGroupId,
       companyId: targetCompanyId,
     }).returning();
@@ -165,8 +193,28 @@ router.patch("/meters/:id", requireAuth, async (req, res) => {
     if (unit !== undefined) updates.unit = unit;
     if (description !== undefined) updates.description = description;
     if (unitId !== undefined) updates.unitId = unitId ? parseInt(unitId) : null;
-    if (subUnitId !== undefined) updates.subUnitId = subUnitId ? parseInt(subUnitId) : null;
-    if (energySourceId !== undefined) updates.energySourceId = energySourceId ? parseInt(energySourceId) : null;
+
+    // Efektif unitId: güncelleme varsa yeni değer, yoksa mevcut
+    const effectiveUnitId = "unitId" in updates ? (updates.unitId as number | null) : existing.unitId;
+
+    // unitId değişiyorsa, payload'da gönderilmeyen mevcut subUnitId/energySourceId'yi de revalidate et
+    if ("unitId" in updates && effectiveUnitId !== null) {
+      if (subUnitId === undefined && existing.subUnitId !== null) {
+        const [su] = await db.select({ unitId: subUnitsTable.unitId })
+          .from(subUnitsTable).where(eq(subUnitsTable.id, existing.subUnitId));
+        if (su && su.unitId !== null && su.unitId !== effectiveUnitId) {
+          res.status(400).json({ error: "Mevcut alt birim yeni birimle uyumsuz; önce alt birimi güncelleyin" }); return;
+        }
+      }
+      if (energySourceId === undefined && existing.energySourceId !== null) {
+        const [es] = await db.select({ unitId: energySourcesTable.unitId })
+          .from(energySourcesTable).where(eq(energySourcesTable.id, existing.energySourceId));
+        if (es && es.unitId !== null && es.unitId !== effectiveUnitId) {
+          res.status(400).json({ error: "Mevcut enerji kaynağı yeni birimle uyumsuz; önce enerji kaynağını güncelleyin" }); return;
+        }
+      }
+    }
+
     if (energyUseGroupId !== undefined) {
       if (energyUseGroupId === null || energyUseGroupId === "") {
         updates.energyUseGroupId = null;
@@ -180,6 +228,43 @@ router.patch("/meters/:id", requireAuth, async (req, res) => {
         updates.energyUseGroupId = gid;
       }
     }
+
+    // subUnitId cross-company/unit doğrulama
+    if (subUnitId !== undefined) {
+      if (subUnitId === null || subUnitId === "") {
+        updates.subUnitId = null;
+      } else {
+        const sid = parseInt(subUnitId);
+        const [su] = await db.select({ companyId: subUnitsTable.companyId, unitId: subUnitsTable.unitId })
+          .from(subUnitsTable).where(eq(subUnitsTable.id, sid));
+        if (!su || su.companyId !== existing.companyId) {
+          res.status(400).json({ error: "Geçersiz alt birim" }); return;
+        }
+        if (effectiveUnitId !== null && su.unitId !== null && su.unitId !== effectiveUnitId) {
+          res.status(400).json({ error: "Alt birim bu birime ait değil" }); return;
+        }
+        updates.subUnitId = sid;
+      }
+    }
+
+    // energySourceId cross-company/unit doğrulama
+    if (energySourceId !== undefined) {
+      if (energySourceId === null || energySourceId === "") {
+        updates.energySourceId = null;
+      } else {
+        const eid = parseInt(energySourceId);
+        const [es] = await db.select({ companyId: energySourcesTable.companyId, unitId: energySourcesTable.unitId })
+          .from(energySourcesTable).where(eq(energySourcesTable.id, eid));
+        if (!es || es.companyId !== existing.companyId) {
+          res.status(400).json({ error: "Geçersiz enerji kaynağı" }); return;
+        }
+        if (effectiveUnitId !== null && es.unitId !== null && es.unitId !== effectiveUnitId) {
+          res.status(400).json({ error: "Enerji kaynağı bu birime ait değil" }); return;
+        }
+        updates.energySourceId = eid;
+      }
+    }
+
     const [meter] = await db.update(metersTable).set(updates).where(eq(metersTable.id, id)).returning();
     res.json(meter);
   } catch (err) {
