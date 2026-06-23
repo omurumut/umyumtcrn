@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Pencil, Trash2, Variable, BarChart3, CloudSun } from "lucide-react";
+import { Plus, Pencil, Trash2, Variable, BarChart3, CloudSun, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -671,9 +671,19 @@ function ValuesTab() {
 
 // ─── Climate Tab ──────────────────────────────────────────────────────────────
 
+interface SyncResult {
+  synced: number;
+  provinces: string[];
+  stations?: number;
+  message: string;
+}
+
 function ClimateTab() {
   const { token } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [filterProvince, setFilterProvince] = useState("all");
+  const [lastSync, setLastSync] = useState<SyncResult | null>(null);
 
   const { data: climateData, isLoading } = useQuery<WeatherDegreeDay[]>({
     queryKey: ["weather-degree-days", filterProvince],
@@ -691,10 +701,25 @@ function ClimateTab() {
     enabled: !!token,
   });
 
+  const syncMutation = useMutation({
+    mutationFn: () => apiMutate(token, "POST", "/api/weather-degree-days/sync"),
+    onSuccess: (result: SyncResult) => {
+      setLastSync(result);
+      queryClient.invalidateQueries({ queryKey: ["weather-degree-days"] });
+      toast({
+        title: result.synced > 0 ? "Senkronizasyon tamamlandı" : "Senkronizasyon bilgisi",
+        description: result.message,
+      });
+    },
+    onError: (e: Error) => toast({ title: "Senkronizasyon hatası", description: e.message, variant: "destructive" }),
+  });
+
   const provinces = [...new Set((climateData ?? []).map(d => d.province))].sort();
+  const meterCities = [...new Set((meterList ?? []).map(m => m.city))].sort();
 
   return (
     <div className="space-y-4">
+      {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <Select value={filterProvince} onValueChange={setFilterProvince}>
           <SelectTrigger className="w-44 bg-background"><SelectValue placeholder="İl filtrele" /></SelectTrigger>
@@ -703,25 +728,66 @@ function ClimateTab() {
             {provinces.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
           </SelectContent>
         </Select>
-        <div className="text-sm text-muted-foreground ml-2">
+        <div className="text-sm text-muted-foreground">
           {(climateData ?? []).length} kayıt
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          {lastSync && lastSync.synced > 0 && (
+            <span className="text-xs text-teal-400">
+              ✓ {lastSync.provinces.join(", ")} — {lastSync.synced} kayıt
+            </span>
+          )}
+          <Button
+            size="sm"
+            className="bg-teal-600 hover:bg-teal-700"
+            onClick={() => syncMutation.mutate()}
+            disabled={syncMutation.isPending}
+          >
+            <RefreshCw className={`h-4 w-4 mr-1 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+            {syncMutation.isPending ? "Senkronize ediliyor..." : "MGM'den Senkronize Et"}
+          </Button>
         </div>
       </div>
 
-      {/* Meter → City info cards */}
-      {(meterList ?? []).length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-2">
-          {(meterList ?? []).slice(0, 6).map(m => (
-            <Card key={m.id} className="bg-muted/30 border-border">
-              <CardContent className="px-4 py-3 flex items-center gap-3">
-                <CloudSun className="h-4 w-4 text-teal-400 shrink-0" />
-                <div>
-                  <div className="text-xs font-medium">{m.name}</div>
-                  <div className="text-xs text-muted-foreground">{m.city}</div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+      {/* Info banner when empty */}
+      {!isLoading && (climateData ?? []).length === 0 && (
+        <Card className="bg-muted/20 border-border border-dashed">
+          <CardContent className="py-6 flex flex-col items-center gap-3 text-center">
+            <CloudSun className="h-8 w-8 text-teal-400/60" />
+            <div>
+              <p className="text-sm font-medium">İklim verisi henüz yüklenmedi</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {meterCities.length > 0
+                  ? `Sayaçlarınızda ${meterCities.join(", ")} şehirleri var. "MGM'den Senkronize Et" butonuna tıklayarak HDD/CDD verilerini otomatik yükleyin.`
+                  : "Önce sayaç ekleyin, ardından MGM pool'undan iklim verisini senkronize edin."}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              className="bg-teal-600 hover:bg-teal-700"
+              onClick={() => syncMutation.mutate()}
+              disabled={syncMutation.isPending}
+            >
+              <RefreshCw className={`h-4 w-4 mr-1 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+              {syncMutation.isPending ? "Yükleniyor..." : "Şimdi Senkronize Et"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Meter → City summary chips */}
+      {meterCities.length > 0 && (climateData ?? []).length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {meterCities.map(city => {
+            const hasData = (climateData ?? []).some(d => d.province.toLowerCase() === city.toLowerCase());
+            return (
+              <Badge key={city} variant="outline" className={`text-xs gap-1 ${hasData ? "border-teal-600 text-teal-400" : "border-muted text-muted-foreground"}`}>
+                <CloudSun className="h-3 w-3" />
+                {city}
+                {hasData ? " ✓" : " —"}
+              </Badge>
+            );
+          })}
         </div>
       )}
 

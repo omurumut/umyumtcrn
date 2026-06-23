@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { db, variablesTable, variableValuesTable, weatherDegreeDaysTable, companiesTable, unitsTable, subUnitsTable, metersTable } from "@workspace/db";
-import { eq, and, inArray } from "drizzle-orm";
-import { requireAuth } from "../middlewares/auth.js";
+import { db, variablesTable, variableValuesTable, weatherDegreeDaysTable, companiesTable, unitsTable, subUnitsTable, metersTable, mgmStationsTable, mgmDegreeDataTable } from "@workspace/db";
+import { eq, and, inArray, sql } from "drizzle-orm";
+import { requireAuth, requireAdmin } from "../middlewares/auth.js";
 
 const router = Router();
 
@@ -302,6 +302,136 @@ router.get("/weather-degree-days", requireAuth, async (req, res) => {
     });
 
     res.json(filtered);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// POST /api/weather-degree-days/sync
+// MGM pool'dan sayaçların bulunduğu şehirlerin HDD/CDD verisini weather_degree_days tablosuna aktarır
+router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
+  try {
+    const { companyId } = req.user!;
+
+    // 1. Bu şirketin birimlerine bağlı tüm sayaçları ve şehirlerini bul
+    const unitRows = await db
+      .select({ id: unitsTable.id })
+      .from(unitsTable)
+      .where(eq(unitsTable.companyId, companyId));
+
+    if (unitRows.length === 0) {
+      res.json({ synced: 0, provinces: [], message: "Kayıtlı birim bulunamadı" });
+      return;
+    }
+
+    const unitIds = unitRows.map(u => u.id);
+
+    const subUnitRows = await db
+      .select({ id: subUnitsTable.id })
+      .from(subUnitsTable)
+      .where(inArray(subUnitsTable.unitId, unitIds));
+
+    const subUnitIds = subUnitRows.map(s => s.id);
+
+    if (subUnitIds.length === 0) {
+      res.json({ synced: 0, provinces: [], message: "Kayıtlı alt birim bulunamadı" });
+      return;
+    }
+
+    const meterRows = await db
+      .select({ city: metersTable.city })
+      .from(metersTable)
+      .where(inArray(metersTable.subUnitId, subUnitIds));
+
+    const cities = [...new Set(meterRows.map(m => m.city.trim()).filter(Boolean))];
+
+    if (cities.length === 0) {
+      res.json({ synced: 0, provinces: [], message: "Sayaçlara bağlı şehir bulunamadı" });
+      return;
+    }
+
+    // 2. MGM istasyonlarından bu şehirlere uyan istasyonları bul (il bazlı, case-insensitive)
+    const allStations = await db.select().from(mgmStationsTable).where(eq(mgmStationsTable.isActive, true));
+
+    // city → stationCode eşleştirmesi (şehir adı normalize edilerek)
+    const normalize = (s: string) =>
+      s.toLocaleLowerCase("tr-TR").replace(/[İ]/g, "i").replace(/[I]/g, "ı").trim();
+
+    const matchedStations = allStations.filter(station =>
+      cities.some(city => normalize(city) === normalize(station.il))
+    );
+
+    if (matchedStations.length === 0) {
+      res.json({
+        synced: 0,
+        provinces: [],
+        message: `Sayaç şehirleri MGM istasyonlarında eşleşmedi (Aranan: ${cities.join(", ")})`,
+      });
+      return;
+    }
+
+    const stationCodes = matchedStations.map(s => s.stationCode);
+
+    // 3. Bu istasyonların tüm degree verisini çek
+    const degreeRows = await db
+      .select()
+      .from(mgmDegreeDataTable)
+      .where(inArray(mgmDegreeDataTable.stationCode, stationCodes));
+
+    if (degreeRows.length === 0) {
+      res.json({ synced: 0, provinces: [], message: "MGM pool henüz dolu değil, lütfen bekleyin" });
+      return;
+    }
+
+    // stationCode → station bilgisi haritası
+    const stationMap = new Map(matchedStations.map(s => [s.stationCode, s]));
+
+    // 4. Mevcut kayıtları temizle (ilgili şehirler + bu şirket)
+    const provinceList = [...new Set(matchedStations.map(s => s.il))];
+    await db
+      .delete(weatherDegreeDaysTable)
+      .where(
+        and(
+          eq(weatherDegreeDaysTable.companyId, companyId),
+          inArray(weatherDegreeDaysTable.province, provinceList),
+          eq(weatherDegreeDaysTable.periodType, "monthly"),
+          eq(weatherDegreeDaysTable.source, "mgm")
+        )
+      );
+
+    // 5. Yeni kayıtları toplu ekle
+    const toInsert = degreeRows.map(row => {
+      const station = stationMap.get(row.stationCode)!;
+      return {
+        companyId,
+        province: station.il,
+        district: station.ilce ?? null,
+        date: `${row.year}-${String(row.month).padStart(2, "0")}`,
+        periodType: "monthly" as const,
+        baseTemperatureHeating: 15,
+        baseTemperatureCooling: 22,
+        hdd: row.hdd,
+        cdd: row.cdd,
+        avgTemperature: null,
+        source: "mgm",
+      };
+    });
+
+    // Toplu insert — 500'lük dilimler
+    const CHUNK = 500;
+    let inserted = 0;
+    for (let i = 0; i < toInsert.length; i += CHUNK) {
+      await db.insert(weatherDegreeDaysTable).values(toInsert.slice(i, i + CHUNK));
+      inserted += Math.min(CHUNK, toInsert.length - i);
+    }
+
+    res.json({
+      synced: inserted,
+      provinces: provinceList,
+      stations: matchedStations.length,
+      message: `${provinceList.join(", ")} için ${inserted} aylık HDD/CDD kaydı aktarıldı`,
+    });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
