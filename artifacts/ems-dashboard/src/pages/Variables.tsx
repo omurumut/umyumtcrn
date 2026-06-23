@@ -450,6 +450,22 @@ function ValuesTab() {
     onError: (e: Error) => toast({ title: "Hata", description: e.message, variant: "destructive" }),
   });
 
+  // Seçili değişkenin scopeType'ını türet
+  const selectedVar = (variables ?? []).find(v => String(v.id) === form.variableId);
+  const scopeType = selectedVar?.scopeType ?? "company";
+
+  const SCOPE_HINTS: Record<string, string> = {
+    company: "Bu değişken şirket genelinde geçerlidir; birim/alt birim/sayaç seçimi gerekmez.",
+    unit: "Bu değişken birim kapsamındadır. Hangi birim için veri girdiğinizi seçin (zorunlu).",
+    sub_unit: "Bu değişken alt birim kapsamındadır. Birim ve alt birim seçimi zorunludur.",
+    meter: "Bu değişken sayaç kapsamındadır. Birim, alt birim ve sayaç seçimi zorunludur.",
+  };
+
+  const scopeMissing =
+    (scopeType === "unit"     && !form.unitId) ||
+    (scopeType === "sub_unit" && (!form.unitId || !form.subUnitId)) ||
+    (scopeType === "meter"    && (!form.unitId || !form.subUnitId || !form.meterId));
+
   const openAdd = () => { setForm({ ...EMPTY_VAL_FORM }); setEditingId(null); setOpen(true); };
   const openEdit = (v: VariableValue) => {
     setForm({
@@ -567,7 +583,10 @@ function ValuesTab() {
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
               <Label>Değişken *</Label>
-              <Select value={form.variableId} onValueChange={v => setForm(f => ({ ...f, variableId: v }))}>
+              <Select
+                value={form.variableId}
+                onValueChange={v => setForm(f => ({ ...f, variableId: v, unitId: "", subUnitId: "", meterId: "" }))}
+              >
                 <SelectTrigger className="bg-background"><SelectValue placeholder="Değişken seçin" /></SelectTrigger>
                 <SelectContent>
                   {(variables ?? []).filter(v => v.isActive).map(v => (
@@ -603,38 +622,75 @@ function ValuesTab() {
                 <Input type="number" value={form.value} onChange={e => setForm(f => ({ ...f, value: e.target.value }))} placeholder="0" />
               </div>
             </div>
-            <div className="space-y-1.5">
-              <Label>Kapsam: Birim</Label>
-              <Select value={form.unitId || "none"} onValueChange={v => setForm(f => ({ ...f, unitId: v === "none" ? "" : v, subUnitId: "", meterId: "" }))}>
-                <SelectTrigger className="bg-background"><SelectValue placeholder="Şirket geneli" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Şirket Geneli</SelectItem>
-                  {(allUnits ?? []).map((u: any) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            {form.unitId && (
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label>Alt Birim</Label>
-                  <Select value={form.subUnitId || "none"} onValueChange={v => setForm(f => ({ ...f, subUnitId: v === "none" ? "" : v, meterId: "" }))}>
-                    <SelectTrigger className="bg-background"><SelectValue placeholder="Tüm alt birimler" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Seçme</SelectItem>
-                      {(subUnits ?? []).map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Sayaç</Label>
-                  <Select value={form.meterId || "none"} onValueChange={v => setForm(f => ({ ...f, meterId: v === "none" ? "" : v }))}>
-                    <SelectTrigger className="bg-background"><SelectValue placeholder="Tüm sayaçlar" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Seçme</SelectItem>
-                      {(meters ?? []).map(m => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
+            {/* Kapsam bilgi kutusu */}
+            {form.variableId && (
+              <div className={`rounded-md border px-3 py-2 text-xs ${
+                scopeType === "company"
+                  ? "border-border bg-muted/40 text-muted-foreground"
+                  : "border-teal-700/50 bg-teal-950/30 text-teal-300"
+              }`}>
+                <span className="font-medium mr-1">Kapsam: {SCOPE_LABELS[scopeType] ?? scopeType} —</span>
+                {SCOPE_HINTS[scopeType]}
+              </div>
+            )}
+
+            {/* Birim seçimi: company kapsamında gizle */}
+            {scopeType !== "company" && (
+              <div className="space-y-1.5">
+                <Label>
+                  Birim
+                  {(scopeType === "unit" || scopeType === "sub_unit" || scopeType === "meter") && (
+                    <span className="text-destructive ml-0.5">*</span>
+                  )}
+                </Label>
+                <Select
+                  value={form.unitId || "none"}
+                  onValueChange={v => setForm(f => ({ ...f, unitId: v === "none" ? "" : v, subUnitId: "", meterId: "" }))}
+                >
+                  <SelectTrigger className="bg-background"><SelectValue placeholder="Birim seçin" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— Seçin —</SelectItem>
+                    {(allUnits ?? []).map((u: any) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {/* Alt Birim: sub_unit veya meter kapsamında, birim seçildikten sonra */}
+            {(scopeType === "sub_unit" || scopeType === "meter") && form.unitId && (
+              <div className="space-y-1.5">
+                <Label>
+                  Alt Birim<span className="text-destructive ml-0.5">*</span>
+                </Label>
+                <Select
+                  value={form.subUnitId || "none"}
+                  onValueChange={v => setForm(f => ({ ...f, subUnitId: v === "none" ? "" : v, meterId: "" }))}
+                >
+                  <SelectTrigger className="bg-background"><SelectValue placeholder="Alt birim seçin" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— Seçin —</SelectItem>
+                    {(subUnits ?? []).map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {/* Sayaç: yalnızca meter kapsamında, alt birim seçildikten sonra */}
+            {scopeType === "meter" && form.subUnitId && (
+              <div className="space-y-1.5">
+                <Label>
+                  Sayaç<span className="text-destructive ml-0.5">*</span>
+                </Label>
+                <Select
+                  value={form.meterId || "none"}
+                  onValueChange={v => setForm(f => ({ ...f, meterId: v === "none" ? "" : v }))}
+                >
+                  <SelectTrigger className="bg-background"><SelectValue placeholder="Sayaç seçin" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— Seçin —</SelectItem>
+                    {(meters ?? []).map(m => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </div>
             )}
             <div className="grid grid-cols-2 gap-4">
@@ -658,7 +714,7 @@ function ValuesTab() {
             <Button
               className="bg-teal-600 hover:bg-teal-700"
               onClick={() => saveMutation.mutate(form)}
-              disabled={!form.variableId || !form.periodStart || !form.periodEnd || !form.value || saveMutation.isPending}
+              disabled={!form.variableId || !form.periodStart || !form.periodEnd || !form.value || scopeMissing || saveMutation.isPending}
             >
               {saveMutation.isPending ? "Kaydediliyor..." : "Kaydet"}
             </Button>

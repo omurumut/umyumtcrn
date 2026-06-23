@@ -199,6 +199,24 @@ router.post("/variable-values", requireAuth, async (req, res) => {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
 
+    // Kapsam doğrulama
+    const scope = variable.scopeType;
+    const hasUnit   = !!unitId;
+    const hasSub    = !!subUnitId;
+    const hasMeter  = !!meterId;
+    if (scope === "company" && (hasUnit || hasSub || hasMeter)) {
+      res.status(400).json({ error: "Şirket kapsamlı değişkende birim/alt birim/sayaç seçilemez" }); return;
+    }
+    if (scope === "unit" && !hasUnit) {
+      res.status(400).json({ error: "Birim kapsamlı değişkende birim seçimi zorunludur" }); return;
+    }
+    if (scope === "sub_unit" && (!hasUnit || !hasSub)) {
+      res.status(400).json({ error: "Alt birim kapsamlı değişkende birim ve alt birim seçimi zorunludur" }); return;
+    }
+    if (scope === "meter" && (!hasUnit || !hasSub || !hasMeter)) {
+      res.status(400).json({ error: "Sayaç kapsamlı değişkende birim, alt birim ve sayaç seçimi zorunludur" }); return;
+    }
+
     const [record] = await db.insert(variableValuesTable).values({
       companyId: targetCompanyId,
       variableId: parseInt(variableId),
@@ -236,6 +254,30 @@ router.put("/variable-values/:id", requireAuth, async (req, res) => {
     }
 
     const { periodStart, periodEnd, periodType, value, source, locationProvince, locationDistrict, dataQuality, unitId, subUnitId, meterId } = req.body;
+
+    // Kapsam doğrulama (değişkenin scopeType'ına göre)
+    const [varForScope] = await db.select().from(variablesTable).where(eq(variablesTable.id, existing.variableId));
+    if (varForScope) {
+      const scope = varForScope.scopeType;
+      // Eğer istek scope alanlarını göndermiyorsa mevcut DB değerlerini kullan
+      const effectiveUnitId   = unitId   !== undefined ? (unitId   || null) : existing.unitId;
+      const effectiveSubId    = subUnitId !== undefined ? (subUnitId || null) : existing.subUnitId;
+      const effectiveMeterId  = meterId  !== undefined ? (meterId  || null) : existing.meterId;
+
+      if (scope === "company" && (effectiveUnitId || effectiveSubId || effectiveMeterId)) {
+        res.status(400).json({ error: "Şirket kapsamlı değişkende birim/alt birim/sayaç seçilemez" }); return;
+      }
+      if (scope === "unit" && !effectiveUnitId) {
+        res.status(400).json({ error: "Birim kapsamlı değişkende birim seçimi zorunludur" }); return;
+      }
+      if (scope === "sub_unit" && (!effectiveUnitId || !effectiveSubId)) {
+        res.status(400).json({ error: "Alt birim kapsamlı değişkende birim ve alt birim seçimi zorunludur" }); return;
+      }
+      if (scope === "meter" && (!effectiveUnitId || !effectiveSubId || !effectiveMeterId)) {
+        res.status(400).json({ error: "Sayaç kapsamlı değişkende birim, alt birim ve sayaç seçimi zorunludur" }); return;
+      }
+    }
+
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (periodStart !== undefined) updates.periodStart = periodStart;
     if (periodEnd !== undefined) updates.periodEnd = periodEnd;
