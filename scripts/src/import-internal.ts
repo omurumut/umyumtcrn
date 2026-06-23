@@ -582,18 +582,14 @@ async function importInternal() {
       continue;
     }
 
-    await db.insert(consumptionTable).values({
-      companyId,
-      meterId,
-      year: c.year,
-      month: c.month,
-      kwh: c.kwh ?? 0,
-      tep: c.tep ?? 0,
-      co2: c.co2 ?? 0,
-      hdd: c.hdd ?? null,
-      cdd: c.cdd ?? null,
-      notes: c.notes ?? null,
-    });
+    await db.execute(sql`
+      INSERT INTO consumption
+        (company_id, meter_id, year, month, kwh, tep, co2, hdd, cdd, notes)
+      VALUES
+        (${companyId}, ${meterId}, ${c.year}, ${c.month},
+         ${c.kwh ?? 0}, ${c.tep ?? 0}, ${c.co2 ?? 0},
+         ${c.hdd ?? null}, ${c.cdd ?? null}, ${c.notes ?? null})
+    `);
 
     existingSet.add(key); // aynı çalıştırmada tekrar eklemeyi önle
     consumptionInserted++;
