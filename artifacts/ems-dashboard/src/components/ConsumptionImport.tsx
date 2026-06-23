@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Upload, Download, FileSpreadsheet, AlertCircle, CheckCircle2, Loader2, X } from "lucide-react";
+import { Upload, Download, FileSpreadsheet, AlertCircle, CheckCircle2, Loader2, X, ChevronDown, ChevronUp, SkipForward } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
@@ -82,6 +82,8 @@ export default function ConsumptionImport({ open, onOpenChange }: Props) {
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [dupPanelOpen, setDupPanelOpen] = useState(false);
+  const [errPanelOpen, setErrPanelOpen] = useState(false);
 
   function reset() {
     setFileName(null);
@@ -273,40 +275,100 @@ export default function ConsumptionImport({ open, onOpenChange }: Props) {
             </>
           )}
 
-          {result && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-3">
-                <div className="rounded-lg border bg-card p-4 text-center">
-                  <p className="text-2xl font-bold text-green-500">{result.imported}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Başarıyla Aktarıldı</p>
+          {result && (() => {
+            const duplicates = result.errors.filter(e => e.message.includes("zaten mevcut"));
+            const realErrors = result.errors.filter(e => !e.message.includes("zaten mevcut"));
+            const allOk = result.imported === result.total;
+            return (
+              <div className="space-y-3">
+                {/* Summary cards */}
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="rounded-lg border bg-card p-3 text-center">
+                    <p className="text-xl font-bold text-green-500">{result.imported}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Aktarıldı</p>
+                  </div>
+                  <div className={`rounded-lg border bg-card p-3 text-center ${duplicates.length > 0 ? "border-amber-500/30" : ""}`}>
+                    <p className={`text-xl font-bold ${duplicates.length > 0 ? "text-amber-500" : "text-muted-foreground"}`}>{duplicates.length}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Atlandı</p>
+                  </div>
+                  <div className={`rounded-lg border bg-card p-3 text-center ${realErrors.length > 0 ? "border-destructive/30" : ""}`}>
+                    <p className={`text-xl font-bold ${realErrors.length > 0 ? "text-destructive" : "text-muted-foreground"}`}>{realErrors.length}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Hata</p>
+                  </div>
+                  <div className="rounded-lg border bg-card p-3 text-center">
+                    <p className="text-xl font-bold">{result.total}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Toplam</p>
+                  </div>
                 </div>
-                <div className="rounded-lg border bg-card p-4 text-center">
-                  <p className="text-2xl font-bold text-destructive">{result.errors.length}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Hatalı Satır</p>
-                </div>
-                <div className="rounded-lg border bg-card p-4 text-center">
-                  <p className="text-2xl font-bold">{result.total}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Toplam Satır</p>
-                </div>
+
+                {/* All success banner */}
+                {allOk && (
+                  <div className="rounded-lg border border-green-500/30 bg-green-500/5 px-3 py-2.5 flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+                    <span className="text-sm text-green-600 font-medium">Tüm satırlar başarıyla içe aktarıldı!</span>
+                  </div>
+                )}
+
+                {/* Skipped duplicates collapsible panel */}
+                {duplicates.length > 0 && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 overflow-hidden">
+                    <button
+                      className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-amber-500/10 transition-colors"
+                      onClick={() => setDupPanelOpen(v => !v)}
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium text-amber-600">
+                        <SkipForward className="h-4 w-4" />
+                        {duplicates.length} satır atlandı — zaten mevcut kayıtlar
+                      </span>
+                      {dupPanelOpen
+                        ? <ChevronUp className="h-4 w-4 text-amber-500 shrink-0" />
+                        : <ChevronDown className="h-4 w-4 text-amber-500 shrink-0" />
+                      }
+                    </button>
+                    {dupPanelOpen && (
+                      <div className="border-t border-amber-500/20 px-3 py-2 space-y-1 max-h-40 overflow-y-auto">
+                        {duplicates.map((e, i) => (
+                          <p key={i} className="text-xs text-amber-700/90 flex items-start gap-1.5">
+                            <span className="font-mono shrink-0 text-amber-500/70">S{e.row}</span>
+                            {e.message}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Real errors collapsible panel */}
+                {realErrors.length > 0 && (
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 overflow-hidden">
+                    <button
+                      className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-destructive/10 transition-colors"
+                      onClick={() => setErrPanelOpen(v => !v)}
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium text-destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        {realErrors.length} satır aktarılamadı — hata
+                      </span>
+                      {errPanelOpen
+                        ? <ChevronUp className="h-4 w-4 text-destructive/70 shrink-0" />
+                        : <ChevronDown className="h-4 w-4 text-destructive/70 shrink-0" />
+                      }
+                    </button>
+                    {errPanelOpen && (
+                      <div className="border-t border-destructive/20 px-3 py-2 space-y-1 max-h-40 overflow-y-auto">
+                        {realErrors.map((e, i) => (
+                          <p key={i} className="text-xs text-destructive/80 flex items-start gap-1.5">
+                            <span className="font-mono shrink-0 text-destructive/50">S{e.row}</span>
+                            {e.message}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              {result.errors.length > 0 && (
-                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-1 max-h-48 overflow-y-auto">
-                  <p className="text-sm font-medium text-destructive flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4" /> Aktarılamayan satırlar
-                  </p>
-                  {result.errors.map((e, i) => (
-                    <p key={i} className="text-xs text-destructive/80 pl-6">Satır {e.row}: {e.message}</p>
-                  ))}
-                </div>
-              )}
-              {result.imported === result.total && (
-                <div className="rounded-lg border border-green-500/30 bg-green-500/5 px-3 py-3 flex items-center gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-green-500" />
-                  <span className="text-sm text-green-600 font-medium">Tüm satırlar başarıyla içe aktarıldı!</span>
-                </div>
-              )}
-            </div>
-          )}
+            );
+          })()}
         </div>
 
         <DialogFooter className="mt-2 gap-2">
