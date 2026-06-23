@@ -17,7 +17,7 @@
 import { createHash } from "crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import {
   companiesTable,
   usersTable,
@@ -57,12 +57,26 @@ async function findOrCreate<T extends { id: number }>(
   return created[0];
 }
 
+/**
+ * PostgreSQL SERIAL sequence'ini tablodaki mevcut MAX(id) ile senkronize eder.
+ * Demo/fixture insert sonrası sequence kaymasını önler.
+ */
+async function syncSerialSequence(tableName: string, idColumn: string = "id"): Promise<void> {
+  await db.execute(
+    sql.raw(
+      `SELECT setval(pg_get_serial_sequence('"${tableName}"', '${idColumn}'), COALESCE((SELECT MAX(${idColumn}) FROM "${tableName}"), 1), true)`
+    )
+  );
+  console.log(`  🔧 ${tableName} sequence senkronize edildi`);
+}
+
 async function seed() {
   console.log("\n🌱 Internal demo seed başlatılıyor...");
   console.log("─────────────────────────────────────────────────────");
 
   // ── 1. Şirket ─────────────────────────────────────────────────────────────
   console.log("\n[1/7] Şirket");
+  await syncSerialSequence("companies");
   const company = await findOrCreate(
     "ISO 50001 Kontrol Demo şirketi",
     () => db.select().from(companiesTable).where(eq(companiesTable.name, "ISO 50001 Kontrol Demo")),
