@@ -4,13 +4,13 @@
   "license": "MIT",
   "scripts": {
     "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "build": "pnpm run typecheck && pnpm -r --filter \"!@workspace/mockup-sandbox\" --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "replit:check": "pnpm install --frozen-lockfile=false && pnpm run build",
     "replit:start": "pnpm --filter @workspace/api-server run dev",
     "replit:api": "pnpm --filter @workspace/api-server run dev",
-    "replit:web": "pnpm --filter @workspace/ems-dashboard run dev"
+    "replit:web": "pnpm --filter @workspace/ems-dashboard run dev",
     "start": "ts-node scripts/index.ts",
     "dev": "ts-node-dev scripts/index.ts"
   },

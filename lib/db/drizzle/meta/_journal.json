@@ -43,6 +43,13 @@
       "when": 1750500000000,
       "tag": "0005_record_type",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1750600000000,
+      "tag": "0006_mgm_tables",
+      "breakpoints": true
     }
   ]
 }

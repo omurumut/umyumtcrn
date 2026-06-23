@@ -31,11 +31,7 @@ async function autoLookupHddCdd(city: string, year: number, month: number): Prom
     }
 
     // Şehir bulunamadı veya veri yok → en yakın istasyona fallback
-    // Şehre ait istasyonu bulamadıysak koordinat merkezinden arar
-    let nearest = found ?? findNearestStation(39.0, 35.0);
-
-    // Eğer şehri bulduk ama veri yoksa, nearest arama için o istasyonun koordinatlarını kullan
-    if (found && !found) nearest = findNearestStation(found.lat, found.lon);
+    const nearest = found ?? findNearestStation(39.0, 35.0);
 
     const data = await lookupDegreeData(nearest.stationCode, year, month);
     if (data) {
