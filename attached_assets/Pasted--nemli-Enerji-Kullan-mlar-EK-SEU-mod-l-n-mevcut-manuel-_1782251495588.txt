@@ -1,0 +1,199 @@
+Önemli Enerji Kullanımları (ÖEK/SEU) modülünü mevcut manuel kayıt ekranından sistem destekli analiz modülüne dönüştür.
+
+Mevcut manuel ÖEK kayıt yapısını tamamen silme; ancak ana akış artık tüketim verilerinden otomatik ÖEK analizi üretmeli.
+
+Genel amaç:
+
+- ÖEK analizi ISO 50001 mantığına uygun şekilde birim bazında yapılmalı.
+- Normal kullanıcı kendi atanmış olduğu birim için ÖEK analizinden ve ÖEK kararlarından tamamen sorumludur.
+- Firma admini kontrol, karşılaştırma ve raporlama amaçlı analiz yapabilir; fakat normal kullanıcının resmi ÖEK kayıtlarını ezemez.
+- Şu aşamada onay mekanizması eklenmeyecek.
+
+Rol bazlı davranış:
+
+- Normal kullanıcı birim seçemez.
+- Normal kullanıcının user.unitId değeri varsa analiz otomatik bu unitId kapsamında çalışır.
+- Normal kullanıcı sadece kendi birimine ait ÖEK analizini ve ÖEK kayıtlarını görebilir/düzenleyebilir.
+- Normal kullanıcının kaydettiği analiz resmi birim ÖEK kaydıdır.
+- Firma admini birim seçebilir.
+- Firma admini birim özelinde kontrol analizi yapabilir.
+- Firma admini tüm birimler özelinde özet/karşılaştırma analizi yapabilir.
+- Firma admininin yaptığı kontrol analizi normal kullanıcının resmi ÖEK kayıtlarını ezmemelidir.
+- Admin analizleri recordType = admin_review veya company_summary olarak saklanmalı ya da resmi kayıt olarak işaretlenmemelidir.
+- İleride başka firmalar için onay mekanizması gerekebilir; fakat şu an approval workflow eklenmeyecek.
+
+ÖEK analiz kapsamı:
+
+- Ana ÖEK analizi birim bazında yapılmalıdır.
+- Pay hesabında firma toplamı değil, seçili/kullanıcıya atanmış birimin ilgili yıldaki toplam TEP tüketimi kullanılmalıdır.
+- Toplam TEP = seçili birimin ilgili yıl/ay aralığındaki tüm consumption kayıtlarının TEP toplamıdır.
+- Varsayılan kırılım energyUseGroup bazlı olmalıdır.
+- Yani her enerji kullanım grubu için:
+  consumptionSharePercent = energyUseGroupTotalTep / selectedUnitTotalTep * 100
+- Kullanıcı isterse analiz seviyesini değiştirebilmelidir:
+  - energyUseGroup
+  - meter
+  - subUnit
+  - unit
+  - energySource
+- Ancak varsayılan ve ISO açısından ana analiz seviyesi energyUseGroup olmalıdır.
+
+ÖEK belirleme metodu:
+Metot adı:
+consumption_share_opportunity_matrix
+
+Kurallar:
+
+- Pay >= 20 ve fırsat var ise priority 1
+- Pay >= 20 ve fırsat yok ise priority 2
+- Pay >= 10 ve <20 ve fırsat var ise priority 2
+- Pay >= 10 ve <20 ve fırsat yok ise priority 3
+- Pay >= 5 ve <10 ve fırsat var ise priority 3
+- Pay >= 5 ve <10 ve fırsat yok ise priority 4
+- Pay <5 ve fırsat var ise priority 4
+- Pay <5 ve fırsat yok ise ÖEK dışı
+
+Sistem önerisi:
+
+- Priority 1, 2, 3, 4 çıkan kayıtlar için systemRecommendation = seu_candidate
+- Pay <5 ve fırsat yok ise systemRecommendation = not_seu
+- Kullanıcı nihai karar verebilmelidir:
+  - accepted_as_seu
+  - not_seu
+  - monitor
+- Kullanıcı sistem önerisinden farklı karar verirse decisionReason zorunlu olmalıdır.
+
+Ana ekran yapısı:
+Başlık:
+Önemli Enerji Kullanımları (ÖEK)
+
+Normal kullanıcı için sekmeler:
+
+1. ÖEK Analizi
+2. ÖEK Listesi
+3. Metot
+
+Firma admini için sekmeler:
+
+1. Birim ÖEK Kayıtları
+2. Admin Kontrol Analizi
+3. Tüm Birimler Özeti
+4. Metot
+
+ÖEK Analizi sekmesi:
+
+- Normal kullanıcıda kapsam bilgisi gösterilsin:
+  “Analiz kapsamı: Kullanıcının atanmış olduğu birim”
+- Admin kullanıcıda birim seçimi gösterilsin.
+- Filtreler:
+  - yıl
+  - ay aralığı
+  - birim, sadece admin için
+  - enerji kaynağı
+  - analiz seviyesi
+- Normal kullanıcı için birim filtresi pasif veya gizli olmalı.
+
+Analiz tablosunda şu alanlar olmalı:
+
+- ad
+- analiz seviyesi
+- enerji kullanım grubu / sayaç / alt birim / birim / enerji kaynağı bilgisi
+- TEP tüketim
+- seçili birim toplam TEP tüketimi
+- toplam içindeki pay %
+- fırsat var mı? Evet/Hayır
+- sistem önceliği
+- sistem önerisi
+- kullanıcı kararı
+- karar gerekçesi
+- hedef azaltım %
+- sorumlu
+- notlar
+- işlem
+
+Mevcut manuel ÖEK ekleme:
+
+- Tamamen silinmesin.
+- Manuel kayıt gerekiyorsa ayrı/ikincil akış olarak kalabilir.
+- Manuel kayıtta şu uyarı gösterilsin:
+  “Bu kayıt tüketim analizinden otomatik oluşturulmadı. ISO denetimi için karar gerekçesi girmeniz önerilir.”
+
+Veritabanı:
+Gerekirse yeni tablolar ekle veya mevcut ÖEK tablolarını genişlet.
+
+Önerilen yapı:
+
+seu_assessments:
+
+- id
+- company_id
+- unit_id
+- year
+- period_start
+- period_end
+- analysis_level
+- method_type
+- record_type
+- is_official
+- created_by_user_id
+- updated_by_user_id
+- created_at
+- updated_at
+
+record_type değerleri:
+
+- unit_official
+- admin_review
+- company_summary
+
+is_official mantığı:
+
+- Normal kullanıcı kaydı: record_type = unit_official, is_official = true
+- Admin kontrol analizi: record_type = admin_review, is_official = false
+- Tüm birimler özeti: record_type = company_summary, is_official = false
+
+seu_assessment_items:
+
+- id
+- assessment_id
+- energy_use_group_id nullable
+- meter_id nullable
+- unit_id nullable
+- sub_unit_id nullable
+- energy_source_id nullable
+- energy_tep
+- consumption_share_percent
+- has_opportunity
+- priority_result
+- system_recommendation
+- user_decision
+- decision_reason
+- responsible
+- target_reduction_percent
+- notes
+- created_at
+- updated_at
+
+Duplicate / ezmeme kuralları:
+
+- Aynı company_id + unit_id + year + analysis_level + method_type + record_type = unit_official için tek aktif resmi kayıt olmalıdır.
+- Normal kullanıcı tekrar analiz kaydederse kendi biriminin resmi kaydını kontrollü şekilde güncelleyebilir.
+- Admin kontrol analizi kesinlikle unit_official kaydı ezmemelidir.
+- Admin analizleri ayrı recordType ile saklanmalıdır.
+
+API:
+
+- ÖEK analizini consumption kayıtlarından hesaplayan endpoint ekle veya mevcut endpointi geliştir.
+- Tüm hesaplamalarda companyId ve unitId tenant güvenliği korunmalı.
+- Normal kullanıcı başka birim verisine erişememeli.
+- Admin kendi companyId kapsamındaki birimleri görebilmeli.
+- Farklı enerji kaynakları karşılaştırılırken TEP kullanılmalı.
+- TEP yoksa mevcut consumption hesaplama mantığıyla uyumlu şekilde ele alınmalı; ama yanlış sonuç üretmemek için eksik TEP varsa kullanıcıya uyarı dönülmeli.
+
+UI:
+
+- Mevcut sidebar route ve ISO 50001 kategorisi bozulmamalı.
+- Mevcut ÖEK sayfası bu yeni yapıya dönüştürülmeli.
+- TypeScript/build hatası bırakma.
+- Mevcut çalışan modülleri bozma.
+- Sonunda hangi dosyalarda ne değiştiğini kısa özetle.
