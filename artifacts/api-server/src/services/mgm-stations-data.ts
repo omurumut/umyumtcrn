@@ -788,28 +788,59 @@ export function haversineDistance(lat1: number, lon1: number, lat2: number, lon2
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Şehir adından koordinat arama (il eşleştirmesi)
+// Türkçe karakter normalizasyonu
+function normalizeTr(s: string): string {
+  return s.trim().toLowerCase()
+    .replace(/ğ/g, "g").replace(/Ğ/g, "g")
+    .replace(/ş/g, "s").replace(/Ş/g, "s")
+    .replace(/ı/g, "i").replace(/İ/g, "i")
+    .replace(/ö/g, "o").replace(/Ö/g, "o")
+    .replace(/ü/g, "u").replace(/Ü/g, "u")
+    .replace(/ç/g, "c").replace(/Ç/g, "c");
+}
+
+// "İl / İlçe" veya "İl" formatını parse et
+export function parseIlIlce(location: string): { il: string; ilce: string | null } {
+  const slash = location.indexOf("/");
+  if (slash === -1) return { il: location.trim(), ilce: null };
+  return {
+    il: location.slice(0, slash).trim(),
+    ilce: location.slice(slash + 1).trim() || null,
+  };
+}
+
+// İl + ilçe'ye göre istasyon bul; ilçe uyuşmazsa il bazında fallback döner.
+// isFallback=true: ilçe istendi ama aynı ilde başka istasyona düşüldü
+export function findStationByIlIlce(
+  il: string,
+  ilce: string | null,
+): { station: StationSeed; isFallback: boolean } | null {
+  const normIl = normalizeTr(il);
+  const normIlce = ilce ? normalizeTr(ilce) : null;
+
+  if (normIlce) {
+    // 1. Birebir il + ilçe eşleşmesi
+    const exact = MGM_STATIONS.find(
+      s => normalizeTr(s.il) === normIl &&
+           s.ilce !== null &&
+           normalizeTr(s.ilce) === normIlce,
+    );
+    if (exact) return { station: exact, isFallback: false };
+  }
+
+  // 2. Aynı ilde ilk istasyon (il bazında fallback)
+  const ilOnly = MGM_STATIONS.find(s => normalizeTr(s.il) === normIl);
+  if (ilOnly) return { station: ilOnly, isFallback: normIlce !== null };
+
+  return null;
+}
+
+// Geriye dönük uyumluluk: yalnızca il/ilçe adıyla arama (eski davranış)
 export function findStationByCity(city: string): StationSeed | null {
   if (!city) return null;
-  const normalized = city.trim().toLowerCase()
-    .replace(/ğ/g, "g").replace(/ş/g, "s").replace(/ı/g, "i")
-    .replace(/ö/g, "o").replace(/ü/g, "u").replace(/ç/g, "c")
-    .replace(/İ/g, "i").replace(/Ğ/g, "g").replace(/Ş/g, "s")
-    .replace(/Ö/g, "o").replace(/Ü/g, "u").replace(/Ç/g, "c");
-
-  const found = MGM_STATIONS.find(s => {
-    const il = s.il.toLowerCase()
-      .replace(/ğ/g, "g").replace(/ş/g, "s").replace(/ı/g, "i")
-      .replace(/ö/g, "o").replace(/ü/g, "u").replace(/ç/g, "c")
-      .replace(/İ/g, "i");
-    const ilce = (s.ilce ?? "").toLowerCase()
-      .replace(/ğ/g, "g").replace(/ş/g, "s").replace(/ı/g, "i")
-      .replace(/ö/g, "o").replace(/ü/g, "u").replace(/ç/g, "c")
-      .replace(/İ/g, "i");
-    return il.includes(normalized) || normalized.includes(il) ||
-      (ilce && (ilce.includes(normalized) || normalized.includes(ilce)));
-  });
-  return found ?? null;
+  const { il, ilce } = parseIlIlce(city);
+  const result = findStationByIlIlce(il, ilce);
+  return result?.station ?? null;
 }
 
 // En yakın istasyonu bul

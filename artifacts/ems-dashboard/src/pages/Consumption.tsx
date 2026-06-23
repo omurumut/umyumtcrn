@@ -639,7 +639,7 @@ export default function Consumption() {
                   </div>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    HDD/CDD sayacın şehrine ({(allMeters ?? []).find(m => m.id.toString() === form.meterId)?.city ?? "?"}) göre MGM Gün Derece Havuzu'ndan otomatik çekilir.
+                    HDD/CDD sayaç lokasyonuna ({(allMeters ?? []).find(m => m.id.toString() === form.meterId)?.city ?? "?"}) göre MGM Gün Derece Havuzu'ndan otomatik çekilir.
                     {hddFetching && <span className="ml-1 text-primary">Yükleniyor...</span>}
                   </p>
                 )}

@@ -3,7 +3,7 @@ import { db, mgmStationsTable, mgmDegreeDataTable, mgmSyncLogTable } from "@work
 import { desc, eq, and } from "drizzle-orm";
 import { requireAuth, requireAdmin } from "../middlewares/auth.js";
 import { syncCurrentMonthData, lookupDegreeData } from "../services/mgm-sync.js";
-import { MGM_STATIONS, findStationByCity, findNearestStation, haversineDistance } from "../services/mgm-stations-data.js";
+import { MGM_STATIONS, findStationByCity, findStationByIlIlce, parseIlIlce, findNearestStation, haversineDistance } from "../services/mgm-stations-data.js";
 
 const router = Router();
 
@@ -40,8 +40,7 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
     let stationName: string | null = null;
     let note: string | null = null;
     let usedNearest = false;
-    let nearestKm: number | null = null;
-    let requestedCity: string | null = null;
+    const nearestKm: number | null = null;
 
     if (stationCode) {
       // Direkt istasyon kodu ile sorgu
@@ -49,18 +48,23 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
       const st = MGM_STATIONS.find(s => s.stationCode === targetCode);
       stationName = st ? st.name : targetCode;
     } else if (city) {
-      requestedCity = city as string;
-      const found = findStationByCity(requestedCity);
-      if (found) {
-        targetCode = found.stationCode;
-        stationName = found.name;
+      const requestedCity = city as string;
+      // "İl / İlçe" formatını parse et; önce birebir il+ilçe, yoksa il bazında fallback
+      const { il, ilce } = parseIlIlce(requestedCity);
+      const lookup = findStationByIlIlce(il, ilce);
+      if (lookup) {
+        targetCode = lookup.station.stationCode;
+        stationName = lookup.station.name;
+        if (lookup.isFallback) {
+          note = `"${requestedCity}" için birebir MGM istasyonu bulunamadı. ${il} iline ait "${lookup.station.name}" istasyonu kullanıldı.`;
+        }
       } else {
-        // Şehir bulunamadı → en yakın istasyona fallback (koordinat bilinmiyorsa varsayılan)
-        const nearest = findNearestStation(39.0, 35.0); // Türkiye merkezi fallback
+        // İl de bulunamadı → coğrafi merkez fallback
+        const nearest = findNearestStation(39.0, 35.0);
         targetCode = nearest.stationCode;
         stationName = nearest.name;
         usedNearest = true;
-        note = `"${requestedCity}" için MGM istasyonu bulunamadı. En yakın istasyon "${nearest.name}" otomatik olarak kullanıldı.`;
+        note = `"${requestedCity}" için MGM istasyonu bulunamadı. En yakın varsayılan istasyon "${nearest.name}" kullanıldı.`;
       }
     } else {
       res.status(400).json({ error: "city veya stationCode gerekli" });

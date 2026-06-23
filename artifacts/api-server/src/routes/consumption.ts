@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { findStationByCity, findNearestStation, haversineDistance } from "../services/mgm-stations-data.js";
+import { findStationByIlIlce, parseIlIlce, findNearestStation } from "../services/mgm-stations-data.js";
 import { lookupDegreeData } from "../services/mgm-sync.js";
 
 const router = Router();
@@ -15,34 +15,31 @@ interface MgmLookupResult {
   stationNote: string | null;
 }
 
-async function autoLookupHddCdd(city: string, year: number, month: number): Promise<MgmLookupResult | null> {
+async function autoLookupHddCdd(location: string, year: number, month: number): Promise<MgmLookupResult | null> {
   try {
-    const found = findStationByCity(city);
-    if (found) {
-      const data = await lookupDegreeData(found.stationCode, year, month);
+    const { il, ilce } = parseIlIlce(location);
+    const lookup = findStationByIlIlce(il, ilce);
+
+    if (lookup) {
+      const { station, isFallback } = lookup;
+      const data = await lookupDegreeData(station.stationCode, year, month);
       if (data) {
-        return {
-          hdd: data.hdd,
-          cdd: data.cdd,
-          stationName: found.name,
-          stationNote: null,
-        };
+        const stationNote = isFallback
+          ? `"${location}" için birebir MGM istasyonu bulunamadı. ${il} iline ait "${station.name}" istasyonu kullanıldı.`
+          : null;
+        return { hdd: data.hdd, cdd: data.cdd, stationName: station.name, stationNote };
       }
     }
 
-    // Şehir bulunamadı veya veri yok → en yakın istasyona fallback
-    const nearest = found ?? findNearestStation(39.0, 35.0);
-
+    // İl de bulunamadı → coğrafi merkez fallback
+    const nearest = findNearestStation(39.0, 35.0);
     const data = await lookupDegreeData(nearest.stationCode, year, month);
     if (data) {
-      const note = found
-        ? null
-        : `"${city}" için MGM verisi bulunamadı. Bu yüzden en yakın istasyon olan "${nearest.name}" verisi otomatik olarak çekilmiştir.`;
       return {
         hdd: data.hdd,
         cdd: data.cdd,
         stationName: nearest.name,
-        stationNote: note,
+        stationNote: `"${location}" için MGM istasyonu bulunamadı. En yakın varsayılan istasyon "${nearest.name}" kullanıldı.`,
       };
     }
 
