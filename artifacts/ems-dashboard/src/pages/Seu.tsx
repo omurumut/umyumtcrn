@@ -250,6 +250,7 @@ function ManualSeuList() {
 export default function Seu() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const isSuperAdmin = user?.role === "superadmin";
 
   return (
     <div className="space-y-4">
@@ -282,7 +283,7 @@ export default function Seu() {
           </TabsContent>
 
           <TabsContent value="method">
-            <SeuMethodTab />
+            <SeuMethodTab isSuperAdmin={isSuperAdmin} />
           </TabsContent>
         </Tabs>
       )}

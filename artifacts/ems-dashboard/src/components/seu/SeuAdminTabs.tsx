@@ -140,6 +140,8 @@ function AdminSummaryTab() {
 
 export default function SeuAdminTabs() {
   const [unitFilter, setUnitFilter] = useState<number | null>(null);
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === "superadmin";
   const { data: allUnits } = useListUnits({}, { query: { queryKey: getListUnitsQueryKey({}) } });
 
   return (
@@ -186,7 +188,7 @@ export default function SeuAdminTabs() {
       </TabsContent>
 
       <TabsContent value="method">
-        <SeuMethodTab isAdmin={true} />
+        <SeuMethodTab isAdmin={true} isSuperAdmin={isSuperAdmin} />
       </TabsContent>
     </Tabs>
   );

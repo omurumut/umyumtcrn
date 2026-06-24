@@ -15,9 +15,10 @@ const PRIORITY_RULES = [
 
 interface Props {
   isAdmin?: boolean;
+  isSuperAdmin?: boolean;
 }
 
-export default function SeuMethodTab({ isAdmin = false }: Props) {
+export default function SeuMethodTab({ isAdmin = false, isSuperAdmin = false }: Props) {
   return (
     <div className="space-y-5">
 
@@ -35,20 +36,24 @@ export default function SeuMethodTab({ isAdmin = false }: Props) {
               <span className="text-muted-foreground">Metot adı</span>
               <span className="font-medium text-right">Tüketim Payı × Fırsat Matrisi</span>
             </div>
-            <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
-              <span className="text-muted-foreground">Metot kodu</span>
-              <code className="text-xs bg-muted/40 px-1.5 py-0.5 rounded font-mono">consumption_share_opportunity_matrix</code>
-            </div>
+            {isSuperAdmin && (
+              <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
+                <span className="text-muted-foreground">Metot kodu</span>
+                <code className="text-xs bg-muted/40 px-1.5 py-0.5 rounded font-mono">consumption_share_opportunity_matrix</code>
+              </div>
+            )}
             <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
               <span className="text-muted-foreground">Durum</span>
               <Badge variant="outline" className="text-xs border-teal-500/30 text-teal-400">Sistem varsayılan metodu</Badge>
             </div>
-            <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
-              <span className="text-muted-foreground">Değiştirilebilirlik</span>
-              <Badge variant="outline" className="text-xs border-border text-muted-foreground gap-1">
-                <Lock className="h-2.5 w-2.5" /> Salt okunur
-              </Badge>
-            </div>
+            {isSuperAdmin && (
+              <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
+                <span className="text-muted-foreground">Değiştirilebilirlik</span>
+                <Badge variant="outline" className="text-xs border-border text-muted-foreground gap-1">
+                  <Lock className="h-2.5 w-2.5" /> Salt okunur
+                </Badge>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -76,12 +81,16 @@ export default function SeuMethodTab({ isAdmin = false }: Props) {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Metot: Tüketim Payı × Fırsat Matrisi</CardTitle>
-          <CardDescription>consumption_share_opportunity_matrix — ISO 50001 uyumlu ÖEK belirleme metodu</CardDescription>
+          {isSuperAdmin && (
+            <CardDescription>consumption_share_opportunity_matrix — ISO 50001 uyumlu ÖEK belirleme metodu</CardDescription>
+          )}
         </CardHeader>
         <CardContent className="text-sm space-y-3 text-muted-foreground">
           <p>Bu metot, enerji tüketiminin belirli bir kırılım seviyesindeki payını ve ilgili iyileştirme fırsatını birleştirerek önem önceliğini hesaplar.</p>
           <p><span className="text-foreground font-medium">Toplam TEP:</span> Seçili birimin ilgili yıl/dönemindeki tüm consumption kayıtlarının TEP toplamıdır. Firma geneli değil, birim geneli kullanılır.</p>
-          <p><span className="text-foreground font-medium">Pay hesabı:</span> energyUseGroupTotalTep / selectedUnitTotalTep × 100</p>
+          {isSuperAdmin && (
+            <p><span className="text-foreground font-medium">Pay hesabı:</span> energyUseGroupTotalTep / selectedUnitTotalTep × 100</p>
+          )}
         </CardContent>
       </Card>
 
