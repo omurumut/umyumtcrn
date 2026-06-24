@@ -1,0 +1,59 @@
+ÖEK/SEU modülünde iki kullanıcı testi hatasını düzelt. Yeni büyük özellik ekleme.
+
+Testte görülen sorunlar:
+
+1. ÖEK Analizi sekmesinde analiz çalıştırılıyor, fırsat/öncelik/karar düzenleniyor ve “Analizi Kaydet” işlemi yapılıyor. Kayıt başarılı gibi görünüyor; ancak ÖEK Listesi sekmesine geçince kayıt görünmüyor.
+
+Beklenen davranış:
+
+* Normal kullanıcı analiz kaydettikten sonra kayıt ÖEK Listesi sekmesinde görünmeli.
+* Normal kullanıcı sadece kendi unitId kapsamındaki unit_official / is_official=true kayıtları görmeli.
+* Admin kullanıcı tüm birimlerin unit_official kayıtlarını görebilmeli.
+* Eğer liste endpointinde year, unitId, recordType, isOfficial veya analysisLevel filtresi nedeniyle kayıt görünmüyorsa düzelt.
+* POST /api/seu/assessments ile oluşturulan kaydın GET /api/seu/assessments tarafından aynı rol/kapsam kurallarıyla geri döndüğünü doğrula.
+* Kayıt sonrası frontend ÖEK Listesi sekmesini yenilemeli veya query invalidate/refetch yapmalı.
+* Kaydedilen assessment item satırları da detay/listede görünmeli.
+
+2. Karar seçilmeden “Analizi Kaydet” butonu çalışmamalı.
+
+Beklenen validasyon:
+
+* Analiz tablosundaki satırlarda userDecision seçilmeden analiz kaydedilemesin.
+* userDecision boş olan satır varsa frontend kaydı durdursun ve kullanıcıya şu tarz net uyarı göstersin:
+  “Analizi kaydetmeden önce her satır için karar seçmelisiniz. Düzenle işleminden ÖEK / ÖEK dışı / İzlemeye al kararını seçiniz.”
+* Backend de aynı kontrolü yapsın. userDecision boş/null/undefined gelen item varsa 400 dönsün.
+* Kullanıcı sistem önerisinden farklı karar verirse decisionReason zorunluluğu korunmalı.
+* userDecision seçenekleri şunlar olmalı:
+
+  * accepted_as_seu
+  * not_seu
+  * monitor
+
+Kontrol edilmesi gereken dosyalar:
+
+* artifacts/api-server/src/routes/seu-assessment.ts
+* artifacts/ems-dashboard/src/pages/Seu.tsx
+* artifacts/ems-dashboard/src/components/seu/SeuAnalysisTab.tsx
+* artifacts/ems-dashboard/src/components/seu/SeuAssessmentList.tsx
+* gerekiyorsa ilgili shared/api client dosyaları
+
+Teknik şartlar:
+
+* Mevcut migrationları bozma.
+* Yeni tablo ekleme.
+* Onay mekanizması ekleme.
+* PDF/Excel export ekleme.
+* Sadece bu iki hatayı düzelt.
+* TypeScript/build hatası bırakma.
+
+Düzeltmeden sonra şu testleri yap:
+
+1. Normal kullanıcıyla ÖEK analizi çalıştır.
+2. Her satırda karar seçmeden kaydetmeyi dene; sistem uyarı vermeli ve kayıt yapmamalı.
+3. Kararları seçip kaydet.
+4. ÖEK Listesi sekmesine geç; kayıt görünmeli.
+5. API ile GET /api/seu/assessments sonucu kaydı dönmeli.
+6. pnpm --filter @workspace/api-server build
+7. pnpm --filter @workspace/ems-dashboard build
+
+Sonunda değişen dosyaları ve test sonucunu kısa özetle.

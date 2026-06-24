@@ -143,6 +143,15 @@ export default function SeuAnalysisTab({ isAdminMode = false, adminRecordType = 
 
   async function saveAssessment() {
     if (!resolvedUnitId) { toast({ title: "Birim seçilmedi", variant: "destructive" }); return; }
+    const undecided = items.find(item => !item.userDecision);
+    if (undecided) {
+      toast({
+        title: "Karar eksik",
+        description: "Analizi kaydetmeden önce her satır için karar seçmelisiniz. Düzenle işleminden ÖEK / ÖEK dışı / İzlemeye al kararını seçiniz.",
+        variant: "destructive",
+      });
+      return;
+    }
     for (const item of items) {
       if (item.userDecision && item.userDecision !== impliedDecision(item.systemRecommendation) && !item.decisionReason) {
         toast({ title: `"${item.name}" için karar gerekçesi zorunlu`, variant: "destructive" }); return;
@@ -414,9 +423,9 @@ function ItemEditDialog({ item, onSave, onClose }: EditDialogProps) {
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-xs">Kullanıcı Kararı</Label>
+            <Label className="text-xs">Kullanıcı Kararı *</Label>
             <Select value={userDecision ?? ""} onValueChange={v => { setUserDecision(v as UserDecision || null); }}>
-              <SelectTrigger><SelectValue placeholder="Karar seçin (isteğe bağlı)" /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="Karar seçin (zorunlu)" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="accepted_as_seu">ÖEK Olarak Kabul Et</SelectItem>
                 <SelectItem value="not_seu">ÖEK Dışı</SelectItem>

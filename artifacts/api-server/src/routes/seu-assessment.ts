@@ -10,7 +10,7 @@ import {
   seuAssessmentsTable,
   seuAssessmentItemsTable,
 } from "@workspace/db";
-import { eq, and, gte, lte, sql, desc } from "drizzle-orm";
+import { eq, and, gte, lte, sql, desc, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -328,6 +328,14 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
     }
 
     if (!resolvedUnitId) { res.status(400).json({ error: "Birim seçilmedi" }); return; }
+
+    if (Array.isArray(items) && items.length > 0) {
+      const missingDecision = items.find((item: any) => !item.userDecision);
+      if (missingDecision) {
+        res.status(400).json({ error: `"${missingDecision.name ?? "Bir kalem"}" için karar seçilmedi. Her satır için karar zorunludur.` });
+        return;
+      }
+    }
 
     if (recordType === "unit_official") {
       const [existing] = await db
