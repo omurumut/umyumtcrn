@@ -186,7 +186,7 @@ export default function SeuAdminTabs() {
       </TabsContent>
 
       <TabsContent value="method">
-        <SeuMethodTab />
+        <SeuMethodTab isAdmin={true} />
       </TabsContent>
     </Tabs>
   );

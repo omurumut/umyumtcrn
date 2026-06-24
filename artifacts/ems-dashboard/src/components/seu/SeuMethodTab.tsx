@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Lock, Info, AlertTriangle } from "lucide-react";
 
 const PRIORITY_RULES = [
   { label: "Pay ≥ %20 + Fırsat Var", priority: 1, color: "bg-red-500/20 text-red-400 border-red-500/30" },
@@ -12,9 +13,66 @@ const PRIORITY_RULES = [
   { label: "Pay <%5 + Fırsat Yok", priority: null, color: "bg-muted text-muted-foreground" },
 ];
 
-export default function SeuMethodTab() {
+interface Props {
+  isAdmin?: boolean;
+}
+
+export default function SeuMethodTab({ isAdmin = false }: Props) {
   return (
     <div className="space-y-5">
+
+      {/* Aktif Metot Durum Kartı */}
+      <Card className="border-teal-500/30 bg-teal-500/5">
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-2">
+            <Lock className="h-4 w-4 text-teal-400 shrink-0" />
+            <CardTitle className="text-base text-teal-300">Aktif ÖEK Belirleme Metodu</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 text-sm">
+            <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
+              <span className="text-muted-foreground">Metot adı</span>
+              <span className="font-medium text-right">Tüketim Payı × Fırsat Matrisi</span>
+            </div>
+            <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
+              <span className="text-muted-foreground">Metot kodu</span>
+              <code className="text-xs bg-muted/40 px-1.5 py-0.5 rounded font-mono">consumption_share_opportunity_matrix</code>
+            </div>
+            <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
+              <span className="text-muted-foreground">Durum</span>
+              <Badge variant="outline" className="text-xs border-teal-500/30 text-teal-400">Sistem varsayılan metodu</Badge>
+            </div>
+            <div className="flex items-center justify-between gap-2 py-1 border-b border-border/40">
+              <span className="text-muted-foreground">Değiştirilebilirlik</span>
+              <Badge variant="outline" className="text-xs border-border text-muted-foreground gap-1">
+                <Lock className="h-2.5 w-2.5" /> Salt okunur
+              </Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Rol bazlı bilgi kutusu */}
+      {isAdmin ? (
+        <div className="flex items-start gap-3 p-3.5 rounded-md border border-amber-500/30 bg-amber-500/5 text-sm text-amber-300">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>
+            ÖEK belirleme metodu firma yöneticisi tarafından değiştirilemez. Firma özelinde farklı bir ÖEK metodolojisi
+            kullanmak istiyorsanız <span className="text-amber-200 font-medium">sistem yöneticisi / platform sahibi</span> ile iletişime geçiniz.
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3 p-3.5 rounded-md border border-border/60 bg-muted/10 text-sm text-muted-foreground">
+          <Info className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>
+            Bu metot şirketiniz için tanımlı aktif ÖEK belirleme metodudur. ÖEK analizleri ve karar kayıtları bu metoda
+            göre oluşturulur.
+          </span>
+        </div>
+      )}
+
+      {/* Mevcut içerik — korundu */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Metot: Tüketim Payı × Fırsat Matrisi</CardTitle>

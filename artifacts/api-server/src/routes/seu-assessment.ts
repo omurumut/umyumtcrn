@@ -333,6 +333,13 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
 
     if (!resolvedUnitId) { res.status(400).json({ error: "Birim seçilmedi" }); return; }
 
+    const ALLOWED_METHOD_TYPES = ["consumption_share_opportunity_matrix"] as const;
+    const resolvedMethodType = methodType || "consumption_share_opportunity_matrix";
+    if (!ALLOWED_METHOD_TYPES.includes(resolvedMethodType)) {
+      res.status(400).json({ error: `Geçersiz methodType: "${resolvedMethodType}". İzin verilen: ${ALLOWED_METHOD_TYPES.join(", ")}` });
+      return;
+    }
+
     if (Array.isArray(items) && items.length > 0) {
       const missingDecision = items.find((item: any) => !item.userDecision);
       if (missingDecision) {

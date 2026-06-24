@@ -1,0 +1,95 @@
+ÖEK/SEU Metot sekmesini mevcut bilgilendirme içeriğini koruyarak read-only ve sistem kontrollü hale getir.
+
+Mevcut durum:
+
+* Metot sekmesinde şu bölümler var ve bunlar korunmalı:
+
+  * Metot: Tüketim Payı × Fırsat Matrisi
+  * Öncelik Matrisi
+  * Kullanıcı Kararları
+  * Analiz Seviyeleri
+* Bu mevcut açıklamalar hem normal kullanıcı hem firma admini için faydalı. Bu içerikleri kaldırma, sadeleştirme veya bozma.
+
+Beklenen eklemeler:
+
+1. Metot read-only olmalı
+
+* Normal kullanıcı ve firma admini metodu sadece görüntüleyebilmeli.
+* Metot eşiği, methodType, öncelik matrisi veya analiz seviyesi ayarları UI üzerinden değiştirilememeli.
+* Düzenle, kaydet, eşik değiştir gibi butonlar varsa kaldırılmalı veya pasif olmalı.
+
+2. Üst bilgi kutusu ekle
+   Mevcut metot açıklamasının üstüne veya içine küçük bir durum bilgisi ekle:
+
+Başlık:
+Aktif ÖEK Belirleme Metodu
+
+İçerik:
+
+* Metot adı: Tüketim Payı × Fırsat Matrisi
+* Metot kodu: consumption_share_opportunity_matrix
+* Durum: Sistem varsayılan metodu
+* Değiştirilebilirlik: Salt okunur
+
+3. Firma admini için ek uyarı göster
+   Eğer kullanıcı firma admini / admin rolündeyse Metot sekmesinde ayrıca şu bilgi kutusu görünsün:
+
+“ÖEK belirleme metodu firma yöneticisi tarafından değiştirilemez. Firma özelinde farklı bir ÖEK metodolojisi kullanmak istiyorsanız sistem yöneticisi / platform sahibi ile iletişime geçiniz.”
+
+Bu bilgi mevcut metot açıklamalarını ve öncelik matrisini kaldırmadan eklensin.
+
+4. Normal kullanıcı için ek bilgi göster
+   Normal kullanıcıya şu daha sade bilgi gösterilsin:
+
+“Bu metot şirketiniz için tanımlı aktif ÖEK belirleme metodudur. ÖEK analizleri ve karar kayıtları bu metoda göre oluşturulur.”
+
+5. Mevcut açıklamalar korunmalı
+   Aşağıdaki mevcut bölümler kalmalı:
+
+* Toplam TEP açıklaması
+* Pay hesabı açıklaması
+* Öncelik Matrisi satırları
+* Kullanıcı Kararları açıklaması
+* Analiz Seviyeleri açıklaması
+
+6. Analiz ve karar ekranlarında metot bilgisi
+   ÖEK Analizi ve Karar Kayıtları ekranlarında uygun bir yerde küçük bilgi olarak şu metin gösterilebilir:
+   “Metot: Tüketim Payı × Fırsat Matrisi”
+   Bu kullanıcıya hangi yöntemle analiz yapıldığını hatırlatır.
+
+7. Backend methodType güvenliği
+
+* POST /api/seu/assessments sırasında methodType boş gelirse varsayılan olarak consumption_share_opportunity_matrix kullanılsın.
+* methodType farklı bir değerle gelirse backend bunu kabul etmesin ve 400 dönsün.
+* Kayıtlı assessment üzerinde methodType mutlaka saklansın.
+* İleride firma özel metot geldiğinde geçmiş kayıtların hangi metotla oluşturulduğu korunmuş olacak.
+
+8. Teknik şartlar
+
+* Yeni tablo/migration ekleme.
+* Firma özel metot ayar ekranı ekleme.
+* Onay mekanizması ekleme.
+* PDF/Excel export ekleme.
+* Mevcut ÖEK analiz, karar kayıtları ve admin sekmeleri bozulmasın.
+* TypeScript/build hatası bırakma.
+
+Kontrol edilecek dosyalar:
+
+* artifacts/ems-dashboard/src/components/seu/SeuMethodTab.tsx
+* artifacts/ems-dashboard/src/components/seu/SeuAnalysisTab.tsx
+* artifacts/ems-dashboard/src/components/seu/SeuAssessmentList.tsx
+* artifacts/api-server/src/routes/seu-assessment.ts
+
+Düzeltmeden sonra test et:
+
+1. Normal kullanıcı Metot sekmesinde mevcut tüm bilgilendirmeleri görmeli.
+2. Normal kullanıcı metodu değiştirememeli.
+3. Firma admini Metot sekmesinde mevcut tüm bilgilendirmeleri görmeli.
+4. Firma admini için metot değişikliğinin sistem/platform yöneticisi üzerinden yapılacağı uyarısı görünmeli.
+5. ÖEK analizi kaydedildiğinde methodType = consumption_share_opportunity_matrix olarak saklanmalı.
+6. Farklı methodType gönderilirse backend 400 dönmeli.
+7. Build kontrolleri çalışmalı:
+   pnpm --filter @workspace/api-server build
+   pnpm --filter @workspace/ems-dashboard build
+
+Sonunda değişen dosyaları ve test sonucunu kısa özetle.

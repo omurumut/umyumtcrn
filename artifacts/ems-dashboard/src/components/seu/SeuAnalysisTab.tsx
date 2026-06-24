@@ -195,6 +195,11 @@ export default function SeuAnalysisTab({ isAdminMode = false, adminRecordType = 
           <span>Analiz kapsamı: Kullanıcının atanmış olduğu birim</span>
         </div>
       )}
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-border/60 bg-muted/20">
+          Metot: Tüketim Payı × Fırsat Matrisi
+        </span>
+      </div>
 
       <Card>
         <CardContent className="p-4">
