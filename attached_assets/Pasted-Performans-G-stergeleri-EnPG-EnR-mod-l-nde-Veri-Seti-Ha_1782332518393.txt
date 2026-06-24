@@ -1,0 +1,121 @@
+Performans Göstergeleri / EnPG-EnRÇ modülünde Veri Seti Hazırlığı ekranında “Bu ÖEK için tüketim verisi bulunamadı” hatasını düzelt.
+
+Mevcut durum:
+
+- Performans Göstergeleri > ÖEK Seçimi ekranında accepted_as_seu ÖEK kalemleri artık geliyor.
+- Ancak bir ÖEK seçilip Veri Seti Hazırlığı sekmesine geçince “Bu ÖEK için tüketim verisi bulunamadı” uyarısı çıkıyor.
+- Oysa sistemde ilgili birim/yıl için consumption kayıtları mevcut.
+
+Beklenen davranış:
+
+- Seçilen ÖEK’in kaynağına ve ilişkili alanlarına göre tüketim verileri doğru bulunmalı.
+- Analizden oluşturulan ÖEK kayıtları için mümkünse energyUseGroupId, meterId, subUnitId, unitId, energySourceId üzerinden consumption kayıtları eşleştirilmeli.
+- Manuel ÖEK kayıtları için ilişkili sayaç/enerji kullanım grubu yoksa kullanıcıya açıklayıcı bilgi verilmeli ve mümkünse kullanıcıdan bağlantı seçmesi istenmeli.
+
+Veri seti eşleştirme önceliği:
+
+1. Eğer seçilen seu_assessment_item.meter_id varsa:
+   - consumption kayıtları meter_id üzerinden getirilsin.
+2. Eğer meter_id yok ama energy_use_group_id varsa:
+   - önce meters tablosunda bu energy_use_group_id’ye bağlı sayaçlar/tüketim noktaları bulunsun.
+   - sonra consumption kayıtları bu meterId listesi üzerinden getirilsin.
+3. Eğer sub_unit_id varsa:
+   - ilgili subUnit altındaki sayaçlar bulunup consumption kayıtları getirilsin.
+4. Eğer unit_id varsa:
+   - ilgili unit altındaki tüm sayaçlar/tüketim noktaları üzerinden consumption kayıtları getirilsin.
+5. Eğer energy_source_id varsa:
+   - seçili kapsam içindeki bu enerji kaynağına ait consumption kayıtları getirilsin.
+6. Manuel kayıtta hiçbir ilişki yoksa:
+   - dataset ekranı “Bu manuel ÖEK kaydı henüz sayaç veya enerji kullanım grubu ile ilişkilendirilmemiş. EnPG/EnRÇ analizi için lütfen ilgili sayaç veya enerji kullanım grubunu seçin.” uyarısı göstersin.
+   - Kullanıcıya ilgili birim kapsamındaki energyUseGroup veya meter seçtirme alanı eklenebilir.
+   - Seçim kaydedilirse seu_assessment_item ilgili energyUseGroupId veya meterId ile güncellensin.
+
+Yıl ve dönem mantığı:
+
+- Dataset endpoint year parametresi alıyorsa, ilgili yılın Ocak-Aralık aylarını getirmeli.
+- Baseline için geçmiş 12 aylık veri gerekiyorsa seçilen yıl veya seçilen baseline period net kullanılmalı.
+- ÖEK assessment year değeri ile consumption year değeri uyuşmuyorsa kullanıcıya uyarı gösterilmeli.
+- Tüketim kayıtları aylık bazda sıralı gelmeli.
+- Eksik aylar varsa veri setinde eksik ay olarak gösterilmeli; tamamen “veri yok” denmemeli.
+
+TEP ve tüketim değeri:
+
+- Dataset response içinde hem gerçek tüketim hem TEP yer almalı.
+- Bağımlı değişken olarak regresyonda kullanılacak enerji tüketimi net olmalı:
+  - tercihen orijinal enerji tüketim değeri veya TEP seçilebilir olmalı.
+  - ilk sürümde TEP kullanılacaksa bu açıkça UI’da yazsın.
+- TEP alan adı consumption tablosunda farklıysa doğru alanla eşleştir:
+  - tep
+  - tepValue
+  - totalTep
+  - energyTep
+    hangisi mevcutsa doğru olanı kullan.
+
+HDD/CDD ve değişkenler:
+
+- Veri Seti Hazırlığı ekranında tüketim ayları geldikten sonra aynı aylar için HDD/CDD ve seçilebilir değişken değerleri de gösterilmeye hazırlanmalı.
+- HDD/CDD için mevcut resmi MGM weather_degree_days mantığı kullanılmalı.
+- Değişken değerleri variable_values tablosundan dönem eşleşmesine göre getirilmeli.
+
+API kontrolü:
+
+- GET /api/energy-performance/dataset?seuItemId=...&year=... endpointini kontrol et.
+- seuItemId ile seu_assessment_items kaydı bulunmalı.
+- Üst assessment kaydı üzerinden companyId, unitId, year, recordType, isOfficial bilgileri alınmalı.
+- Normal kullanıcı sadece kendi unitId kapsamındaki item için dataset alabilmeli.
+- Admin sadece kendi companyId kapsamındaki item için dataset alabilmeli.
+- Consumption join mantığı yukarıdaki eşleştirme önceliğine göre düzeltilmeli.
+- Response içinde debug amaçlı ama kullanıcıya zarar vermeyecek şekilde şu alanlar dönebilir:
+  - matchType: meter | energyUseGroup | subUnit | unit | energySource | manual_unlinked
+  - matchedMeterCount
+  - matchedConsumptionCount
+  - missingMonths
+  - warningMessage
+
+Frontend:
+
+- Veri Seti Hazırlığı ekranı sadece “veri bulunamadı” dememeli.
+- Eğer hiç consumption yoksa nedenini göstermeli:
+  - “Bu ÖEK enerji kullanım grubu ile ilişkili ancak bu gruba bağlı sayaçlarda seçilen yıl için tüketim kaydı bulunamadı.”
+  - “Bu manuel ÖEK herhangi bir sayaç/enerji kullanım grubu ile ilişkilendirilmemiş.”
+  - “Seçilen yıl için tüketim verisi yok.”
+- Eğer bazı aylar eksikse var olan ayları tabloya basıp eksik ayları ayrıca uyarı olarak göstersin.
+- Kullanıcıya seçilen ÖEK’in hangi bağlantıyla veri çektiğini göster:
+  - “Veri eşleştirme: Enerji Kullanım Grubu”
+  - “Eşleşen sayaç sayısı: X”
+  - “Bulunan tüketim kaydı: Y”
+
+Manuel ÖEK özel durumu:
+
+- Manuel ÖEK kaydı EnPG/EnRÇ analizinde kullanılacaksa bir enerji kullanım grubu veya sayaç ile ilişkilendirilmesi gerekir.
+- Manuel kayıtta ilişki yoksa regression dataset oluşturulamaz.
+- Bu durumda kullanıcıya bağlantı seçme imkanı ver:
+  - Enerji kullanım grubu seç
+  - veya sayaç/tüketim noktası seç
+- Seçim kaydedildikten sonra dataset tekrar oluşturulabilsin.
+
+Teknik şartlar:
+
+- Yeni büyük modül ekleme.
+- Yeni onay mekanizması ekleme.
+- PDF/Excel export ekleme.
+- Mümkünse yeni migration ekleme; mevcut seu_assessment_items alanları yeterliyse onları kullan.
+- Eğer manuel item ilişkilendirme için mevcut kolonlar yoksa minimum migration ekle.
+- Tenant güvenliğini bozma.
+- TypeScript/build hatası bırakma.
+
+Test:
+
+1. Analizden oluşturulmuş energyUseGroup bazlı ÖEK seç.
+2. Veri Seti Hazırlığı ekranında bu energyUseGroup’a bağlı sayaçların consumption kayıtları gelmeli.
+3. Meter bazlı ÖEK varsa meter consumption kayıtları gelmeli.
+4. Manuel ÖEK seç ve ilişki yoksa açıklayıcı uyarı gör.
+5. Manuel ÖEK’e energyUseGroup veya meter ilişkilendir ve dataset’in geldiğini kontrol et.
+6. Eksik aylar varsa tablo kısmen dolmalı, eksik aylar uyarıda görünmeli.
+7. Normal kullanıcı başka birim verisine erişememeli.
+8. Admin kendi companyId kapsamındaki ÖEK datasetlerini görebilmeli.
+9. Build kontrolleri çalışmalı:
+   pnpm --filter @workspace/api-server build
+   pnpm --filter @workspace/ems-dashboard build
+
+Sonunda değişen dosyaları ve test sonucunu kısa özetle.

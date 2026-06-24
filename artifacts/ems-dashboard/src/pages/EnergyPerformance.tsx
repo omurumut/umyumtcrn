@@ -11,7 +11,7 @@ import { useUnit } from "@/context/UnitContext";
 import { useYear } from "@/context/YearContext";
 import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
 import {
-  AlertCircle, CheckCircle2, ChevronRight, BarChart2, Database,
+  AlertCircle, AlertTriangle, CheckCircle2, ChevronRight, BarChart2, Database,
   TrendingUp, BookOpen, Activity, Info,
 } from "lucide-react";
 
@@ -64,10 +64,20 @@ interface ConsumptionRow {
   meters: string;
 }
 
+type DatasetMatchType = "meter" | "energyUseGroup" | "subUnit" | "unit" | "manual_unlinked";
+
 interface DatasetResponse {
-  seuItem: { id: number; name: string; unitId: number | null; energySourceId: number | null; assessmentYear: number };
+  seuItem: {
+    id: number; name: string; unitId: number | null;
+    energySourceId: number | null; energyUseGroupId: number | null;
+    meterId: number | null; assessmentYear: number; assessmentRecordType: string | null;
+  };
   year: number;
-  periodStart: number;
+  matchType: DatasetMatchType;
+  matchedMeterCount: number;
+  matchedConsumptionCount: number;
+  missingMonths: string[];
+  warningMessage: string | null;
   consumptionDataset: ConsumptionRow[];
 }
 
@@ -308,19 +318,93 @@ export default function EnergyPerformance() {
                 </CardHeader>
               </Card>
 
+              {/* Veri eşleştirme bilgisi */}
+              {dataset && (
+                <Card className="border-border/40">
+                  <CardContent className="p-4">
+                    <div className="flex flex-wrap gap-4 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">Veri eşleştirme:</span>
+                        <span className={`font-medium px-2 py-0.5 rounded-full text-[11px] ${
+                          dataset.matchType === "manual_unlinked"
+                            ? "bg-destructive/20 text-destructive"
+                            : "bg-teal-500/15 text-teal-400"
+                        }`}>
+                          {dataset.matchType === "meter" && "Sayaç"}
+                          {dataset.matchType === "energyUseGroup" && "Enerji Kullanım Grubu"}
+                          {dataset.matchType === "subUnit" && "Alt Birim"}
+                          {dataset.matchType === "unit" && "Birim"}
+                          {dataset.matchType === "manual_unlinked" && "İlişkilendirilmemiş"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">Eşleşen sayaç:</span>
+                        <span className="font-medium">{dataset.matchedMeterCount}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">Tüketim kaydı:</span>
+                        <span className="font-medium">{dataset.matchedConsumptionCount}</span>
+                      </div>
+                      {dataset.seuItem.assessmentYear !== dataset.year && (
+                        <div className="flex items-center gap-1.5 text-amber-400">
+                          <AlertTriangle className="h-3 w-3" />
+                          <span>Değerlendirme yılı: {dataset.seuItem.assessmentYear}</span>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Uyarı mesajı */}
+              {dataset?.warningMessage && (
+                <Card className="border-amber-500/30 bg-amber-500/5">
+                  <CardContent className="p-4 flex gap-2 items-start">
+                    <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                    <p className="text-sm text-amber-300">{dataset.warningMessage}</p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Eksik aylar */}
+              {dataset && dataset.missingMonths.length > 0 && dataset.consumptionDataset.length > 0 && (
+                <Card className="border-amber-500/20 bg-amber-500/5">
+                  <CardContent className="p-4 flex gap-2 items-start">
+                    <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                    <p className="text-sm text-amber-300">
+                      <span className="font-medium">Eksik aylar ({dataset.missingMonths.length}):</span>{" "}
+                      {dataset.missingMonths.join(", ")}
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+
               {/* Tüketim verisi tablosu */}
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium">
-                    Aylık Enerji Tüketim Verisi ({dataset?.periodStart ?? year - 1}–{dataset?.year ?? year})
+                    Aylık Enerji Tüketim Verisi — {dataset?.year ?? year} (Tüketimler TEP cinsinden gösterilmektedir)
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   {datasetLoading ? (
                     <div className="text-sm text-muted-foreground py-4 text-center">Yükleniyor…</div>
                   ) : !dataset || dataset.consumptionDataset.length === 0 ? (
-                    <div className="text-sm text-muted-foreground py-4 text-center">
-                      Bu ÖEK için tüketim verisi bulunamadı.
+                    <div className="py-6 text-center space-y-2">
+                      {dataset?.matchType === "manual_unlinked" ? (
+                        <p className="text-sm text-muted-foreground">
+                          Bu manuel ÖEK herhangi bir sayaç veya enerji kullanım grubu ile ilişkilendirilmemiş.
+                        </p>
+                      ) : dataset?.matchedMeterCount === 0 ? (
+                        <p className="text-sm text-muted-foreground">
+                          Bu ÖEK'e ait enerji kullanım grubunda kayıtlı sayaç bulunamadı.
+                        </p>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          Bu ÖEK ile eşleşen {dataset?.matchedMeterCount ?? 0} sayaç bulundu ancak{" "}
+                          {dataset?.year ?? year} yılı için tüketim kaydı bulunamadı.
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <div className="overflow-x-auto">

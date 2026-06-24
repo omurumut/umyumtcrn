@@ -75,7 +75,7 @@ router.get("/energy-performance/seu-items", requireAuth, async (req, res) => {
 });
 
 // ── GET /api/energy-performance/dataset ───────────────────
-// Seçilen ÖEK kalemi için geçmiş 12 aylık tüketim + HDD/CDD veri seti
+// Seçilen ÖEK kalemi için tüketim + HDD/CDD veri seti (öncelik: meter > energyUseGroup > subUnit > unit)
 router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
@@ -87,17 +87,21 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
       return;
     }
 
-    // SEU kalemini ve ilgili assessment'ı getir
+    // SEU kalemini ve assessment bilgilerini getir
     const [seuItem] = await db
       .select({
         id: seuAssessmentItemsTable.id,
         name: seuAssessmentItemsTable.name,
-        unitId: seuAssessmentItemsTable.unitId,
+        itemUnitId: seuAssessmentItemsTable.unitId,
+        itemSubUnitId: seuAssessmentItemsTable.subUnitId,
         energySourceId: seuAssessmentItemsTable.energySourceId,
         meterId: seuAssessmentItemsTable.meterId,
         energyUseGroupId: seuAssessmentItemsTable.energyUseGroupId,
         assessmentCompanyId: seuAssessmentsTable.companyId,
+        assessmentUnitId: seuAssessmentsTable.unitId,
         assessmentYear: seuAssessmentsTable.year,
+        assessmentRecordType: seuAssessmentsTable.recordType,
+        assessmentIsOfficial: seuAssessmentsTable.isOfficial,
       })
       .from(seuAssessmentItemsTable)
       .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
@@ -113,69 +117,130 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
       return;
     }
 
-    // Tenant + rol güvenliği
-    if (role === "user" && sessionUnitId && seuItem.unitId !== sessionUnitId) {
+    // Tenant + rol güvenliği — assessment.unitId kullan (item.unitId genellikle null)
+    const assessmentUnitId = seuItem.assessmentUnitId;
+    if (role === "user" && sessionUnitId && assessmentUnitId !== sessionUnitId) {
       res.status(403).json({ error: "Erişim yetkisi yok" });
       return;
     }
 
-    const resolvedUnitId = seuItem.unitId;
+    // ── Öncelik sırasına göre eşleşen meter ID listesini belirle ──────────
+    type MatchType = "meter" | "energyUseGroup" | "subUnit" | "unit" | "manual_unlinked";
+    let matchType: MatchType = "manual_unlinked";
+    let matchedMeterIds: number[] = [];
+    let warningMessage: string | null = null;
 
-    // 12 aylık tüketim verisi
-    const periodStart = year - 1; // geçmiş 12 ay = önceki yıl + bu yılın başı
-    const consumptionRows = await db
-      .select({
-        year: consumptionTable.year,
-        month: consumptionTable.month,
-        kwh: consumptionTable.kwh,
-        tep: consumptionTable.tep,
-        co2: consumptionTable.co2,
-        hdd: consumptionTable.hdd,
-        cdd: consumptionTable.cdd,
-        meterId: consumptionTable.meterId,
-        meterName: metersTable.name,
-        energySourceId: metersTable.energySourceId,
-        energySourceName: energySourcesTable.name,
-      })
-      .from(consumptionTable)
-      .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-      .leftJoin(energySourcesTable, eq(metersTable.energySourceId, energySourcesTable.id))
-      .where(
-        and(
-          eq(consumptionTable.companyId, sessionCompanyId),
-          ...(resolvedUnitId ? [eq(metersTable.unitId, resolvedUnitId)] : []),
-          ...(seuItem.energySourceId ? [eq(metersTable.energySourceId, seuItem.energySourceId)] : []),
-          ...(seuItem.meterId ? [eq(consumptionTable.meterId, seuItem.meterId)] : []),
+    if (seuItem.meterId) {
+      // 1. Öncelik: doğrudan meterId
+      matchType = "meter";
+      matchedMeterIds = [seuItem.meterId];
+
+    } else if (seuItem.energyUseGroupId) {
+      // 2. Öncelik: energyUseGroupId → bu gruba bağlı sayaçlar
+      matchType = "energyUseGroup";
+      const meters = await db
+        .select({ id: metersTable.id })
+        .from(metersTable)
+        .where(
+          and(
+            eq(metersTable.energyUseGroupId, seuItem.energyUseGroupId),
+            ...(assessmentUnitId ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+          )
+        );
+      matchedMeterIds = meters.map(m => m.id);
+      if (matchedMeterIds.length === 0) {
+        warningMessage = "Bu enerji kullanım grubuna bağlı sayaç bulunamadı.";
+      }
+
+    } else if (seuItem.itemSubUnitId) {
+      // 3. Öncelik: subUnitId → o alt birime bağlı sayaçlar
+      matchType = "subUnit";
+      const meters = await db
+        .select({ id: metersTable.id })
+        .from(metersTable)
+        .where(
+          and(
+            eq(metersTable.subUnitId, seuItem.itemSubUnitId),
+            ...(seuItem.energySourceId ? [eq(metersTable.energySourceId, seuItem.energySourceId)] : []),
+          )
+        );
+      matchedMeterIds = meters.map(m => m.id);
+
+    } else if (assessmentUnitId) {
+      // 4. Öncelik: assessment'ın birim ID'si → o birime bağlı sayaçlar
+      matchType = "unit";
+      const meters = await db
+        .select({ id: metersTable.id })
+        .from(metersTable)
+        .where(
+          and(
+            eq(metersTable.unitId, assessmentUnitId),
+            ...(seuItem.energySourceId ? [eq(metersTable.energySourceId, seuItem.energySourceId)] : []),
+          )
+        );
+      matchedMeterIds = meters.map(m => m.id);
+
+    } else {
+      // 5. İlişkilendirilmemiş manuel kayıt
+      matchType = "manual_unlinked";
+      warningMessage = "Bu manuel ÖEK kaydı henüz sayaç veya enerji kullanım grubu ile ilişkilendirilmemiş. EnPG/EnRÇ analizi için lütfen ilgili sayaç veya enerji kullanım grubunu seçin.";
+    }
+
+    // ── Tüketim verilerini getir ──────────────────────────────────────────
+    let consumptionRows: Array<{
+      year: number; month: number; kwh: number; tep: number; co2: number;
+      hdd: number | null; cdd: number | null; meterId: number;
+      meterName: string | null; energySourceName: string | null;
+    }> = [];
+
+    if (matchedMeterIds.length > 0) {
+      consumptionRows = await db
+        .select({
+          year: consumptionTable.year,
+          month: consumptionTable.month,
+          kwh: consumptionTable.kwh,
+          tep: consumptionTable.tep,
+          co2: consumptionTable.co2,
+          hdd: consumptionTable.hdd,
+          cdd: consumptionTable.cdd,
+          meterId: consumptionTable.meterId,
+          meterName: metersTable.name,
+          energySourceName: energySourcesTable.name,
+        })
+        .from(consumptionTable)
+        .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+        .leftJoin(energySourcesTable, eq(metersTable.energySourceId, energySourcesTable.id))
+        .where(
+          and(
+            eq(consumptionTable.companyId, sessionCompanyId),
+            eq(consumptionTable.year, year),
+            inArray(consumptionTable.meterId, matchedMeterIds),
+          )
         )
-      )
-      .orderBy(asc(consumptionTable.year), asc(consumptionTable.month));
+        .orderBy(asc(consumptionTable.year), asc(consumptionTable.month));
+    }
 
-    // Son 24 ay: (year-1) tüm aylar + (year) tüm aylar
-    const filtered = consumptionRows.filter(r =>
-      (r.year === periodStart) || (r.year === year)
-    );
-
-    // Aylık aggregation: aynı yıl+ay birden fazla sayaç olabilir
+    // ── Aylık agregasyon ──────────────────────────────────────────────────
     const monthMap: Record<string, {
       year: number; month: number; totalKwh: number; totalTep: number;
-      totalCo2: number; avgHdd: number | null; avgCdd: number | null;
+      totalCo2: number; hddSum: number | null; cddSum: number | null; hddCount: number; cddCount: number;
       energySourceName: string | null; meters: string[];
     }> = {};
 
-    for (const r of filtered) {
+    for (const r of consumptionRows) {
       const key = `${r.year}-${r.month}`;
       if (!monthMap[key]) {
         monthMap[key] = {
           year: r.year, month: r.month, totalKwh: 0, totalTep: 0,
-          totalCo2: 0, avgHdd: null, avgCdd: null,
+          totalCo2: 0, hddSum: null, cddSum: null, hddCount: 0, cddCount: 0,
           energySourceName: r.energySourceName ?? null, meters: [],
         };
       }
       monthMap[key].totalKwh += r.kwh ?? 0;
       monthMap[key].totalTep += r.tep ?? 0;
       monthMap[key].totalCo2 += r.co2 ?? 0;
-      if (r.hdd != null) monthMap[key].avgHdd = (monthMap[key].avgHdd ?? 0) + r.hdd;
-      if (r.cdd != null) monthMap[key].avgCdd = (monthMap[key].avgCdd ?? 0) + r.cdd;
+      if (r.hdd != null) { monthMap[key].hddSum = (monthMap[key].hddSum ?? 0) + r.hdd; monthMap[key].hddCount++; }
+      if (r.cdd != null) { monthMap[key].cddSum = (monthMap[key].cddSum ?? 0) + r.cdd; monthMap[key].cddCount++; }
       if (r.meterName && !monthMap[key].meters.includes(r.meterName)) {
         monthMap[key].meters.push(r.meterName);
       }
@@ -190,22 +255,45 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
         totalKwh: Math.round(r.totalKwh * 100) / 100,
         totalTep: Math.round(r.totalTep * 10000) / 10000,
         totalCo2: Math.round(r.totalCo2 * 100) / 100,
-        hdd: r.avgHdd != null ? Math.round(r.avgHdd * 10) / 10 : null,
-        cdd: r.avgCdd != null ? Math.round(r.avgCdd * 10) / 10 : null,
+        hdd: r.hddSum != null && r.hddCount > 0 ? Math.round((r.hddSum / r.hddCount) * 10) / 10 : null,
+        cdd: r.cddSum != null && r.cddCount > 0 ? Math.round((r.cddSum / r.cddCount) * 10) / 10 : null,
         energySourceName: r.energySourceName,
         meters: r.meters.join(", "),
       }));
+
+    // ── Eksik ayları belirle ──────────────────────────────────────────────
+    const presentMonths = new Set(consumptionDataset.map(r => r.month));
+    const missingMonths = Array.from({ length: 12 }, (_, i) => i + 1)
+      .filter(m => !presentMonths.has(m))
+      .map(m => MONTH_LABELS[m] ?? String(m));
+
+    // Assessment yılı ≠ istenen yıl uyarısı
+    if (seuItem.assessmentYear !== year && !warningMessage) {
+      warningMessage = `ÖEK değerlendirme yılı (${seuItem.assessmentYear}) ile seçilen veri yılı (${year}) farklı. Doğru yılı seçtiğinizden emin olun.`;
+    }
+
+    // Eşleşen sayaç var ama o yıl için tüketim yoksa
+    if (matchedMeterIds.length > 0 && consumptionDataset.length === 0 && !warningMessage) {
+      warningMessage = `Bu ÖEK ile eşleşen ${matchedMeterIds.length} sayaç bulundu, ancak ${year} yılı için tüketim kaydı bulunamadı.`;
+    }
 
     res.json({
       seuItem: {
         id: seuItem.id,
         name: seuItem.name,
-        unitId: seuItem.unitId,
+        unitId: assessmentUnitId,
         energySourceId: seuItem.energySourceId,
+        energyUseGroupId: seuItem.energyUseGroupId,
+        meterId: seuItem.meterId,
         assessmentYear: seuItem.assessmentYear,
+        assessmentRecordType: seuItem.assessmentRecordType,
       },
       year,
-      periodStart,
+      matchType,
+      matchedMeterCount: matchedMeterIds.length,
+      matchedConsumptionCount: consumptionRows.length,
+      missingMonths,
+      warningMessage,
       consumptionDataset,
     });
   } catch (err) {
