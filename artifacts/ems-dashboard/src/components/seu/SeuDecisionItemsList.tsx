@@ -309,7 +309,17 @@ function ManualEditDialog({
   );
 }
 
-export default function SeuDecisionItemsList() {
+interface SeuDecisionItemsListProps {
+  unitIdFilter?: number | null;
+  recordTypeFilter?: string | null;
+  adminMode?: boolean;
+}
+
+export default function SeuDecisionItemsList({
+  unitIdFilter,
+  recordTypeFilter,
+  adminMode = false,
+}: SeuDecisionItemsListProps = {}) {
   const { token } = useAuth();
   const qc = useQueryClient();
   const [year, setYear] = useState<number | "all">("all");
@@ -317,11 +327,13 @@ export default function SeuDecisionItemsList() {
   const [editItem, setEditItem] = useState<DecisionItem | null>(null);
 
   const { data: items, isLoading } = useQuery({
-    queryKey: ["seu-decision-items", year],
+    queryKey: ["seu-decision-items", year, unitIdFilter, recordTypeFilter],
     queryFn: async () => {
-      const url = year === "all"
-        ? "/api/seu/decision-items"
-        : `/api/seu/decision-items?year=${year}`;
+      const params = new URLSearchParams();
+      if (year !== "all") params.set("year", String(year));
+      if (unitIdFilter) params.set("unitId", String(unitIdFilter));
+      if (recordTypeFilter) params.set("recordType", recordTypeFilter);
+      const url = `/api/seu/decision-items${params.toString() ? `?${params}` : ""}`;
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -360,10 +372,12 @@ export default function SeuDecisionItemsList() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 p-3 rounded-md border border-border/60 bg-muted/10 text-xs text-muted-foreground">
-        <Info className="h-3.5 w-3.5 shrink-0" />
-        Kapsam: Biriminize ait resmi ÖEK değerlendirme kararları ve manuel kayıtlar
-      </div>
+      {!adminMode && (
+        <div className="flex items-center gap-2 p-3 rounded-md border border-border/60 bg-muted/10 text-xs text-muted-foreground">
+          <Info className="h-3.5 w-3.5 shrink-0" />
+          Kapsam: Biriminize ait resmi ÖEK değerlendirme kararları ve manuel kayıtlar
+        </div>
+      )}
 
       <div className="flex items-center gap-4 flex-wrap">
         <div className="space-y-1">
@@ -450,9 +464,11 @@ export default function SeuDecisionItemsList() {
             </thead>
             <tbody>
               {filtered.map((item, idx) => {
-                const canEdit = item.source === "analysis"
-                  ? item.itemId != null
-                  : item.manualId != null;
+                const canEdit = !adminMode && (
+                  item.source === "analysis"
+                    ? item.itemId != null
+                    : item.manualId != null
+                );
                 return (
                   <tr key={`${item.source}-${item.itemId ?? item.manualId}-${idx}`} className="border-b border-border/50 hover:bg-muted/20">
                     <td className="p-2 pl-3">
@@ -469,6 +485,9 @@ export default function SeuDecisionItemsList() {
                         <span className="font-medium max-w-[180px] truncate" title={item.name}>{item.name}</span>
                       </div>
                       <div className="text-muted-foreground mt-0.5 pl-3">
+                        {adminMode && item.unitName && (
+                          <span className="text-foreground font-medium mr-1">{item.unitName} ·</span>
+                        )}
                         {LEVEL_LABELS[item.analysisLevel] ?? item.analysisLevel}
                         {item.assessmentYear && <span className="ml-1">· {item.assessmentYear}</span>}
                       </div>

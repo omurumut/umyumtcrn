@@ -13,6 +13,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
 import SeuAnalysisTab from "./SeuAnalysisTab";
 import SeuAssessmentList from "./SeuAssessmentList";
+import SeuDecisionItemsList from "./SeuDecisionItemsList";
 import SeuMethodTab from "./SeuMethodTab";
 
 const LEVEL_LABELS: Record<string, string> = {
@@ -428,10 +429,10 @@ export default function SeuAdminTabs() {
               </Select>
             </div>
           </div>
-          <SeuAssessmentList
+          <SeuDecisionItemsList
             unitIdFilter={unitFilter}
             recordTypeFilter="unit_official"
-            showAllTypes={false}
+            adminMode={true}
           />
         </div>
       </TabsContent>

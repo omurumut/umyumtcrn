@@ -1,0 +1,92 @@
+ÖEK/SEU modülünde manuel kayıtların yanlış sekmede görünmesi hatasını düzelt. Yeni özellik ekleme.
+
+Mevcut hata:
+
+- Normal kullanıcının girdiği manuel ÖEK kaydı firma admininin “Birim ÖEK Kayıtları” sekmesinde görünmüyor.
+- Manuel kayıt saçma şekilde “Tüm Birimler Özeti” sekmesinde görünüyor.
+- Bu yanlış. Manuel kayıt normal kullanıcının resmi birim ÖEK kararıdır.
+
+Beklenen doğru mantık:
+
+1. Manuel kayıt sınıflandırması
+
+- Normal kullanıcının Manuel Kayıt sekmesinden oluşturduğu kayıt şu şekilde saklanmalı/görülmeli:
+  - recordType = unit_official
+  - isOfficial = true
+  - sourceType veya source = manual
+- Manuel kayıt admin_review veya company_summary olarak saklanmamalı.
+- Manuel kayıt Tüm Birimler Özeti’nde bağımsız ana kayıt gibi listelenmemeli.
+
+2. Firma admini görünümü
+
+- Firma admini “Birim ÖEK Kayıtları” sekmesinde kullanıcıların manuel ve analizden oluşturduğu resmi kayıtlarını birlikte görebilmeli.
+- Manuel kayıtlar “Manuel Kayıt” etiketiyle ayrılmalı.
+- Analizden gelenler “Analizden Oluşturuldu” etiketiyle ayrılmalı.
+- Admin kendi companyId kapsamındaki tüm birimlerin unit_official kayıtlarını görebilmeli.
+- Admin unit_official kayıtları ezememeli.
+
+3. Tüm Birimler Özeti davranışı
+
+- Tüm Birimler Özeti bir kayıt listesi değil, yönetimsel özet/kıyaslama ekranı olmalı.
+- Manuel kayıt burada tek başına assessment kartı gibi görünmemeli.
+- Tüm Birimler Özeti’nde sadece birim bazlı özet satırları olmalı:
+  - birim adı
+  - yıllık toplam TEP
+  - firma toplam TEP içindeki pay
+  - toplam karar kalemi
+  - ÖEK sayısı
+  - İzleme sayısı
+  - ÖEK Dışı sayısı
+  - son güncelleme
+- Manuel kayıtlar bu özet sayılara dahil edilebilir, ama bağımsız kayıt olarak burada listelenmemeli.
+- Birim detayına girilirse manuel kayıtlar “Manuel Kayıt” kaynağıyla detayda görülebilir.
+
+4. API kontrolü
+   Kontrol et ve düzelt:
+
+- Manuel kayıt oluşturma endpointi hangi recordType ile kayıt oluşturuyor?
+- Manuel kayıt yanlışlıkla company_summary olarak mı kaydediliyor?
+- Admin “Birim ÖEK Kayıtları” endpointi manuel unit_official kayıtları filtre dışında mı bırakıyor?
+- Tüm Birimler Özeti endpointi yanlışlıkla manuel kayıtları assessment listesi gibi mi dönüyor?
+- GET /api/seu/assessments admin için unit_official kayıtları döndürürken sourceType=manual kayıtları da dahil etmeli.
+- GET /api/seu/admin/unit-summary varsa manuel kayıtları sadece özet hesaplarına dahil etmeli; ana liste kaydı gibi döndürmemeli.
+
+5. Frontend kontrolü
+   Kontrol et ve düzelt:
+
+- SeuAdminTabs.tsx içinde “Birim ÖEK Kayıtları” sekmesi manuel kayıtları göstermeli.
+- “Tüm Birimler Özeti” sekmesi manuel kayıt kartı göstermemeli.
+- Manual kayıtlar karar listesi/detay ekranında sourceType = manual etiketiyle görünmeli.
+
+6. Veri düzeltme
+
+- Eğer mevcut manuel kayıtlar yanlış recordType ile kaydedilmişse, migration oluşturmadan mümkünse uygulama açılışında değil; ilgili API düzeltmesiyle yeni kayıtların doğru oluşmasını sağla.
+- Test veritabanında yanlış oluşmuş manuel kayıtları düzeltmek için gerekirse güvenli bir SQL düzeltmesi öner veya uygula:
+  - Manuel kullanıcı kayıtları company_summary/admin_review ise ve kullanıcı birimine aitse unit_official yapılmalı.
+  - isOfficial true yapılmalı.
+  - sourceType manual olarak işaretlenmeli.
+- Veri kaybı yapma.
+
+7. Teknik şartlar
+
+- Yeni onay mekanizması ekleme.
+- PDF/Excel export ekleme.
+- Büyük yeni modül ekleme.
+- Mümkünse yeni migration ekleme; mevcut kolonlar yetiyorsa onları kullan.
+- TypeScript/build hatası bırakma.
+- Tenant güvenliğini bozma.
+
+Test:
+
+1. Normal kullanıcı manuel ÖEK kaydı girsin.
+2. Normal kullanıcı Karar Kayıtları ekranında bu manuel kaydı görsün.
+3. Firma admini Birim ÖEK Kayıtları sekmesinde bu manuel kaydı görsün.
+4. Manuel kayıt “Manuel Kayıt” etiketiyle görünsün.
+5. Manuel kayıt Tüm Birimler Özeti’nde bağımsız kayıt/kart olarak görünmesin.
+6. Tüm Birimler Özeti sadece birim bazlı kıyaslama satırları göstersin.
+7. Birim detayında manuel kayıt kaynak etiketiyle görünsün.
+8. Build kontrolleri çalışsın:
+   pnpm --filter @workspace/api-server build
+   pnpm --filter @workspace/ems-dashboard build
+
+Sonunda değişen dosyaları ve test sonucunu kısa özetle.

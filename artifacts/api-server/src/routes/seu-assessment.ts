@@ -555,13 +555,16 @@ router.get("/seu/decision-items", requireAuth, async (req, res) => {
     const year = req.query.year ? parseInt(req.query.year as string) : null;
     const unitIdFilter = req.query.unitId ? parseInt(req.query.unitId as string) : null;
 
+    const recordTypeFilter = (req.query.recordType as string) || null;
+
     // ── Analiz kaynaklı kayıtlar ───────────────────────────
     const assessmentConds = [eq(seuAssessmentsTable.companyId, sessionCompanyId)];
     if (role === "user" && sessionUnitId !== null) {
       assessmentConds.push(eq(seuAssessmentsTable.unitId, sessionUnitId));
       assessmentConds.push(eq(seuAssessmentsTable.recordType, "unit_official"));
-    } else if ((role === "admin" || role === "superadmin") && unitIdFilter) {
-      assessmentConds.push(eq(seuAssessmentsTable.unitId, unitIdFilter));
+    } else if (role === "admin" || role === "superadmin") {
+      if (unitIdFilter) assessmentConds.push(eq(seuAssessmentsTable.unitId, unitIdFilter));
+      if (recordTypeFilter) assessmentConds.push(eq(seuAssessmentsTable.recordType, recordTypeFilter));
     }
     if (year) assessmentConds.push(eq(seuAssessmentsTable.year, year));
 
