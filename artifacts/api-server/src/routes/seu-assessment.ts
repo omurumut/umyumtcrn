@@ -485,4 +485,59 @@ router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
   }
 });
 
+// ── GET /seu/decision-items ──────────────────────────────
+// Normal kullanıcı için flat item listesi; admin de kullanabilir.
+router.get("/seu/decision-items", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const year = req.query.year ? parseInt(req.query.year as string) : null;
+
+    const assessmentConds = [eq(seuAssessmentsTable.companyId, sessionCompanyId)];
+
+    if (role === "user" && sessionUnitId !== null) {
+      assessmentConds.push(eq(seuAssessmentsTable.unitId, sessionUnitId));
+      assessmentConds.push(eq(seuAssessmentsTable.recordType, "unit_official"));
+    }
+    if (year) {
+      assessmentConds.push(eq(seuAssessmentsTable.year, year));
+    }
+
+    const rows = await db
+      .select({
+        itemId: seuAssessmentItemsTable.id,
+        assessmentId: seuAssessmentItemsTable.assessmentId,
+        name: seuAssessmentItemsTable.name,
+        energyTep: seuAssessmentItemsTable.energyTep,
+        consumptionSharePercent: seuAssessmentItemsTable.consumptionSharePercent,
+        hasOpportunity: seuAssessmentItemsTable.hasOpportunity,
+        priorityResult: seuAssessmentItemsTable.priorityResult,
+        systemRecommendation: seuAssessmentItemsTable.systemRecommendation,
+        userDecision: seuAssessmentItemsTable.userDecision,
+        decisionReason: seuAssessmentItemsTable.decisionReason,
+        responsible: seuAssessmentItemsTable.responsible,
+        targetReductionPercent: seuAssessmentItemsTable.targetReductionPercent,
+        notes: seuAssessmentItemsTable.notes,
+        itemUpdatedAt: seuAssessmentItemsTable.updatedAt,
+        assessmentYear: seuAssessmentsTable.year,
+        periodStart: seuAssessmentsTable.periodStart,
+        periodEnd: seuAssessmentsTable.periodEnd,
+        analysisLevel: seuAssessmentsTable.analysisLevel,
+        recordType: seuAssessmentsTable.recordType,
+        unitTotalTep: seuAssessmentsTable.unitTotalTep,
+        unitId: seuAssessmentsTable.unitId,
+        unitName: unitsTable.name,
+      })
+      .from(seuAssessmentItemsTable)
+      .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+      .leftJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
+      .where(and(...assessmentConds))
+      .orderBy(desc(seuAssessmentsTable.year), desc(seuAssessmentItemsTable.consumptionSharePercent));
+
+    res.json(rows);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
 export default router;

@@ -20,6 +20,7 @@ import SeuAnalysisTab from "@/components/seu/SeuAnalysisTab";
 import SeuAssessmentList from "@/components/seu/SeuAssessmentList";
 import SeuMethodTab from "@/components/seu/SeuMethodTab";
 import SeuAdminTabs from "@/components/seu/SeuAdminTabs";
+import SeuDecisionItemsList from "@/components/seu/SeuDecisionItemsList";
 
 const CATEGORIES = [
   { value: "uretim", label: "Üretim" },
@@ -273,7 +274,7 @@ export default function Seu() {
           </TabsContent>
 
           <TabsContent value="list">
-            <SeuAssessmentList showAllTypes={false} />
+            <SeuDecisionItemsList />
           </TabsContent>
 
           <TabsContent value="manual">

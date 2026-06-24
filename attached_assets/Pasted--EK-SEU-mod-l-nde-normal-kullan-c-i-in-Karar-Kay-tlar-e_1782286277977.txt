@@ -1,0 +1,123 @@
+ÖEK/SEU modülünde normal kullanıcı için “Karar Kayıtları” ekranını birim kartı mantığından çıkarıp yıl bazlı ÖEK karar listesi haline getir.
+
+Mevcut durum:
+
+* Normal kullanıcı kendi birimine atanmış olmasına rağmen Karar Kayıtları sekmesinde “17. Bölge Müdürlüğü” gibi birim kartı görüyor.
+* Detaya girince enerji kullanım grubu kararları görünüyor.
+* Bu admin için anlamlı olabilir ama normal kullanıcı için gereksiz.
+* Normal kullanıcı kendi birimini zaten temsil eder; birim adı kartı altında tek parça değerlendirme görmek yerine yıl bazında ÖEK / ÖEK Dışı / İzle kararlarını doğrudan listelemelidir.
+
+Beklenen davranış:
+
+1. Normal kullanıcı Karar Kayıtları ekranı
+
+* Normal kullanıcıda kart bazlı “assessment listesi” ana görünüm olmasın.
+* Normal kullanıcı kendi unitId kapsamındaki kayıtları doğrudan item/karar listesi olarak görsün.
+* Üstte yıl filtresi olsun.
+* Gerekirse ay/dönem bilgisi gösterilsin ama ana kırılım yıl bazlı olsun.
+* Birim adı sürekli kart olarak gösterilmesin. İstenirse küçük bilgi metni olarak üstte gösterilebilir:
+  “Kapsam: Kullanıcının atanmış olduğu birim”
+* Ana liste şu gruplarla gösterilsin:
+
+  * Tüm Kararlar
+  * ÖEK
+  * İzleme
+  * ÖEK Dışı
+* Varsayılan görünüm “Tüm Kararlar” olabilir.
+
+2. Normal kullanıcı liste kolonları
+   Normal kullanıcı karar kayıtları tablosunda/kartlarında şu bilgiler doğrudan görünmeli:
+
+* Yıl
+* Dönem
+* Enerji kullanım grubu / analiz öğesi adı
+* TEP tüketim
+* Pay %
+* Fırsat var mı
+* Öncelik
+* Sistem önerisi
+* Kullanıcı kararı
+* Karar gerekçesi
+* Hedef azaltım %
+* Sorumlu
+* Not
+* Son güncelleme
+
+3. Karar gruplama
+
+* accepted_as_seu kararları “ÖEK” olarak görünsün.
+* monitor kararları “İzleme” olarak görünsün.
+* not_seu kararları “ÖEK Dışı” olarak görünsün.
+* ÖEK Dışı ve İzleme kararları kaybolmasın.
+* Karar gerekçesi normal listede okunabilir olmalı.
+
+4. Yıl bazlı görünüm
+
+* Normal kullanıcı için üstte yıl seçimi olsun.
+* Seçilen yılın tüm karar itemları listelensin.
+* Eğer aynı yıl için birden fazla assessment varsa, itemlar birleştirilerek gösterilebilir ama assessment/dönem bilgisi kaybolmasın.
+* Kullanıcı “2025 yılı ÖEK kararları” şeklinde net bir liste görmeli.
+* “17. Bölge Müdürlüğü — 2025 — Resmi” gibi assessment kartı normal kullanıcı ana görünümünde gösterilmemeli.
+
+5. Admin görünümü korunmalı
+
+* Firma admini için birim bazlı assessment kartları korunabilir.
+* Admin birden fazla birimi gördüğü için “Birim ÖEK Kayıtları” kart yapısı admin tarafında anlamlıdır.
+* Admin kart detayına girerek itemları görmeye devam edebilir.
+* Admin için Tüm Birimler Özeti ve Admin Kontrol Analizi yapısı bozulmasın.
+* Bu değişiklik esas olarak normal kullanıcı Karar Kayıtları görünümü içindir.
+
+6. Backend/API
+
+* Mevcut GET /api/seu/assessments/:id detay endpointi korunabilir.
+* Gerekirse normal kullanıcı karar itemlarını doğrudan dönen yeni endpoint eklenebilir:
+  GET /api/seu/decision-items?year=2025
+* Bu endpoint normal kullanıcı için sadece kendi unitId kapsamındaki itemları dönmeli.
+* Admin için companyId kapsamı korunmalı.
+* Tenant güvenliği bozulmamalı.
+* Mevcut assessment kayıt yapısı bozulmamalı.
+
+7. UI metinleri
+
+* Normal kullanıcı sekme adı “Karar Kayıtları” olarak kalabilir.
+* İç başlık şu olabilir:
+  “2025 Yılı ÖEK Kararları”
+* Üst özet:
+
+  * Toplam karar
+  * ÖEK
+  * İzleme
+  * ÖEK Dışı
+* Boş durumda:
+  “Bu yıl için kayıtlı ÖEK kararı bulunamadı. Önce ÖEK Analizi sekmesinden analiz yapıp kararları kaydedin.”
+
+8. Teknik şartlar
+
+* Yeni onay mekanizması ekleme.
+* PDF/Excel export ekleme.
+* Mevcut admin görünümünü bozma.
+* Mevcut manuel kayıt yapısını bozma.
+* TypeScript/build hatası bırakma.
+
+Kontrol edilmesi gereken dosyalar:
+
+* artifacts/ems-dashboard/src/components/seu/SeuAssessmentList.tsx
+* artifacts/ems-dashboard/src/components/seu/SeuAdminTabs.tsx
+* artifacts/ems-dashboard/src/pages/Seu.tsx
+* artifacts/api-server/src/routes/seu-assessment.ts
+* gerekiyorsa yeni küçük bir component: SeuDecisionItemsList.tsx
+
+Test:
+
+1. Normal kullanıcıyla giriş yap.
+2. Karar Kayıtları sekmesine gir.
+3. Birim kartı yerine yıl bazlı karar listesi gör.
+4. ÖEK, İzleme, ÖEK Dışı filtrelerinin çalıştığını kontrol et.
+5. Karar gerekçelerinin listede göründüğünü kontrol et.
+6. Admin kullanıcıyla giriş yap.
+7. Admin tarafında birim bazlı kart/özet görünümünün bozulmadığını kontrol et.
+8. Build çalıştır:
+   pnpm --filter @workspace/api-server build
+   pnpm --filter @workspace/ems-dashboard build
+
+Sonunda değişen dosyaları ve test sonucunu kısa özetle.
