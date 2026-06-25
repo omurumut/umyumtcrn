@@ -71,6 +71,13 @@
       "when": 1782600000000,
       "tag": "0009_energy_performance",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1782800000000,
+      "tag": "0011_energy_baselines_extended",
+      "breakpoints": true
     }
   ]
 }

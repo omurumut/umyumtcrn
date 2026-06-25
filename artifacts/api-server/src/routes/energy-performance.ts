@@ -11,8 +11,11 @@ import {
   variableValuesTable,
   weatherDegreeDaysTable,
   energyUseGroupsTable,
+  energyBaselinesTable,
+  energyBaselineVariablesTable,
+  usersTable,
 } from "@workspace/db";
-import { eq, and, inArray, desc, asc } from "drizzle-orm";
+import { eq, and, inArray, desc, asc, ne } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -756,6 +759,232 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         missingVariables: codes,
       })),
     });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// ── GET /api/energy-performance/baselines ─────────────────
+// Seçilen ÖEK için kayıtlı EnRÇ listesi
+router.get("/energy-performance/baselines", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const seuItemId = req.query.seuItemId ? parseInt(req.query.seuItemId as string) : null;
+
+    if (!seuItemId) {
+      res.status(400).json({ error: "seuItemId zorunludur" });
+      return;
+    }
+
+    // ÖEK güvenlik kontrolü
+    const [seuItem] = await db
+      .select({ id: seuAssessmentItemsTable.id, assessmentUnitId: seuAssessmentsTable.unitId })
+      .from(seuAssessmentItemsTable)
+      .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+      .where(and(
+        eq(seuAssessmentItemsTable.id, seuItemId),
+        eq(seuAssessmentsTable.companyId, sessionCompanyId),
+      ));
+
+    if (!seuItem) { res.status(404).json({ error: "ÖEK kalemi bulunamadı" }); return; }
+    if (role === "user" && sessionUnitId && seuItem.assessmentUnitId !== sessionUnitId) {
+      res.status(403).json({ error: "Erişim yetkisi yok" }); return;
+    }
+
+    const baselines = await db
+      .select({
+        id: energyBaselinesTable.id,
+        baselineYear: energyBaselinesTable.baselineYear,
+        periodStart: energyBaselinesTable.periodStart,
+        periodEnd: energyBaselinesTable.periodEnd,
+        modelType: energyBaselinesTable.modelType,
+        intercept: energyBaselinesTable.intercept,
+        rSquared: energyBaselinesTable.rSquared,
+        adjustedRSquared: energyBaselinesTable.adjustedRSquared,
+        sampleSize: energyBaselinesTable.sampleSize,
+        formulaText: energyBaselinesTable.formulaText,
+        isValid: energyBaselinesTable.isValid,
+        status: energyBaselinesTable.status,
+        updateReason: energyBaselinesTable.updateReason,
+        notes: energyBaselinesTable.notes,
+        createdByUserId: energyBaselinesTable.createdByUserId,
+        createdAt: energyBaselinesTable.createdAt,
+        updatedAt: energyBaselinesTable.updatedAt,
+        createdByName: usersTable.name,
+      })
+      .from(energyBaselinesTable)
+      .leftJoin(usersTable, eq(energyBaselinesTable.createdByUserId, usersTable.id))
+      .where(and(
+        eq(energyBaselinesTable.companyId, sessionCompanyId),
+        eq(energyBaselinesTable.seuAssessmentItemId, seuItemId),
+      ))
+      .orderBy(desc(energyBaselinesTable.createdAt));
+
+    // Her baseline için değişkenleri getir
+    const baselineIds = baselines.map(b => b.id);
+    const allVariables = baselineIds.length > 0
+      ? await db
+          .select()
+          .from(energyBaselineVariablesTable)
+          .where(inArray(energyBaselineVariablesTable.baselineId, baselineIds))
+      : [];
+
+    const variablesByBaseline: Record<number, typeof allVariables> = {};
+    for (const v of allVariables) {
+      if (!variablesByBaseline[v.baselineId]) variablesByBaseline[v.baselineId] = [];
+      variablesByBaseline[v.baselineId].push(v);
+    }
+
+    const result = baselines.map(b => ({
+      ...b,
+      variables: variablesByBaseline[b.id] ?? [],
+    }));
+
+    res.json(result);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// ── POST /api/energy-performance/baselines ────────────────
+// Yeni EnRÇ kaydı oluştur
+router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId, userId, name: userName } = req.user!;
+
+    const {
+      seuItemId,
+      year,
+      baselinePeriodStart,
+      baselinePeriodEnd,
+      regressionResult,
+      status,
+      updateReason,
+      notes,
+    } = req.body as {
+      seuItemId: number;
+      year: number;
+      baselinePeriodStart: string;
+      baselinePeriodEnd: string;
+      regressionResult: {
+        modelType: string;
+        intercept: number;
+        rSquared: number;
+        adjustedRSquared: number;
+        sampleSize: number;
+        formulaText: string;
+        isValid: boolean;
+        variables: Array<{
+          variableName: string;
+          code: string;
+          coefficient: number;
+          standardError: number;
+          tStat: number;
+          pValue: number;
+          isSignificant: boolean;
+        }>;
+      };
+      status: "active" | "draft";
+      updateReason?: string;
+      notes?: string;
+    };
+
+    // Zorunlu alan kontrolü
+    if (!seuItemId || !year || !baselinePeriodStart || !baselinePeriodEnd || !regressionResult || !status) {
+      res.status(400).json({ error: "Zorunlu alanlar eksik" });
+      return;
+    }
+
+    if (status !== "active" && status !== "draft") {
+      res.status(400).json({ error: "status 'active' veya 'draft' olmalıdır" });
+      return;
+    }
+
+    // Aktif olarak kaydedilmek isteniyorsa model geçerli olmalı
+    if (status === "active" && !regressionResult.isValid) {
+      res.status(422).json({ error: "Prosedür kriterlerini sağlamayan model aktif EnRÇ olarak kaydedilemez" });
+      return;
+    }
+
+    // ÖEK güvenlik kontrolü
+    const [seuItem] = await db
+      .select({
+        id: seuAssessmentItemsTable.id,
+        name: seuAssessmentItemsTable.name,
+        assessmentUnitId: seuAssessmentsTable.unitId,
+        assessmentCompanyId: seuAssessmentsTable.companyId,
+      })
+      .from(seuAssessmentItemsTable)
+      .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+      .where(and(
+        eq(seuAssessmentItemsTable.id, seuItemId),
+        eq(seuAssessmentsTable.companyId, sessionCompanyId),
+      ));
+
+    if (!seuItem) { res.status(404).json({ error: "ÖEK kalemi bulunamadı" }); return; }
+
+    const assessmentUnitId = seuItem.assessmentUnitId;
+
+    // Rol güvenliği: user sadece kendi birimindeki ÖEK için kayıt ekleyebilir
+    if (role === "user" && sessionUnitId && assessmentUnitId !== sessionUnitId) {
+      res.status(403).json({ error: "Bu ÖEK için EnRÇ kaydetme yetkiniz yok" }); return;
+    }
+
+    // Admin sadece kendi firması kapsamındaki ÖEK için kayıt ekleyebilir (zaten companyId filtresi var)
+
+    // Aktif kayıt ekleniyorsa: mevcut aktif kayıtları archived yap
+    if (status === "active") {
+      await db
+        .update(energyBaselinesTable)
+        .set({ status: "archived", updatedAt: new Date() })
+        .where(and(
+          eq(energyBaselinesTable.companyId, sessionCompanyId),
+          eq(energyBaselinesTable.seuAssessmentItemId, seuItemId),
+          eq(energyBaselinesTable.status, "active"),
+        ));
+    }
+
+    // Yeni baseline kaydı
+    const [newBaseline] = await db.insert(energyBaselinesTable).values({
+      companyId: sessionCompanyId,
+      unitId: assessmentUnitId ?? null,
+      seuAssessmentItemId: seuItemId,
+      baselineYear: year,
+      periodStart: baselinePeriodStart,
+      periodEnd: baselinePeriodEnd,
+      modelType: regressionResult.modelType === "single_regression" ? "single_regression" : "multiple_regression",
+      intercept: regressionResult.intercept,
+      rSquared: regressionResult.rSquared,
+      adjustedRSquared: regressionResult.adjustedRSquared,
+      sampleSize: regressionResult.sampleSize,
+      formulaText: regressionResult.formulaText,
+      isValid: regressionResult.isValid,
+      status,
+      updateReason: updateReason ?? null,
+      notes: notes ?? null,
+      createdByUserId: userId,
+    }).returning();
+
+    // Değişken kayıtları
+    if (regressionResult.variables && regressionResult.variables.length > 0) {
+      await db.insert(energyBaselineVariablesTable).values(
+        regressionResult.variables.map(v => ({
+          baselineId: newBaseline.id,
+          variableName: v.variableName,
+          variableCode: v.code,
+          variableSource: "regression",
+          coefficient: v.coefficient,
+          standardError: v.standardError,
+          tStat: v.tStat,
+          pValue: v.pValue,
+          isSignificant: v.isSignificant,
+        }))
+      );
+    }
+
+    res.status(201).json({ ...newBaseline, variables: regressionResult.variables });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
