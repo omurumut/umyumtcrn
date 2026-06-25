@@ -1093,12 +1093,15 @@ export default function EnergyPerformance() {
                     {/* Güncelleme nedeni */}
                     <div className="space-y-1">
                       <Label className="text-xs">Güncelleme Nedeni <span className="text-muted-foreground">(opsiyonel)</span></Label>
-                      <Select value={saveUpdateReason} onValueChange={setSaveUpdateReason}>
+                      <Select
+                        value={saveUpdateReason || "__none__"}
+                        onValueChange={v => setSaveUpdateReason(v === "__none__" ? "" : v)}
+                      >
                         <SelectTrigger className="h-8 text-xs">
                           <SelectValue placeholder="Seçin…" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">— Seçiniz —</SelectItem>
+                          <SelectItem value="__none__">— Seçiniz —</SelectItem>
                           {UPDATE_REASONS.map(r => (
                             <SelectItem key={r} value={r}>{r}</SelectItem>
                           ))}
