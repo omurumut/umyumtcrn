@@ -202,7 +202,7 @@ export default function Targets() {
   const deleteTarget = useDeleteTarget();
 
   const authHeader = () => {
-    const token = localStorage.getItem("authToken");
+    const token = localStorage.getItem("eys_token");
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
@@ -389,11 +389,13 @@ export default function Targets() {
   function onActionFormChange(field: keyof ActionPlanForm, value: string | boolean) {
     setActionForm((prev) => {
       const next = { ...prev, [field]: value };
-      if ((field === "investmentCost" || field === "expectedCostSaving") && !prev.paybackMonths) {
+      if (field === "investmentCost" || field === "expectedCostSaving") {
         const inv = parseFloat(field === "investmentCost" ? (value as string) : prev.investmentCost);
         const saving = parseFloat(field === "expectedCostSaving" ? (value as string) : prev.expectedCostSaving);
         if (!isNaN(inv) && !isNaN(saving) && saving > 0) {
-          next.paybackMonths = (inv / (saving / 12)).toFixed(1);
+          next.paybackMonths = ((inv / saving) * 12).toFixed(1);
+        } else {
+          next.paybackMonths = "";
         }
       }
       return next;
@@ -845,16 +847,16 @@ export default function Targets() {
                 <Input placeholder="kWh, MWh, tep..." value={actionForm.expectedSavingUnit} onChange={(e) => onActionFormChange("expectedSavingUnit", e.target.value)} />
               </div>
               <div className="space-y-1.5">
-                <Label>Beklenen Mali Tasarruf (₺)</Label>
-                <Input type="number" min="0" placeholder="Yıllık" value={actionForm.expectedCostSaving} onChange={(e) => onActionFormChange("expectedCostSaving", e.target.value)} />
+                <Label>Beklenen yıllık mali tasarruf (₺)</Label>
+                <Input type="number" min="0" placeholder="Yıllık tutar" value={actionForm.expectedCostSaving} onChange={(e) => onActionFormChange("expectedCostSaving", e.target.value)} />
               </div>
               <div className="space-y-1.5">
-                <Label>Yatırım Maliyeti (₺)</Label>
-                <Input type="number" min="0" placeholder="Toplam" value={actionForm.investmentCost} onChange={(e) => onActionFormChange("investmentCost", e.target.value)} />
+                <Label>Yatırım maliyeti (₺)</Label>
+                <Input type="number" min="0" placeholder="Toplam yatırım" value={actionForm.investmentCost} onChange={(e) => onActionFormChange("investmentCost", e.target.value)} />
               </div>
               <div className="space-y-1.5">
-                <Label>Geri Ödeme Süresi (ay)</Label>
-                <Input type="number" min="0" placeholder="Otomatik veya manuel" value={actionForm.paybackMonths} onChange={(e) => onActionFormChange("paybackMonths", e.target.value)} />
+                <Label>Geri ödeme süresi / yatırım geri dönüşü (ay)</Label>
+                <Input type="number" min="0" placeholder="Otomatik hesaplanır" value={actionForm.paybackMonths} onChange={(e) => onActionFormChange("paybackMonths", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Başlangıç Tarihi</Label>
@@ -911,10 +913,10 @@ export default function Targets() {
               </div>
               <div className="space-y-1.5">
                 <Label>Ay (opsiyonel)</Label>
-                <Select value={progressForm.periodMonth} onValueChange={(v) => setProgressForm({ ...progressForm, periodMonth: v })}>
+                <Select value={progressForm.periodMonth || "all"} onValueChange={(v) => setProgressForm({ ...progressForm, periodMonth: v === "all" ? "" : v })}>
                   <SelectTrigger><SelectValue placeholder="Tüm yıl" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Tüm yıl</SelectItem>
+                    <SelectItem value="all">Tüm yıl</SelectItem>
                     {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <SelectItem key={m} value={m.toString()}>{m}. Ay</SelectItem>)}
                   </SelectContent>
                 </Select>

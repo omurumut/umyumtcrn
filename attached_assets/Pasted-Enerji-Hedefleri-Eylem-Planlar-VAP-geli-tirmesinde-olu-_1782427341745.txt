@@ -1,0 +1,126 @@
+Enerji Hedefleri / Eylem Planları / VAP geliştirmesinde oluşan aşağıdaki hataları düzelt. Yeni özellik ekleme, PDF/export yapma. Sadece bugfix ve stabilizasyon yap.
+
+1) Hedef düzenleme formunda yeni alanlar boş geliyor
+
+Sorun:
+Mevcut hedef düzenlenirken yeni eklenen alanlar formda boş geliyor:
+- objective_text
+- target_text
+- target_type
+- baseline_value
+- target_value
+- actual_value
+- unit
+- status
+- sub_unit_id
+- energy_source_id
+- seu_assessment_id
+
+Beklenen:
+Düzenle butonuna basıldığında API’den gelen mevcut kayıt form state’e eksiksiz aktarılmalı.
+Alan adları backend response ile frontend form field isimleri arasında uyumlu olmalı.
+Numeric alanlar input’a string olarak basılabilir ama kaydederken numeric/null dönüşümü düzgün yapılmalı.
+Nullable alanlar boşsa formda boş/placeholder görünebilir ama Select.Item value="" kullanılmamalı.
+
+2) Eylem planında geri ödeme süresi otomatik hesaplansın
+
+Sorun:
+Beklenen mali tasarruf ve yatırım maliyeti giriliyor ama geri ödeme süresi kullanıcı girişine bırakılmış.
+
+Beklenen:
+Alan adı kullanıcıya şu şekilde gösterilsin:
+- Beklenen yıllık mali tasarruf
+- Yatırım maliyeti
+- Geri ödeme süresi / yatırım geri dönüşü
+
+Hesap:
+payback_months = investment_cost / (expected_cost_saving / 12)
+
+Yani:
+payback_months = (investment_cost / expected_cost_saving) * 12
+
+Kurallar:
+- expected_cost_saving yıllık mali tasarruf olarak kabul edilsin.
+- investment_cost > 0 ve expected_cost_saving > 0 ise otomatik hesaplansın.
+- Sonuç 1 veya 2 ondalıkla gösterilebilir.
+- Kullanıcı isterse manuel değiştirebilsin ama varsayılan otomatik hesap olsun.
+- expected_cost_saving veya investment_cost değişince payback_months yeniden hesaplansın.
+- expected_cost_saving 0 veya boşsa bölme hatası oluşmasın.
+
+3) Eylem kaydederken “Giriş Yapmalısınız” hatası düzeltilsin
+
+Sorun:
+Eylem planı kaydederken auth hatası geliyor.
+
+Muhtemel neden:
+Yeni sayfalarda axios kullanıldı ve mevcut projedeki auth/session standardı olan apiFetch kullanılmadı veya credentials/cookie gönderilmiyor.
+
+Beklenen:
+- Yeni API çağrılarında projedeki mevcut apiFetch standardı kullanılmalı.
+- Eğer axios kalacaksa credentials/session/cookie gönderimi mevcut auth mimarisiyle uyumlu olmalı.
+- Ancak tercihen yeni Targets.tsx, VapProjects.tsx ve yeni endpoint çağrıları mevcut apiFetch helper ile uyumlu hale getirilsin.
+- Login olmuş kullanıcı eylem planı, progress ve VAP kaydı oluşturabilmeli.
+- 401/403 durumunda backend error mesajı frontend’de doğru gösterilmeli.
+
+Kontrol edilecek endpointler:
+- POST /api/energy-action-plans
+- PUT /api/energy-action-plans/:id
+- DELETE /api/energy-action-plans/:id
+- POST /api/energy-target-progress
+- DELETE /api/energy-target-progress/:id
+- POST /api/vap-projects
+- PUT /api/vap-projects/:id
+- DELETE /api/vap-projects/:id
+
+4) İzleme ve Gerçekleşme sekmesindeki Select.Item empty string hatası düzeltilecek
+
+Ekranda şu hata geliyor:
+<Select.Item /> must have a value prop that is not an empty string.
+
+Sebep:
+Radix/ShadCN Select içinde value="" kullanılmış.
+
+Beklenen:
+Tüm yeni sayfalarda SelectItem value="" kullanımlarını bul ve düzelt.
+
+Özellikle kontrol edilecek dosyalar:
+- Targets.tsx
+- VapProjects.tsx
+- Eylem planı formu
+- İzleme/Gerçekleşme formu
+- Hedef seçimi dropdownları
+- Durum/tip/öncelik dropdownları
+
+Çözüm:
+- Placeholder için SelectValue placeholder kullanılmalı.
+- Boş seçim gerekiyorsa value="none" veya value="unselected" gibi özel değer kullanılmalı.
+- Kaydederken "none" / "unselected" değerleri null’a çevrilmeli.
+- SelectItem value="" kesinlikle kullanılmamalı.
+
+Örnek:
+Yanlış:
+<SelectItem value="">Seçiniz</SelectItem>
+
+Doğru:
+<SelectValue placeholder="Hedef seçiniz" />
+
+Opsiyonel boş değer gerekiyorsa:
+<SelectItem value="none">Seçim yok</SelectItem>
+
+Submit sırasında:
+field === "none" ? null : field
+
+5) Ek kontrol
+
+Bu düzeltmelerden sonra:
+- /hedefler sayfası açılmalı.
+- Hedef düzenleme formu eski ve yeni alanları dolu getirmeli.
+- Yeni eylem planı kaydedilebilmeli.
+- is_vap = true seçilen eylem /vap-projeler sayfasında görünmeli.
+- İzleme ve gerçekleşme sekmesinde hedef seçip kayıt eklenebilmeli.
+- Select.Item empty string hatası tamamen kaybolmalı.
+- pnpm run typecheck çalıştır.
+- pnpm run build çalıştır.
+- Sonuçları kısa raporla.
+
+Yeni özellik ekleme. Sadece bu hataları düzelt.

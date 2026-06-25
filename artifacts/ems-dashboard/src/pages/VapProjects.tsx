@@ -89,7 +89,7 @@ export default function VapProjects() {
   const [deleteId, setDeleteId] = useState<number | null>(null);
 
   const authHeader = () => {
-    const token = localStorage.getItem("authToken");
+    const token = localStorage.getItem("eys_token");
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
@@ -161,11 +161,11 @@ export default function VapProjects() {
   }
 
   function autoPayback(f: VapForm): VapForm {
-    if (!f.paybackMonths && f.investmentCost && f.annualCostSaving) {
+    if (f.investmentCost && f.annualCostSaving) {
       const inv = parseFloat(f.investmentCost);
       const sav = parseFloat(f.annualCostSaving);
       if (!isNaN(inv) && !isNaN(sav) && sav > 0) {
-        return { ...f, paybackMonths: (inv / (sav / 12)).toFixed(1) };
+        return { ...f, paybackMonths: ((inv / sav) * 12).toFixed(1) };
       }
     }
     return f;
@@ -174,7 +174,10 @@ export default function VapProjects() {
   function onFormChange(field: keyof VapForm, value: string) {
     setForm((prev) => {
       const next = { ...prev, [field]: value };
-      return autoPayback(next);
+      if (field === "investmentCost" || field === "annualCostSaving") {
+        return autoPayback(next);
+      }
+      return next;
     });
   }
 
