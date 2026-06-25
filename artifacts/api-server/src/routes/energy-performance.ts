@@ -13,6 +13,7 @@ import {
   energyUseGroupsTable,
   energyBaselinesTable,
   energyBaselineVariablesTable,
+  energyPerformanceResultsTable,
   usersTable,
 } from "@workspace/db";
 import { eq, and, inArray, desc, asc, ne } from "drizzle-orm";
@@ -758,6 +759,348 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         month: MONTH_LABELS[parseInt(m)] ?? m,
         missingVariables: codes,
       })),
+    });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// ── GET /api/energy-performance/results ───────────────────
+// Hesaplanmış aylık EnPG sonuçlarını getir
+router.get("/energy-performance/results", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const baselineId = req.query.baselineId ? parseInt(req.query.baselineId as string) : null;
+    const year = req.query.year ? parseInt(req.query.year as string) : null;
+
+    if (!baselineId || !year) {
+      res.status(400).json({ error: "baselineId ve year zorunludur" });
+      return;
+    }
+
+    // Baseline güvenlik kontrolü
+    const [baseline] = await db
+      .select({
+        id: energyBaselinesTable.id,
+        companyId: energyBaselinesTable.companyId,
+        unitId: energyBaselinesTable.unitId,
+        seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
+      })
+      .from(energyBaselinesTable)
+      .where(and(eq(energyBaselinesTable.id, baselineId), eq(energyBaselinesTable.companyId, sessionCompanyId)));
+
+    if (!baseline) { res.status(404).json({ error: "EnRÇ bulunamadı" }); return; }
+    if (role === "user" && sessionUnitId && baseline.unitId !== sessionUnitId) {
+      res.status(403).json({ error: "Erişim yetkisi yok" }); return;
+    }
+
+    const results = await db
+      .select()
+      .from(energyPerformanceResultsTable)
+      .where(and(
+        eq(energyPerformanceResultsTable.baselineId, baselineId),
+        eq(energyPerformanceResultsTable.year, year),
+        eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+      ))
+      .orderBy(asc(energyPerformanceResultsTable.month));
+
+    res.json(results);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// ── POST /api/energy-performance/results/calculate ─────────
+// Aktif EnRÇ formülüne göre aylık EnPG sonuçlarını hesapla ve kaydet
+router.post("/energy-performance/results/calculate", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const { baselineId, year, months: requestedMonths } = req.body as {
+      baselineId: number;
+      year: number;
+      months?: number[];
+    };
+
+    if (!baselineId || !year) {
+      res.status(400).json({ error: "baselineId ve year zorunludur" });
+      return;
+    }
+
+    // Baseline + değişkenleri getir
+    const [baseline] = await db
+      .select({
+        id: energyBaselinesTable.id,
+        companyId: energyBaselinesTable.companyId,
+        unitId: energyBaselinesTable.unitId,
+        seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
+        intercept: energyBaselinesTable.intercept,
+        modelType: energyBaselinesTable.modelType,
+        status: energyBaselinesTable.status,
+      })
+      .from(energyBaselinesTable)
+      .where(and(eq(energyBaselinesTable.id, baselineId), eq(energyBaselinesTable.companyId, sessionCompanyId)));
+
+    if (!baseline) { res.status(404).json({ error: "EnRÇ bulunamadı" }); return; }
+    if (role === "user" && sessionUnitId && baseline.unitId !== sessionUnitId) {
+      res.status(403).json({ error: "Erişim yetkisi yok" }); return;
+    }
+
+    const bvars = await db
+      .select()
+      .from(energyBaselineVariablesTable)
+      .where(eq(energyBaselineVariablesTable.baselineId, baselineId));
+
+    // SEU item → meters
+    const seuItemId = baseline.seuAssessmentItemId;
+    if (!seuItemId) {
+      res.status(422).json({ error: "Bu EnRÇ bir ÖEK kalemine bağlı değil" });
+      return;
+    }
+
+    const [seuItem] = await db
+      .select({
+        id: seuAssessmentItemsTable.id,
+        meterId: seuAssessmentItemsTable.meterId,
+        energyUseGroupId: seuAssessmentItemsTable.energyUseGroupId,
+        itemSubUnitId: seuAssessmentItemsTable.subUnitId,
+        energySourceId: seuAssessmentItemsTable.energySourceId,
+        assessmentUnitId: seuAssessmentsTable.unitId,
+      })
+      .from(seuAssessmentItemsTable)
+      .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+      .where(and(
+        eq(seuAssessmentItemsTable.id, seuItemId),
+        eq(seuAssessmentsTable.companyId, sessionCompanyId),
+      ));
+
+    if (!seuItem) { res.status(404).json({ error: "ÖEK kalemi bulunamadı" }); return; }
+
+    const assessmentUnitId = seuItem.assessmentUnitId;
+
+    // Meter ID'leri çöz
+    let matchedMeterIds: number[] = [];
+    if (seuItem.meterId) {
+      matchedMeterIds = [seuItem.meterId];
+    } else if (seuItem.energyUseGroupId) {
+      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(and(
+        eq(metersTable.energyUseGroupId, seuItem.energyUseGroupId),
+        ...(assessmentUnitId ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+      ));
+      matchedMeterIds = ms.map(m => m.id);
+    } else if (seuItem.itemSubUnitId) {
+      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(eq(metersTable.subUnitId, seuItem.itemSubUnitId));
+      matchedMeterIds = ms.map(m => m.id);
+    } else if (assessmentUnitId) {
+      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(eq(metersTable.unitId, assessmentUnitId));
+      matchedMeterIds = ms.map(m => m.id);
+    }
+
+    if (matchedMeterIds.length === 0) {
+      res.status(422).json({ error: "Bu ÖEK için eşleşen sayaç bulunamadı" });
+      return;
+    }
+
+    // Tüketim verilerini getir ve ay bazında topla
+    const consumptionRows = await db
+      .select({ month: consumptionTable.month, kwh: consumptionTable.kwh, tep: consumptionTable.tep, hdd: consumptionTable.hdd, cdd: consumptionTable.cdd })
+      .from(consumptionTable)
+      .where(and(
+        eq(consumptionTable.companyId, sessionCompanyId),
+        eq(consumptionTable.year, year),
+        inArray(consumptionTable.meterId, matchedMeterIds),
+      ))
+      .orderBy(asc(consumptionTable.month));
+
+    const monthAgg: Record<number, { tep: number; kwh: number; hddSum: number; hddN: number; cddSum: number; cddN: number }> = {};
+    for (const r of consumptionRows) {
+      if (!monthAgg[r.month]) monthAgg[r.month] = { tep: 0, kwh: 0, hddSum: 0, hddN: 0, cddSum: 0, cddN: 0 };
+      monthAgg[r.month].tep += r.tep ?? 0;
+      monthAgg[r.month].kwh += r.kwh ?? 0;
+      if (r.hdd != null) { monthAgg[r.month].hddSum += r.hdd; monthAgg[r.month].hddN++; }
+      if (r.cdd != null) { monthAgg[r.month].cddSum += r.cdd; monthAgg[r.month].cddN++; }
+    }
+
+    // Değişken değerlerini çöz — EnRÇ değişken kodlarına göre
+    const varValueMap: Record<string, Record<number, number>> = {};
+    for (const bv of bvars) {
+      const code = bv.variableCode ?? bv.variableName;
+      if (code === "HDD") {
+        varValueMap[code] = {};
+        for (const [m, agg] of Object.entries(monthAgg)) {
+          const mn = parseInt(m);
+          if (agg.hddN > 0) varValueMap[code][mn] = agg.hddSum / agg.hddN;
+        }
+      } else if (code === "CDD") {
+        varValueMap[code] = {};
+        for (const [m, agg] of Object.entries(monthAgg)) {
+          const mn = parseInt(m);
+          if (agg.cddN > 0) varValueMap[code][mn] = agg.cddSum / agg.cddN;
+        }
+      } else if (code.startsWith("user-")) {
+        const varId = parseInt(code.replace("user-", ""));
+        const vvals = await db
+          .select({ value: variableValuesTable.value, periodStart: variableValuesTable.periodStart })
+          .from(variableValuesTable)
+          .where(and(
+            eq(variableValuesTable.companyId, sessionCompanyId),
+            eq(variableValuesTable.variableId, varId),
+            ...(assessmentUnitId ? [eq(variableValuesTable.unitId, assessmentUnitId)] : []),
+          ));
+        varValueMap[code] = {};
+        for (const vv of vvals) {
+          const parts = vv.periodStart.split("-");
+          if (parts.length >= 2 && parseInt(parts[0]) === year) {
+            const mn = parseInt(parts[1]);
+            if (mn >= 1 && mn <= 12) varValueMap[code][mn] = vv.value;
+          }
+        }
+      } else {
+        // Sistem kodu → variable_values tablosundan çek
+        const sysVars = await db.select({ id: variablesTable.id }).from(variablesTable)
+          .where(and(eq(variablesTable.companyId, sessionCompanyId), eq(variablesTable.code ?? variablesTable.name, code)));
+        varValueMap[code] = {};
+        if (sysVars.length > 0) {
+          const vvals = await db
+            .select({ value: variableValuesTable.value, periodStart: variableValuesTable.periodStart })
+            .from(variableValuesTable)
+            .where(and(
+              eq(variableValuesTable.companyId, sessionCompanyId),
+              eq(variableValuesTable.variableId, sysVars[0].id),
+              ...(assessmentUnitId ? [eq(variableValuesTable.unitId, assessmentUnitId)] : []),
+            ));
+          for (const vv of vvals) {
+            const parts = vv.periodStart.split("-");
+            if (parts.length >= 2 && parseInt(parts[0]) === year) {
+              const mn = parseInt(parts[1]);
+              if (mn >= 1 && mn <= 12) varValueMap[code][mn] = vv.value;
+            }
+          }
+        }
+      }
+    }
+
+    // İşlenecek aylar
+    const targetMonths = requestedMonths && requestedMonths.length > 0
+      ? requestedMonths
+      : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
+    const intercept = baseline.intercept ?? 0;
+    const warnings: Array<{ month: number; monthLabel: string; issue: string }> = [];
+    const toInsert: Array<{
+      month: number; actualConsumption: number; expectedConsumption: number;
+      difference: number; eei: number; setValue: number | null;
+      primaryVarValue: number | null; status: string;
+    }> = [];
+
+    for (const m of targetMonths) {
+      // Tüketim kontrolü
+      if (!monthAgg[m]) {
+        warnings.push({ month: m, monthLabel: MONTH_LABELS[m] ?? `${m}`, issue: "Tüketim verisi eksik" });
+        continue;
+      }
+      const actual = monthAgg[m].tep;
+
+      // Değişken değerleri kontrolü
+      let allPresent = true;
+      const xVals: number[] = [];
+      const missingVarNames: string[] = [];
+      for (const bv of bvars) {
+        const code = bv.variableCode ?? bv.variableName;
+        const val = varValueMap[code]?.[m];
+        if (val == null) {
+          allPresent = false;
+          missingVarNames.push(bv.variableName);
+        } else {
+          xVals.push(val);
+        }
+      }
+
+      if (!allPresent) {
+        warnings.push({
+          month: m,
+          monthLabel: MONTH_LABELS[m] ?? `${m}`,
+          issue: `Değişken değeri eksik: ${missingVarNames.join(", ")}`,
+        });
+        continue;
+      }
+
+      // Beklenen tüketim hesapla: intercept + Σ(coeff_i * x_i)
+      let expected = intercept;
+      for (let i = 0; i < bvars.length; i++) {
+        expected += (bvars[i].coefficient ?? 0) * xVals[i];
+      }
+      if (expected <= 0) expected = 0.0001; // sıfır bölme koruması
+
+      const difference = actual - expected;
+      const eei = actual / expected;
+      // SET: birinci değişkene göre (varsa)
+      const primaryVarValue = xVals.length > 0 ? xVals[0] : null;
+      const setValue = primaryVarValue && primaryVarValue > 0 ? actual / primaryVarValue : null;
+      const status = difference < 0 ? "improvement" : "deterioration";
+
+      toInsert.push({ month: m, actualConsumption: actual, expectedConsumption: expected, difference, eei, setValue, primaryVarValue, status });
+    }
+
+    // CUSUM hesapla (sıralı ay bazında kümülatif FARK)
+    const sortedInsert = toInsert.sort((a, b) => a.month - b.month);
+    let cumsum = 0;
+    const finalRows = sortedInsert.map(r => {
+      cumsum += r.difference;
+      return { ...r, cusum: cumsum };
+    });
+
+    // Mevcut hesaplı ayları sil (upsert yerine delete+insert — tablo unique constraint yok)
+    const monthsToDelete = finalRows.map(r => r.month);
+    if (monthsToDelete.length > 0) {
+      // Önce mevcut satırları sil
+      const existingRows = await db
+        .select({ id: energyPerformanceResultsTable.id, month: energyPerformanceResultsTable.month })
+        .from(energyPerformanceResultsTable)
+        .where(and(
+          eq(energyPerformanceResultsTable.baselineId, baselineId),
+          eq(energyPerformanceResultsTable.year, year),
+          eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+          inArray(energyPerformanceResultsTable.month, monthsToDelete),
+        ));
+
+      if (existingRows.length > 0) {
+        const existingIds = existingRows.map(r => r.id);
+        // Teker teker sil (drizzle bulk delete desteklemez)
+        for (const id of existingIds) {
+          await db.delete(energyPerformanceResultsTable).where(eq(energyPerformanceResultsTable.id, id));
+        }
+      }
+    }
+
+    // Yeni satırları ekle
+    let inserted: typeof energyPerformanceResultsTable.$inferSelect[] = [];
+    if (finalRows.length > 0) {
+      inserted = await db.insert(energyPerformanceResultsTable).values(
+        finalRows.map(r => ({
+          companyId: sessionCompanyId,
+          unitId: assessmentUnitId ?? null,
+          seuAssessmentItemId: seuItemId,
+          baselineId,
+          year,
+          month: r.month,
+          actualConsumption: r.actualConsumption,
+          expectedConsumption: r.expectedConsumption,
+          difference: r.difference,
+          cusum: r.cusum,
+          eei: r.eei,
+          setValue: r.setValue ?? null,
+          status: r.status,
+        }))
+      ).returning();
+    }
+
+    res.json({
+      calculated: inserted.length,
+      skipped: warnings.length,
+      warnings,
+      results: inserted.sort((a, b) => a.month - b.month),
     });
   } catch (err) {
     req.log.error(err);

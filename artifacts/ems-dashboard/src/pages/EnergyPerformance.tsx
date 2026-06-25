@@ -13,8 +13,12 @@ import { useYear } from "@/context/YearContext";
 import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
 import {
   AlertCircle, AlertTriangle, CheckCircle2, ChevronRight, BarChart2, Database,
-  TrendingUp, Activity, Info, Save, Clock, Archive, FileCheck,
+  TrendingUp, Activity, Info, Save, Clock, Archive, FileCheck, RefreshCw,
 } from "lucide-react";
+import {
+  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  Legend, ResponsiveContainer, ReferenceLine,
+} from "recharts";
 
 const API_BASE = "/api";
 
@@ -213,6 +217,17 @@ export default function EnergyPerformance() {
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const [expandedBaseline, setExpandedBaseline] = useState<number | null>(null);
 
+  // EnPG İzleme state
+  const [monitorBaselineId, setMonitorBaselineId] = useState<number | null>(null);
+  const [monitorYear, setMonitorYear] = useState<number>(year);
+  const [calcLoading, setCalcLoading] = useState(false);
+  const [calcError, setCalcError] = useState<string | null>(null);
+  const [calcWarnings, setCalcWarnings] = useState<Array<{ month: number; monthLabel: string; issue: string }>>([]);
+  const [monitorResults, setMonitorResults] = useState<Array<{
+    id: number; month: number; actualConsumption: number | null; expectedConsumption: number | null;
+    difference: number | null; cusum: number | null; eei: number | null; setValue: number | null; status: string | null;
+  }>>([]);
+
   const { data: units } = useListUnits(
     {} as any,
     { query: { queryKey: [...getListUnitsQueryKey()], enabled: isAdmin } }
@@ -266,6 +281,38 @@ export default function EnergyPerformance() {
   function initSavePeriods() {
     if (!savePeriodStart) setSavePeriodStart(`${year}-01`);
     if (!savePeriodEnd) setSavePeriodEnd(`${year}-12`);
+  }
+
+  async function calculateEnpg() {
+    if (!monitorBaselineId) return;
+    setCalcLoading(true);
+    setCalcError(null);
+    setCalcWarnings([]);
+    try {
+      const resp = await apiFetch(`${API_BASE}/energy-performance/results/calculate`, token, {
+        method: "POST",
+        body: JSON.stringify({ baselineId: monitorBaselineId, year: monitorYear }),
+      });
+      setMonitorResults(resp.results ?? []);
+      setCalcWarnings(resp.warnings ?? []);
+    } catch (e: any) {
+      setCalcError(e?.message ?? "Hesaplama sırasında hata oluştu.");
+    } finally {
+      setCalcLoading(false);
+    }
+  }
+
+  async function loadMonitorResults() {
+    if (!monitorBaselineId) return;
+    try {
+      const resp = await apiFetch(
+        `${API_BASE}/energy-performance/results?baselineId=${monitorBaselineId}&year=${monitorYear}`,
+        token
+      );
+      if (Array.isArray(resp)) setMonitorResults(resp);
+    } catch {
+      // sessiz hata — tablo boş göster
+    }
   }
 
   async function saveBaseline(status: "active" | "draft") {
@@ -1321,21 +1368,348 @@ export default function EnergyPerformance() {
           )}
         </TabsContent>
 
-        {/* EnPG İzleme — Placeholder */}
+        {/* EnPG İzleme */}
         <TabsContent value="monitoring">
-          <Card>
-            <CardContent className="py-14 flex flex-col items-center gap-3 text-center">
-              <Activity className="h-10 w-10 text-muted-foreground/30" />
-              <p className="text-sm font-medium text-muted-foreground">EnPG İzleme</p>
-              <p className="text-xs text-muted-foreground/70 max-w-sm">
-                Gerçekleşen tüketim ile beklenen tüketim karşılaştırması, FARK, CUSUM,
-                EEI ve SET grafikleri burada izlenecek.
-              </p>
-              <Badge variant="outline" className="text-xs border-amber-500/30 text-amber-400 bg-amber-500/10 mt-1">
-                Yakında
-              </Badge>
-            </CardContent>
-          </Card>
+          {!selectedSeuItem ? (
+            <Card>
+              <CardContent className="py-10 text-center text-sm text-muted-foreground">
+                Önce ÖEK Seçimi sekmesinden bir kalem seçin.
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-4">
+
+              {/* Kontrol Paneli */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Activity className="h-4 w-4 text-teal-400" />
+                    EnPG İzleme — {selectedSeuItem.name}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {/* Açıklama */}
+                  <div className="p-3 rounded-md bg-muted/30 border border-border/40 space-y-1">
+                    <p className="text-xs text-muted-foreground">
+                      <span className="text-teal-400 font-medium">FARK ve CUSUM</span> değerlerinin negatif olması enerji performansında iyileşme olduğunu gösterir.
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      <span className="text-teal-400 font-medium">EEI</span> değerinin 1'den küçük olması olumlu performansı gösterir.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {/* EnRÇ seçimi */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">EnRÇ Seçin</Label>
+                      <Select
+                        value={monitorBaselineId ? String(monitorBaselineId) : "__none__"}
+                        onValueChange={v => {
+                          const id = v === "__none__" ? null : parseInt(v);
+                          setMonitorBaselineId(id);
+                          setMonitorResults([]);
+                          setCalcWarnings([]);
+                          setCalcError(null);
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue placeholder="EnRÇ seçin…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">— Seçiniz —</SelectItem>
+                          {(baselines ?? []).map(b => (
+                            <SelectItem key={b.id} value={String(b.id)}>
+                              {b.baselineYear} · {MODEL_TYPE_LABELS[b.modelType] ?? b.modelType}
+                              {" "}{STATUS_CONFIG[b.status]?.label ? `(${STATUS_CONFIG[b.status].label})` : ""}
+                              {" "}R²:{b.rSquared?.toFixed(3)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Yıl seçimi */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">Hesaplanacak Yıl</Label>
+                      <Select
+                        value={String(monitorYear)}
+                        onValueChange={v => { setMonitorYear(parseInt(v)); setMonitorResults([]); setCalcWarnings([]); }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {[year - 2, year - 1, year, year + 1].filter(y => y > 2000).map(y => (
+                            <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Butonlar */}
+                    <div className="flex items-end gap-2">
+                      <Button
+                        className="h-8 text-xs bg-teal-600 hover:bg-teal-700 text-white flex-1"
+                        disabled={!monitorBaselineId || calcLoading}
+                        onClick={calculateEnpg}
+                      >
+                        {calcLoading
+                          ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Hesaplanıyor…</>
+                          : <><Activity className="h-3.5 w-3.5 mr-1.5" />EnPG Hesapla</>
+                        }
+                      </Button>
+                      <Button
+                        variant="outline" size="sm" className="h-8 text-xs"
+                        disabled={!monitorBaselineId || calcLoading}
+                        title="Kayıtlı sonuçları yükle"
+                        onClick={loadMonitorResults}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Seçilen EnRÇ özeti */}
+                  {monitorBaselineId && baselines && (() => {
+                    const sel = baselines.find(b => b.id === monitorBaselineId);
+                    if (!sel) return null;
+                    return (
+                      <div className="flex flex-wrap gap-3 text-xs pt-1 border-t border-border/30">
+                        <span className="text-muted-foreground">Kesim: <strong className="text-foreground">{sel.intercept?.toFixed(4)}</strong></span>
+                        <span className="text-muted-foreground">R²: <strong className={sel.rSquared != null && sel.rSquared >= 0.75 ? "text-teal-400" : "text-destructive"}>{sel.rSquared?.toFixed(4)}</strong></span>
+                        <span className="text-muted-foreground">Değişken: <strong className="text-foreground">{sel.variables.length}</strong></span>
+                        <span className="text-muted-foreground">Durum: <Badge variant="outline" className={`text-xs ${STATUS_CONFIG[sel.status]?.color}`}>{STATUS_CONFIG[sel.status]?.label}</Badge></span>
+                        {sel.formulaText && <span className="text-muted-foreground w-full font-mono text-teal-300/70 truncate">{sel.formulaText}</span>}
+                      </div>
+                    );
+                  })()}
+                </CardContent>
+              </Card>
+
+              {/* Hata */}
+              {calcError && (
+                <div className="flex gap-2 items-start p-3 rounded-md bg-destructive/10 border border-destructive/30">
+                  <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+                  <p className="text-xs text-destructive">{calcError}</p>
+                </div>
+              )}
+
+              {/* Uyarılar (eksik veri) */}
+              {calcWarnings.length > 0 && (
+                <div className="p-3 rounded-md bg-amber-500/10 border border-amber-500/20 space-y-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                    <span className="text-xs font-medium text-amber-400">Eksik veri nedeniyle hesaplanamayan aylar</span>
+                  </div>
+                  {calcWarnings.map((w, i) => (
+                    <p key={i} className="text-xs text-amber-300 ml-6">
+                      {w.monthLabel} {monitorYear}: {w.issue}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              {/* Sonuç tablosu */}
+              {monitorResults.length > 0 && (() => {
+                const MONTHS_TR = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
+                const chartData = monitorResults.map(r => ({
+                  ay: MONTHS_TR[(r.month ?? 1) - 1] ?? r.month,
+                  gerçekleşen: r.actualConsumption != null ? +r.actualConsumption.toFixed(4) : null,
+                  beklenen: r.expectedConsumption != null ? +r.expectedConsumption.toFixed(4) : null,
+                  fark: r.difference != null ? +r.difference.toFixed(4) : null,
+                  cusum: r.cusum != null ? +r.cusum.toFixed(4) : null,
+                  eei: r.eei != null ? +r.eei.toFixed(4) : null,
+                }));
+
+                const totalActual = monitorResults.reduce((s, r) => s + (r.actualConsumption ?? 0), 0);
+                const totalExpected = monitorResults.reduce((s, r) => s + (r.expectedConsumption ?? 0), 0);
+                const totalDiff = totalActual - totalExpected;
+                const finalCusum = monitorResults[monitorResults.length - 1]?.cusum ?? 0;
+                const avgEei = monitorResults.length > 0
+                  ? monitorResults.reduce((s, r) => s + (r.eei ?? 0), 0) / monitorResults.length
+                  : 0;
+
+                return (
+                  <div className="space-y-4">
+                    {/* KPI özet */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      {[
+                        { label: "Toplam Gerçekleşen (TEP)", value: totalActual.toFixed(3), color: "text-foreground" },
+                        { label: "Toplam Beklenen (TEP)", value: totalExpected.toFixed(3), color: "text-foreground" },
+                        { label: "Kümülatif FARK (CUSUM)", value: finalCusum.toFixed(3), color: finalCusum < 0 ? "text-teal-400" : "text-destructive" },
+                        { label: "Ortalama EEI", value: avgEei.toFixed(4), color: avgEei < 1 ? "text-teal-400" : "text-destructive" },
+                      ].map(k => (
+                        <Card key={k.label} className="border-border/40">
+                          <CardContent className="p-3">
+                            <p className="text-xs text-muted-foreground">{k.label}</p>
+                            <p className={`text-base font-bold mt-0.5 ${k.color}`}>{k.value}</p>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+
+                    {/* Grafik 1: Gerçekleşen vs Beklenen */}
+                    <Card className="border-border/40">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-xs font-medium text-muted-foreground">Gerçekleşen vs Beklenen Tüketim (TEP)</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <ResponsiveContainer width="100%" height={220}>
+                          <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                            <XAxis dataKey="ay" tick={{ fontSize: 11, fill: "#9ca3af" }} />
+                            <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} />
+                            <Tooltip contentStyle={{ background: "#1f2937", border: "1px solid rgba(255,255,255,0.1)", fontSize: 12 }} />
+                            <Legend wrapperStyle={{ fontSize: 11 }} />
+                            <Bar dataKey="gerçekleşen" name="Gerçekleşen" fill="#6366f1" fillOpacity={0.8} radius={[2, 2, 0, 0]} />
+                            <Line type="monotone" dataKey="beklenen" name="Beklenen (EnRÇ)" stroke="#2dd4bf" strokeWidth={2} dot={{ r: 3 }} />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </CardContent>
+                    </Card>
+
+                    {/* Grafik 2: CUSUM + EEI */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <Card className="border-border/40">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-xs font-medium text-muted-foreground">CUSUM Trendi (TEP)</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <ResponsiveContainer width="100%" height={180}>
+                            <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                              <XAxis dataKey="ay" tick={{ fontSize: 11, fill: "#9ca3af" }} />
+                              <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} />
+                              <Tooltip contentStyle={{ background: "#1f2937", border: "1px solid rgba(255,255,255,0.1)", fontSize: 12 }} />
+                              <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 2" />
+                              <Line type="monotone" dataKey="cusum" name="CUSUM" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="border-border/40">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-xs font-medium text-muted-foreground">EEI Trendi (1.0 = kırılım)</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <ResponsiveContainer width="100%" height={180}>
+                            <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                              <XAxis dataKey="ay" tick={{ fontSize: 11, fill: "#9ca3af" }} />
+                              <YAxis domain={[0.7, 1.3]} tick={{ fontSize: 11, fill: "#9ca3af" }} />
+                              <Tooltip contentStyle={{ background: "#1f2937", border: "1px solid rgba(255,255,255,0.1)", fontSize: 12 }} />
+                              <ReferenceLine y={1} stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1.5} />
+                              <Line type="monotone" dataKey="eei" name="EEI" stroke="#a78bfa" strokeWidth={2} dot={{ r: 3 }} />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    {/* Aylık Sonuç Tablosu */}
+                    <Card className="border-border/40">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-2">
+                          Aylık EnPG Sonuçları — {monitorYear}
+                          <Badge variant="outline" className="text-xs">{monitorResults.length} ay</Badge>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-0">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b border-border/50 text-muted-foreground">
+                                <th className="text-left p-2.5 pl-4 font-medium">Ay</th>
+                                <th className="text-right p-2.5 font-medium">Gerçekleşen (TEP)</th>
+                                <th className="text-right p-2.5 font-medium">Beklenen (TEP)</th>
+                                <th className="text-right p-2.5 font-medium">FARK (TEP)</th>
+                                <th className="text-right p-2.5 font-medium">CUSUM (TEP)</th>
+                                <th className="text-right p-2.5 font-medium">EEI</th>
+                                <th className="text-right p-2.5 font-medium">SET</th>
+                                <th className="text-center p-2.5 pr-4 font-medium">Durum</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {monitorResults.map((r) => {
+                                const isImprovement = (r.difference ?? 0) < 0;
+                                const rowColor = isImprovement ? "bg-teal-500/5" : (r.difference ?? 0) > 0 ? "bg-destructive/5" : "";
+                                const MONTHS_FULL = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
+                                return (
+                                  <tr key={r.id} className={`border-b border-border/30 ${rowColor}`}>
+                                    <td className="p-2.5 pl-4 font-medium">{MONTHS_FULL[(r.month ?? 1) - 1]} {monitorYear}</td>
+                                    <td className="p-2.5 text-right tabular-nums">{r.actualConsumption?.toFixed(4) ?? "—"}</td>
+                                    <td className="p-2.5 text-right tabular-nums text-muted-foreground">{r.expectedConsumption?.toFixed(4) ?? "—"}</td>
+                                    <td className={`p-2.5 text-right tabular-nums font-medium ${isImprovement ? "text-teal-400" : "text-destructive"}`}>
+                                      {r.difference != null ? (r.difference >= 0 ? "+" : "") + r.difference.toFixed(4) : "—"}
+                                    </td>
+                                    <td className={`p-2.5 text-right tabular-nums font-medium ${(r.cusum ?? 0) < 0 ? "text-teal-400" : "text-destructive"}`}>
+                                      {r.cusum != null ? (r.cusum >= 0 ? "+" : "") + r.cusum.toFixed(4) : "—"}
+                                    </td>
+                                    <td className={`p-2.5 text-right tabular-nums font-medium ${(r.eei ?? 1) < 1 ? "text-teal-400" : "text-destructive"}`}>
+                                      {r.eei?.toFixed(4) ?? "—"}
+                                    </td>
+                                    <td className="p-2.5 text-right tabular-nums text-muted-foreground">
+                                      {r.setValue?.toFixed(4) ?? "—"}
+                                    </td>
+                                    <td className="p-2.5 pr-4 text-center">
+                                      {isImprovement
+                                        ? <span className="inline-flex items-center gap-1 text-teal-400"><CheckCircle2 className="h-3 w-3" />İyileşme</span>
+                                        : (r.difference ?? 0) > 0
+                                          ? <span className="inline-flex items-center gap-1 text-destructive"><AlertTriangle className="h-3 w-3" />Kötüleşme</span>
+                                          : <span className="text-muted-foreground">Nötr</span>
+                                      }
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                              {/* Toplam satırı */}
+                              <tr className="border-t border-border/60 bg-muted/30 font-medium">
+                                <td className="p-2.5 pl-4 text-sm">Toplam / Ort.</td>
+                                <td className="p-2.5 text-right tabular-nums">{totalActual.toFixed(4)}</td>
+                                <td className="p-2.5 text-right tabular-nums text-muted-foreground">{totalExpected.toFixed(4)}</td>
+                                <td className={`p-2.5 text-right tabular-nums ${totalDiff < 0 ? "text-teal-400" : "text-destructive"}`}>
+                                  {(totalDiff >= 0 ? "+" : "") + totalDiff.toFixed(4)}
+                                </td>
+                                <td className={`p-2.5 text-right tabular-nums ${finalCusum < 0 ? "text-teal-400" : "text-destructive"}`}>
+                                  {(finalCusum >= 0 ? "+" : "") + finalCusum.toFixed(4)}
+                                </td>
+                                <td className={`p-2.5 text-right tabular-nums ${avgEei < 1 ? "text-teal-400" : "text-destructive"}`}>
+                                  {avgEei.toFixed(4)}
+                                </td>
+                                <td className="p-2.5 text-right text-muted-foreground">—</td>
+                                <td className="p-2.5 pr-4 text-center">
+                                  {totalDiff < 0
+                                    ? <span className="text-teal-400 font-medium">✓ Tasarruf</span>
+                                    : <span className="text-destructive font-medium">✗ Kötüleşme</span>
+                                  }
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                );
+              })()}
+
+              {/* Boş durum — hesapla butonu bekliyor */}
+              {!calcLoading && monitorResults.length === 0 && !calcError && (
+                <Card className="border-border/40 bg-muted/10">
+                  <CardContent className="p-5 text-center">
+                    <Activity className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground">
+                      {monitorBaselineId
+                        ? 'Hesaplama başlatmak için "EnPG Hesapla" butonuna basın.'
+                        : 'Bir EnRÇ kaydı seçin ve "EnPG Hesapla" butonuna basın.'
+                      }
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
         </TabsContent>
       </Tabs>
     </div>
