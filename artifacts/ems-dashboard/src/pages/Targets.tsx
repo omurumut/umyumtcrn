@@ -4,7 +4,7 @@ import { useUnit } from "@/context/UnitContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useAuth } from "@/context/AuthContext";
 import {
-  useListTargets, useCreateTarget, useUpdateTarget, useDeleteTarget,
+  useListTargets, useDeleteTarget,
   getListTargetsQueryKey, useListUnits, getListUnitsQueryKey,
 } from "@workspace/api-client-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -197,9 +197,8 @@ export default function Targets() {
   const { data: allUnits } = useListUnits({}, { query: { queryKey: getListUnitsQueryKey({}), enabled: isAdmin && unitId === null } });
 
   const unitMap: Record<number, string> = Object.fromEntries((allUnits ?? []).map((u: any) => [u.id, u.name]));
-  const createTarget = useCreateTarget();
-  const updateTarget = useUpdateTarget();
   const deleteTarget = useDeleteTarget();
+  const [isSavingTarget, setIsSavingTarget] = useState(false);
 
   const authHeader = () => {
     const token = localStorage.getItem("eys_token");
@@ -226,7 +225,7 @@ export default function Targets() {
     setTargetOpen(true);
   }
 
-  function handleSaveTarget() {
+  async function handleSaveTarget() {
     const { name, baselineYear, targetYear, targetReductionPercent, unitId: fUnitId, status } = targetForm;
     if (!name) { toast({ title: "Hedef adı gerekli", variant: "destructive" }); return; }
     if (parseInt(targetYear) < parseInt(baselineYear)) { toast({ title: "Hedef yılı baz yıldan küçük olamaz", variant: "destructive" }); return; }
@@ -238,34 +237,36 @@ export default function Targets() {
       baselineYear: parseInt(baselineYear),
       targetYear: parseInt(targetYear),
       targetReductionPercent: r,
-      objectiveText: targetForm.objectiveText || undefined,
-      targetText: targetForm.targetText || undefined,
-      targetType: targetForm.targetType || undefined,
-      subUnitId: targetForm.subUnitId ? parseInt(targetForm.subUnitId) : undefined,
-      energySourceId: targetForm.energySourceId ? parseInt(targetForm.energySourceId) : undefined,
-      unitLabel: targetForm.unitLabel || undefined,
+      notes: targetForm.notes || null,
+      objectiveText: targetForm.objectiveText || null,
+      targetText: targetForm.targetText || null,
+      targetType: targetForm.targetType || null,
+      unitLabel: targetForm.unitLabel || null,
       status: status || "active",
-      baselineValue: targetForm.baselineValue ? parseFloat(targetForm.baselineValue) : undefined,
-      targetValue: targetForm.targetValue ? parseFloat(targetForm.targetValue) : undefined,
-      actualValue: targetForm.actualValue ? parseFloat(targetForm.actualValue) : undefined,
-      notes: targetForm.notes || undefined,
+      baselineValue: targetForm.baselineValue !== "" ? targetForm.baselineValue : null,
+      targetValue: targetForm.targetValue !== "" ? targetForm.targetValue : null,
+      actualValue: targetForm.actualValue !== "" ? targetForm.actualValue : null,
+      subUnitId: targetForm.subUnitId || null,
+      energySourceId: targetForm.energySourceId || null,
+      seuAssessmentId: null,
+      unitId: fUnitId || null,
     };
-    if (fUnitId) payload.unitId = parseInt(fUnitId);
 
-    const invalidate = () => {
+    setIsSavingTarget(true);
+    try {
+      if (editingTargetId !== null) {
+        await axios.patch(`/api/targets/${editingTargetId}`, payload, { headers: authHeader() });
+        toast({ title: "Hedef güncellendi" });
+      } else {
+        await axios.post("/api/targets", payload, { headers: authHeader() });
+        toast({ title: "Hedef eklendi" });
+      }
       queryClient.invalidateQueries({ queryKey: getListTargetsQueryKey(unitParam) });
       setTargetOpen(false);
-    };
-    if (editingTargetId !== null) {
-      updateTarget.mutate({ id: editingTargetId, data: payload }, {
-        onSuccess: () => { invalidate(); toast({ title: "Hedef güncellendi" }); },
-        onError: () => toast({ title: "Güncelleme başarısız", variant: "destructive" }),
-      });
-    } else {
-      createTarget.mutate({ data: payload }, {
-        onSuccess: () => { invalidate(); toast({ title: "Hedef eklendi" }); },
-        onError: () => toast({ title: "Ekleme başarısız", variant: "destructive" }),
-      });
+    } catch (e: any) {
+      toast({ title: e?.response?.data?.error ?? "İşlem başarısız", variant: "destructive" });
+    } finally {
+      setIsSavingTarget(false);
     }
   }
 
@@ -383,7 +384,6 @@ export default function Targets() {
   }).length;
   const avgTarget = totalTargets > 0 ? targetList.reduce((s: number, t: any) => s + t.targetReductionPercent, 0) / totalTargets : 0;
 
-  const isSaving = createTarget.isPending || updateTarget.isPending;
 
   // ─── Action plan auto payback ─────────────────────────────
   function onActionFormChange(field: keyof ActionPlanForm, value: string | boolean) {
@@ -403,7 +403,7 @@ export default function Targets() {
   }
 
   const selectedTarget = targetList.find((t: any) => t.id.toString() === selectedTargetId);
-  const selectedProgressTarget = targetList.find((t: any) => t.id.toString() === selectedProgressTargetId);
+  const selectedProgressTarget = targetList.find((t: any) => t.id.toString() === selectedProgressTargetId) as any;
 
   return (
     <div className="p-6 space-y-6">
@@ -788,7 +788,7 @@ export default function Targets() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setTargetOpen(false)}>İptal</Button>
-            <Button onClick={handleSaveTarget} disabled={isSaving}>{isSaving ? "Kaydediliyor..." : editingTargetId !== null ? "Güncelle" : "Ekle"}</Button>
+            <Button onClick={handleSaveTarget} disabled={isSavingTarget}>{isSavingTarget ? "Kaydediliyor..." : editingTargetId !== null ? "Güncelle" : "Ekle"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

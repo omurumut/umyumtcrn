@@ -1,0 +1,91 @@
+Enerji Hedefleri modülünde sadece şu hatayı düzelt:
+
+Sorun:
+Hedef düzenle butonuna basınca, daha önce doldurulmuş yeni alanlar düzenleme formunda boş geliyor.
+
+Boş gelen alanlar:
+- objective_text / amaç metni
+- target_text / hedef açıklaması
+- target_type / hedef tipi
+- baseline_value / baz değer
+- target_value / hedef değer
+- actual_value / gerçekleşen değer
+- unit / ölçü birimi
+- status / durum
+- sub_unit_id
+- energy_source_id
+- seu_assessment_id
+
+Beklenen:
+Bir enerji hedefi düzenlenirken API’den gelen hedef kaydı form state’e eksiksiz aktarılmalı. Kullanıcı daha önce kaydettiği alanları düzenleme modalında dolu görmeli.
+
+Lütfen şu adımları yap:
+
+1. Önce GET /api/energy-targets veya mevcut hedef liste endpointinin response’unu kontrol et.
+   Response içinde yeni kolonlar gerçekten dönüyor mu?
+   Eğer dönmüyorsa backend SELECT sorgusuna bu alanları ekle.
+
+2. Eğer backend response içinde alanlar dönüyorsa, frontend Targets.tsx içinde editTarget / handleEdit / openEditModal benzeri fonksiyonu bul.
+   Bu fonksiyon form state’i eski alanlarla dolduruyor olabilir.
+   Yeni alanları da açıkça set et.
+
+3. Alan adı uyuşmazlıklarını kontrol et.
+   Örneğin backend snake_case dönüyorsa:
+   objective_text
+   target_text
+   target_type
+   baseline_value
+   target_value
+   actual_value
+
+   Frontend camelCase bekliyorsa:
+   objectiveText
+   targetText
+   targetType
+   baselineValue
+   targetValue
+   actualValue
+
+   Bu iki yapıdan biri seçilsin ve tüm formda tutarlı kullanılsın.
+   Edit, create ve update payload alanları aynı standarda bağlansın.
+
+4. Numeric alanlarda null/undefined gelirse input değeri boş string olsun.
+   Örnek:
+   baseline_value: target.baseline_value != null ? String(target.baseline_value) : ""
+
+5. Select alanlarında boş değer için value="" kullanma.
+   Boş/default için "none" veya "unselected" kullan.
+   Ancak mevcut kayıt doluysa ilgili değer seçili gelsin.
+   Örneğin:
+   target_type doluysa Select value olarak target_type set edilsin.
+   status doluysa Select value olarak status set edilsin.
+
+6. Düzenleme sonrası update payload’ında yeni alanlar backend’e gönderilsin.
+   Sadece eski alanlar gönderiliyorsa yeni alanlar kaybolur.
+   PUT/PATCH payload içinde şu alanlar mutlaka yer alsın:
+   - objective_text
+   - target_text
+   - target_type
+   - baseline_value
+   - target_value
+   - actual_value
+   - unit
+   - status
+   - sub_unit_id
+   - energy_source_id
+   - seu_assessment_id
+
+7. Test:
+   - Yeni hedef oluştur.
+   - Yeni alanları doldur.
+   - Kaydet.
+   - Sayfayı yenile.
+   - Düzenle’ye bas.
+   - Tüm alanların dolu geldiğini doğrula.
+   - Bir alanı değiştirip güncelle.
+   - Tekrar düzenle’ye basınca değişikliğin kaldığını doğrula.
+
+Yeni özellik ekleme.
+PDF/export yapma.
+Sadece edit formunda yeni alanların dolu gelmesini ve update sırasında kaybolmamasını düzelt.
+Sonunda hangi dosyaları değiştirdiğini ve test sonucunu kısa raporla.

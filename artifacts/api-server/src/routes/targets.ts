@@ -83,7 +83,11 @@ router.get("/targets", requireAuth, async (req, res) => {
 router.post("/targets", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const { name, baselineYear, targetYear, targetReductionPercent, notes, unitId } = req.body;
+    const {
+      name, baselineYear, targetYear, targetReductionPercent, notes, unitId,
+      objectiveText, targetText, targetType, baselineValue, targetValue, actualValue,
+      unitLabel, status, subUnitId, energySourceId, seuAssessmentId,
+    } = req.body;
     if (!name || !baselineYear || !targetYear || targetReductionPercent === undefined) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
     }
@@ -98,6 +102,17 @@ router.post("/targets", requireAuth, async (req, res) => {
       notes: notes || null,
       unitId: resolvedUnitId,
       companyId: sessionCompanyId,
+      objectiveText: objectiveText || null,
+      targetText: targetText || null,
+      targetType: targetType || null,
+      baselineValue: baselineValue != null && baselineValue !== "" ? parseFloat(baselineValue) : null,
+      targetValue: targetValue != null && targetValue !== "" ? parseFloat(targetValue) : null,
+      actualValue: actualValue != null && actualValue !== "" ? parseFloat(actualValue) : null,
+      unitLabel: unitLabel || null,
+      status: status || "active",
+      subUnitId: subUnitId ? parseInt(subUnitId) : null,
+      energySourceId: energySourceId ? parseInt(energySourceId) : null,
+      seuAssessmentId: seuAssessmentId ? parseInt(seuAssessmentId) : null,
     }).returning();
     res.status(201).json(item);
   } catch (err) {
@@ -119,7 +134,11 @@ router.patch("/targets/:id", requireAuth, async (req, res) => {
     if (role === "admin" && existing.companyId !== sessionCompanyId) {
       res.status(403).json({ error: "Bu kaydı düzenleme yetkiniz yok" }); return;
     }
-    const { name, baselineYear, targetYear, targetReductionPercent, notes, unitId } = req.body;
+    const {
+      name, baselineYear, targetYear, targetReductionPercent, notes, unitId,
+      objectiveText, targetText, targetType, baselineValue, targetValue, actualValue,
+      unitLabel, status, subUnitId, energySourceId, seuAssessmentId,
+    } = req.body;
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
     if (baselineYear !== undefined) updates.baselineYear = parseInt(baselineYear);
@@ -127,6 +146,17 @@ router.patch("/targets/:id", requireAuth, async (req, res) => {
     if (targetReductionPercent !== undefined) updates.targetReductionPercent = parseFloat(targetReductionPercent);
     if (notes !== undefined) updates.notes = notes || null;
     if ((role === "admin" || role === "superadmin") && unitId !== undefined) updates.unitId = unitId ? parseInt(unitId) : null;
+    if (objectiveText !== undefined) updates.objectiveText = objectiveText || null;
+    if (targetText !== undefined) updates.targetText = targetText || null;
+    if (targetType !== undefined) updates.targetType = targetType || null;
+    if (baselineValue !== undefined) updates.baselineValue = baselineValue !== "" && baselineValue != null ? parseFloat(baselineValue) : null;
+    if (targetValue !== undefined) updates.targetValue = targetValue !== "" && targetValue != null ? parseFloat(targetValue) : null;
+    if (actualValue !== undefined) updates.actualValue = actualValue !== "" && actualValue != null ? parseFloat(actualValue) : null;
+    if (unitLabel !== undefined) updates.unitLabel = unitLabel || null;
+    if (status !== undefined) updates.status = status || null;
+    if (subUnitId !== undefined) updates.subUnitId = subUnitId ? parseInt(subUnitId) : null;
+    if (energySourceId !== undefined) updates.energySourceId = energySourceId ? parseInt(energySourceId) : null;
+    if (seuAssessmentId !== undefined) updates.seuAssessmentId = seuAssessmentId ? parseInt(seuAssessmentId) : null;
     const [item] = await db.update(energyTargetsTable).set(updates).where(eq(energyTargetsTable.id, id)).returning();
     res.json(item);
   } catch (err) {
