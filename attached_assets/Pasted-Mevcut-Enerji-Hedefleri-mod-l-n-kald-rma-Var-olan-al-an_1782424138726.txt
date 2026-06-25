@@ -1,0 +1,385 @@
+Mevcut “Enerji Hedefleri” modülünü kaldırma. Var olan çalışan yapıyı analiz ederek ISO 50001’e uygun “Enerji Amaçları, Hedefleri ve Eylem Planları” modülüne modernize et.
+
+Ayrıca Verimlilik Artırıcı Projeler, yani VAP yapısını da bu modülle bağlantılı olacak şekilde hazırla.
+
+ÖNEMLİ KARAR:
+- Her eylem planı VAP değildir.
+- Ancak her VAP bir eylem planından türemelidir.
+- Bu nedenle VAP ayrı menü/modül olarak görünsün ama veri ilişkisi eylem planına bağlı olsun.
+- Eylem planı içinde “Bu eylem VAP mı?” alanı olsun.
+- is_vap = true olan eylemler ayrıca Verimlilik Artırıcı Projeler modülünde listelensin.
+- VAP detayları ayrı tabloda tutulabilsin.
+
+Genel kurallar:
+- Mevcut Enerji Hedefleri modülünü silme.
+- Mevcut hedef kayıtlarını silme.
+- Mevcut tabloyu drop etme.
+- Gerekirse mevcut hedef tablosuna migration ile yeni kolonlar ekle.
+- Multi-tenant company_id izolasyonunu bozma.
+- Mevcut auth ve role yapısını kullan.
+- Firma admini tüm birimleri görebilsin.
+- Normal kullanıcı sadece kendi birimine ait kayıtları görebilsin.
+- Mevcut tasarım dilini koru.
+- Minimum ve kontrollü değişiklik yap.
+- GitHub kaynak yapısını bozma.
+
+AMAÇ:
+Mevcut Enerji Hedefleri ekranını şu yapıya dönüştür:
+
+1. Amaç ve Hedefler
+2. Eylem Planları
+3. İzleme ve Gerçekleşme
+4. VAP bağlantısı
+
+Menü:
+- Mevcut “Enerji Hedefleri” menüsü kalabilir.
+- Sayfa başlığı “Enerji Amaçları, Hedefleri ve Eylem Planları” olsun.
+- Ayrıca ISO 50001 menüsü altına “Verimlilik Artırıcı Projeler” menüsü ekle.
+
+FRONTEND — ENERJİ HEDEFLERİ SAYFASI:
+Mevcut kart görünümünü tamamen bozma. Ancak sayfaya sekmeli yapı ekle:
+
+Sekmeler:
+1. Amaç ve Hedefler
+2. Eylem Planları
+3. İzleme ve Gerçekleşme
+
+AMAÇ VE HEDEFLER SEKmesi:
+Mevcut hedef kartlarını koru ama hedef formunu genişlet.
+
+Yeni hedef/düzenleme formunda şu alanlar olsun:
+
+Zorunlu alanlar:
+- Hedef adı
+- Birim
+- Baz yıl
+- Hedef yıl
+- Hedef azaltma oranı (%)
+- Amaç metni
+- Hedef açıklaması
+- Hedef tipi
+- Ölçü birimi
+- Durum
+
+Opsiyonel alanlar:
+- Alt birim
+- Enerji kaynağı
+- İlgili ÖEK
+- Baz değer
+- Hedef değer
+- Gerçekleşen değer
+- Notlar
+
+Hedef tipi seçenekleri:
+- consumption_reduction = Tüketim Azaltımı
+- efficiency_improvement = Verimlilik Artışı
+- emission_reduction = Emisyon Azaltımı
+- cost_reduction = Maliyet Azaltımı
+- monitoring = İzleme / Kontrol
+
+Hedef durumu seçenekleri:
+- draft = Taslak
+- active = Devam Ediyor
+- completed = Tamamlandı
+- cancelled = İptal
+
+Kartlarda mümkünse şu bilgiler gösterilsin:
+- Hedef adı
+- Birim / alt birim
+- Baz yıl → hedef yıl
+- Hedef azaltma oranı
+- Gerçekleşen değer
+- Güncel değer
+- Hedef durumu
+- Hedef tipi
+- Varsa enerji kaynağı
+- Varsa ilgili ÖEK
+- Notlar
+- Düzenle / sil işlemleri
+
+VERİTABANI — MEVCUT HEDEF TABLOSU:
+Önce mevcut enerji hedefleri tablosunu bul.
+Bu tabloyu silme.
+Eğer tablo adı energy_targets ise onu genişlet.
+Eğer farklı isimdeyse mevcut isimle devam et.
+
+Mevcut hedef tablosuna gerekirse şu alanları ekle:
+- objective_text nullable
+- target_text nullable
+- target_type nullable
+- sub_unit_id nullable
+- energy_source_id nullable
+- seu_assessment_id nullable
+- baseline_value numeric nullable
+- target_value numeric nullable
+- actual_value numeric nullable
+- unit nullable
+- status nullable/default active
+- updated_at nullable veya mevcut yapıya uygun
+
+EYLEM PLANLARI:
+Yeni tablo oluştur:
+
+energy_action_plans
+
+Alanlar:
+- id
+- company_id
+- target_id veya objective_id: mevcut enerji hedefi tablosundaki id’ye FK
+- title
+- description nullable
+- responsible_user_id nullable
+- responsible_name nullable
+- priority
+- expected_saving_value numeric nullable
+- expected_saving_unit nullable
+- expected_cost_saving numeric nullable
+- investment_cost numeric nullable
+- payback_months numeric nullable
+- start_date nullable
+- due_date nullable
+- completion_date nullable
+- progress_percent numeric default 0
+- status
+- is_vap boolean default false
+- notes nullable
+- created_by
+- created_at
+- updated_at
+
+Eylem planı durumları:
+- planned = Planlandı
+- in_progress = Devam Ediyor
+- completed = Tamamlandı
+- delayed = Gecikti
+- cancelled = İptal
+
+Öncelik seçenekleri:
+- low = Düşük
+- medium = Orta
+- high = Yüksek
+
+Eylem Planları sekmesinde:
+- Hedef seçilebilsin.
+- Seçilen hedefe bağlı eylemler listelensin.
+- Yeni eylem ekleme/düzenleme/silme olsun.
+- Formda “Bu eylem VAP mı?” checkbox alanı olsun.
+- progress_percent 0 ile 100 arasında validasyonlu olsun.
+- investment_cost ve expected_cost_saving varsa payback_months otomatik hesaplanabilsin:
+  payback_months = investment_cost / (expected_cost_saving / 12)
+- Kullanıcı isterse geri ödeme süresini manuel değiştirebilsin.
+
+Eylem planı listesi kolonları:
+- Hedef
+- Eylem adı
+- Sorumlu
+- Öncelik
+- Beklenen tasarruf
+- Yatırım maliyeti
+- Geri ödeme süresi
+- VAP mı?
+- Başlangıç
+- Bitiş
+- İlerleme
+- Durum
+- İşlemler
+
+İZLEME VE GERÇEKLEŞME:
+Yeni tablo oluştur:
+
+energy_target_progress veya energy_objective_progress
+
+Alanlar:
+- id
+- company_id
+- target_id veya objective_id: mevcut enerji hedefi tablosundaki id’ye FK
+- period_year
+- period_month nullable
+- actual_value numeric
+- actual_saving_value numeric nullable
+- comment nullable
+- recorded_by
+- recorded_at
+
+Bu sekmede:
+- Hedef seçilebilsin.
+- Seçilen hedefin baz değeri, hedef değeri, gerçekleşen değeri ve sapması gösterilsin.
+- Progress kayıtları listelensin.
+- Yeni gerçekleşme kaydı eklenebilsin.
+- Son progress kaydı, hedefin actual_value/gerçekleşen değer alanını güncelleyebilsin.
+- Azaltım hedeflerinde:
+  - actual_value <= target_value ise “Hedef sağlandı”
+  - actual_value > target_value ise “Riskli / hedef altında”
+- Eğer baz değer veya hedef değer yoksa hesaplama yapma.
+- Kullanıcıya “Baz değer ve hedef değer girildiğinde gerçekleşme durumu hesaplanır.” mesajı göster.
+
+VAP — VERİMLİLİK ARTIRICI PROJELER:
+Yeni ayrı menü/sayfa oluştur:
+
+Menü adı:
+- Verimlilik Artırıcı Projeler
+
+Bu sayfa sadece is_vap = true olan eylem planlarını listelemeli.
+
+Yeni tablo oluştur:
+
+vap_projects
+
+Alanlar:
+- id
+- company_id
+- action_plan_id
+- project_code nullable
+- project_title
+- project_type nullable
+- current_situation nullable
+- proposed_solution nullable
+- technical_description nullable
+- annual_energy_saving_value numeric nullable
+- annual_energy_saving_unit nullable
+- annual_cost_saving numeric nullable
+- investment_cost numeric nullable
+- payback_months numeric nullable
+- co2_reduction_ton numeric nullable
+- measurement_verification_method nullable
+- incentive_status nullable
+- feasibility_status nullable
+- start_date nullable
+- end_date nullable
+- status
+- notes nullable
+- created_by
+- created_at
+- updated_at
+
+VAP durumları:
+- idea = Fikir
+- feasibility = Fizibilite
+- planned = Planlandı
+- in_progress = Devam Ediyor
+- completed = Tamamlandı
+- cancelled = İptal
+
+Fizibilite durumu:
+- not_started = Başlanmadı
+- pre_feasibility = Ön Fizibilite
+- detailed_feasibility = Detay Fizibilite
+- approved = Onaylandı
+- rejected = Reddedildi
+
+Teşvik/destek durumu:
+- none = Yok
+- evaluating = Değerlendiriliyor
+- application_prepared = Başvuru Hazırlanıyor
+- applied = Başvuru Yapıldı
+- approved = Onaylandı
+- rejected = Reddedildi
+
+VAP sayfasında:
+- Sadece VAP olarak işaretlenen eylem planları listelensin.
+- Eğer is_vap = true ama vap_projects kaydı yoksa “VAP detayı oluştur” butonu görünsün.
+- VAP detayı oluşturulunca vap_projects tablosuna kayıt açılsın.
+- VAP detayları düzenlenebilsin.
+- VAP listesinde bağlı hedef bilgisi de gösterilsin.
+
+VAP liste kolonları:
+- Proje kodu
+- VAP adı
+- Bağlı hedef
+- Birim
+- Enerji kaynağı
+- Yıllık enerji tasarrufu
+- Yıllık mali tasarruf
+- Yatırım maliyeti
+- Geri ödeme süresi
+- CO2 azaltımı
+- Fizibilite durumu
+- Teşvik durumu
+- Durum
+- İşlemler
+
+VAP formunda:
+- Bağlı eylem planı seçili gelsin.
+- Bağlı hedef bilgisi readonly gösterilsin.
+- Proje başlığı varsayılan olarak eylem planı adıyla dolsun.
+- Eylem planındaki investment_cost, expected_cost_saving, expected_saving_value alanları varsa VAP formuna varsayılan olarak taşınsın.
+- Kullanıcı bu değerleri VAP detayında değiştirebilsin.
+
+API:
+Mevcut enerji hedefleri API endpointlerini bozma.
+Gerekirse genişlet.
+
+Yeni endpointler:
+
+Eylem planları:
+- GET /api/energy-action-plans
+- POST /api/energy-action-plans
+- PUT /api/energy-action-plans/:id
+- DELETE /api/energy-action-plans/:id
+
+İzleme:
+- GET /api/energy-target-progress
+- POST /api/energy-target-progress
+- DELETE /api/energy-target-progress/:id
+
+VAP:
+- GET /api/vap-projects
+- POST /api/vap-projects
+- PUT /api/vap-projects/:id
+- DELETE /api/vap-projects/:id
+
+API kuralları:
+- Auth zorunlu.
+- Tüm sorgularda company_id filtresi zorunlu.
+- Normal kullanıcı sadece kendi unit_id kayıtlarını görebilsin.
+- Admin tüm birimlerin kayıtlarını görebilsin.
+- Action plan eklenirken bağlı hedefin aynı company_id içinde olduğu doğrulansın.
+- Progress eklenirken bağlı hedefin aynı company_id içinde olduğu doğrulansın.
+- VAP detayı eklenirken bağlı action_plan aynı company_id içinde doğrulansın.
+- VAP detayı eklenirken action_plan.is_vap = true olmalı.
+- VAP listesinde bağlı action plan, bağlı hedef, birim ve enerji kaynağı bilgileri join ile gösterilsin.
+- Hata mesajları frontend’de kullanıcıya gösterilsin.
+
+ÜST ÖZET KARTLARI:
+Enerji Hedefleri sayfasındaki mevcut üst kartları koru ve mümkünse şu mantığa göre hesapla:
+- Toplam Hedef
+- Hedefe Ulaşılan
+- Devam Eden Hedef
+- Ortalama Hedef Azaltım
+- Geciken Eylem sayısı
+- Beklenen Tasarruf toplamı
+
+VAP sayfasında üst kartlar:
+- Toplam VAP
+- Devam Eden VAP
+- Tamamlanan VAP
+- Toplam Beklenen Enerji Tasarrufu
+- Toplam Beklenen Mali Tasarruf
+- Toplam Yatırım Maliyeti
+
+VALIDASYON:
+- Hedef adı zorunlu.
+- Birim zorunlu.
+- Baz yıl zorunlu.
+- Hedef yıl zorunlu.
+- Hedef yıl baz yıldan küçük olamaz.
+- Hedef azaltma oranı 0-100 arası olmalı.
+- Eylem planı adı zorunlu.
+- progress_percent 0-100 arası olmalı.
+- Sayısal alanlara negatif değer girilmesini engelle.
+- Tarihlerde bitiş tarihi başlangıç tarihinden önce olamaz.
+- VAP project_title zorunlu.
+- VAP action_plan_id zorunlu.
+
+EXPORT:
+- Bu aşamada export/PDF/Word oluşturma.
+- Ancak veri modeli ileride şu iki ayrı exportu destekleyecek şekilde kurulsun:
+  1. Enerji Amaçları, Hedefleri ve Eylem Planları exportu
+  2. Verimlilik Artırıcı Projeler exportu
+
+SON KONTROL:
+- pnpm run typecheck çalıştır.
+- pnpm run build çalıştır.
+- Migration dosyasını ekle.
+- Mevcut modülleri bozma.
+- İş bitince hangi dosyalarda değişiklik yaptığını, hangi migration eklendiğini ve test sonuçlarını kısa raporla.

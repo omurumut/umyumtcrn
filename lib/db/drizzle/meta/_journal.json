@@ -78,6 +78,13 @@
       "when": 1782800000000,
       "tag": "0011_energy_baselines_extended",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782900000000,
+      "tag": "0012_energy_objectives_vap",
+      "breakpoints": true
     }
   ]
 }

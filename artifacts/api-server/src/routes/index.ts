@@ -23,6 +23,9 @@ import mgmRouter from "./mgm";
 import variablesRouter from "./variables";
 import seuAssessmentRouter from "./seu-assessment";
 import energyPerformanceRouter from "./energy-performance";
+import energyActionPlansRouter from "./energy-action-plans";
+import energyTargetProgressRouter from "./energy-target-progress";
+import vapProjectsRouter from "./vap-projects";
 
 const router: IRouter = Router();
 
@@ -50,5 +53,8 @@ router.use(mgmRouter);
 router.use(variablesRouter);
 router.use(seuAssessmentRouter);
 router.use(energyPerformanceRouter);
+router.use(energyActionPlansRouter);
+router.use(energyTargetProgressRouter);
+router.use(vapProjectsRouter);
 
 export default router;

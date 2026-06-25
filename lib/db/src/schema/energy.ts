@@ -352,12 +352,106 @@ export const energyTargetsTable = pgTable("energy_targets", {
   targetYear: integer("target_year").notNull(),
   targetReductionPercent: real("target_reduction_percent").notNull(),
   notes: text("notes"),
+  objectiveText: text("objective_text"),
+  targetText: text("target_text"),
+  targetType: text("target_type"),
+  subUnitId: integer("sub_unit_id").references(() => subUnitsTable.id, { onDelete: "set null" }),
+  energySourceId: integer("energy_source_id").references(() => energySourcesTable.id, { onDelete: "set null" }),
+  seuAssessmentId: integer("seu_assessment_id"),
+  baselineValue: real("baseline_value"),
+  targetValue: real("target_value"),
+  actualValue: real("actual_value"),
+  unitLabel: text("unit_label"),
+  status: text("status").default("active"),
+  updatedAt: timestamp("updated_at").defaultNow(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const insertEnergyTargetSchema = createInsertSchema(energyTargetsTable).omit({ id: true, createdAt: true });
+export const insertEnergyTargetSchema = createInsertSchema(energyTargetsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertEnergyTarget = z.infer<typeof insertEnergyTargetSchema>;
 export type EnergyTarget = typeof energyTargetsTable.$inferSelect;
+
+// ── Energy Action Plans (Eylem Planları) ─────────────────
+export const energyActionPlansTable = pgTable("energy_action_plans", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
+  targetId: integer("target_id").references(() => energyTargetsTable.id, { onDelete: "cascade" }).notNull(),
+  title: text("title").notNull(),
+  description: text("description"),
+  responsibleUserId: integer("responsible_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  responsibleName: text("responsible_name"),
+  priority: text("priority").notNull().default("medium"),
+  expectedSavingValue: real("expected_saving_value"),
+  expectedSavingUnit: text("expected_saving_unit"),
+  expectedCostSaving: real("expected_cost_saving"),
+  investmentCost: real("investment_cost"),
+  paybackMonths: real("payback_months"),
+  startDate: text("start_date"),
+  dueDate: text("due_date"),
+  completionDate: text("completion_date"),
+  progressPercent: real("progress_percent").notNull().default(0),
+  status: text("status").notNull().default("planned"),
+  isVap: boolean("is_vap").notNull().default(false),
+  notes: text("notes"),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertEnergyActionPlanSchema = createInsertSchema(energyActionPlansTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEnergyActionPlan = z.infer<typeof insertEnergyActionPlanSchema>;
+export type EnergyActionPlan = typeof energyActionPlansTable.$inferSelect;
+
+// ── Energy Target Progress (İzleme ve Gerçekleşme) ───────
+export const energyTargetProgressTable = pgTable("energy_target_progress", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
+  targetId: integer("target_id").references(() => energyTargetsTable.id, { onDelete: "cascade" }).notNull(),
+  periodYear: integer("period_year").notNull(),
+  periodMonth: integer("period_month"),
+  actualValue: real("actual_value").notNull(),
+  actualSavingValue: real("actual_saving_value"),
+  comment: text("comment"),
+  recordedBy: text("recorded_by"),
+  recordedAt: timestamp("recorded_at").defaultNow().notNull(),
+});
+
+export const insertEnergyTargetProgressSchema = createInsertSchema(energyTargetProgressTable).omit({ id: true, recordedAt: true });
+export type InsertEnergyTargetProgress = z.infer<typeof insertEnergyTargetProgressSchema>;
+export type EnergyTargetProgress = typeof energyTargetProgressTable.$inferSelect;
+
+// ── VAP Projects (Verimlilik Artırıcı Projeler) ───────────
+export const vapProjectsTable = pgTable("vap_projects", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
+  actionPlanId: integer("action_plan_id").references(() => energyActionPlansTable.id, { onDelete: "cascade" }).notNull(),
+  projectCode: text("project_code"),
+  projectTitle: text("project_title").notNull(),
+  projectType: text("project_type"),
+  currentSituation: text("current_situation"),
+  proposedSolution: text("proposed_solution"),
+  technicalDescription: text("technical_description"),
+  annualEnergySavingValue: real("annual_energy_saving_value"),
+  annualEnergySavingUnit: text("annual_energy_saving_unit"),
+  annualCostSaving: real("annual_cost_saving"),
+  investmentCost: real("investment_cost"),
+  paybackMonths: real("payback_months"),
+  co2ReductionTon: real("co2_reduction_ton"),
+  measurementVerificationMethod: text("measurement_verification_method"),
+  incentiveStatus: text("incentive_status").default("none"),
+  feasibilityStatus: text("feasibility_status").default("not_started"),
+  startDate: text("start_date"),
+  endDate: text("end_date"),
+  status: text("status").notNull().default("idea"),
+  notes: text("notes"),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertVapProjectSchema = createInsertSchema(vapProjectsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertVapProject = z.infer<typeof insertVapProjectSchema>;
+export type VapProject = typeof vapProjectsTable.$inferSelect;
 
 // ── Variables (Değişkenler) ───────────────────────────────
 export const variablesTable = pgTable("variables", {

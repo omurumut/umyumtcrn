@@ -27,6 +27,7 @@ import Companies from "@/pages/Companies";
 import EnergyUseGroups from "@/pages/EnergyUseGroups";
 import Variables from "@/pages/Variables";
 import EnergyPerformance from "@/pages/EnergyPerformance";
+import VapProjects from "@/pages/VapProjects";
 
 const logoutRef = { fn: () => {} };
 
@@ -77,6 +78,7 @@ function Router() {
       <Route path="/oneriler" component={AiSuggestions} />
       <Route path="/raporlar" component={Reports} />
       <Route path="/hedefler" component={Targets} />
+      <Route path="/vap-projeler" component={VapProjects} />
       <Route path="/firmalar">
         {() => <SuperAdminRoute component={Companies} />}
       </Route>
