@@ -1,0 +1,91 @@
+XLSX export işi yarım kalmış. Yeni özellik ekleme. Sadece eksik kalan bağlantıyı tamamla.
+
+Mevcut durum:
+- artifacts/api-server/src/lib/xlsx-export.ts dosyası var.
+- targets.ts ve vap-projects.ts içine xlsx import satırı eklenmiş.
+- Ancak route sonunda hâlâ sabit buildCsv + sendCsvResponse çağrılıyor.
+- format query parametresi hiç okunmuyor.
+- Frontend butonları hâlâ /api/targets/export ve /api/vap-projects/export çağırıyor, format=xlsx göndermiyor.
+- Buton metni hâlâ “CSV Export”.
+
+Yapılacak düzeltme:
+
+1) Backend targets export endpointini düzelt
+
+Dosya:
+artifacts/api-server/src/routes/targets.ts
+
+GET /api/targets/export endpointinde:
+
+- const format = req.query.format === "xlsx" ? "xlsx" : "csv" gibi güvenli format oku.
+- Mevcut rows üretim mantığını bozma.
+- CSV mevcut şekilde çalışmaya devam etsin.
+- Eğer format === "xlsx" ise buildXlsx/sendXlsxResponse helper’ını çağır.
+- XLSX dosya adı .xlsx olsun.
+- CSV dosya adı .csv kalsın.
+- Content-Type xlsx için şu olmalı:
+application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+2) Backend VAP export endpointini düzelt
+
+Dosya:
+artifacts/api-server/src/routes/vap-projects.ts
+
+GET /api/vap-projects/export endpointinde aynı mantığı uygula:
+
+- format=xlsx ise xlsx helper çağrılsın.
+- format yoksa veya csv ise CSV kalsın.
+- Dosya uzantısı doğru olsun.
+- Mevcut auth/company_id/unit_id güvenlik kontrollerine dokunma.
+
+3) Frontend butonlarını düzelt
+
+Dosyalar:
+artifacts/ems-dashboard/src/pages/Targets.tsx
+artifacts/ems-dashboard/src/pages/VapProjects.tsx
+
+- /hedefler sayfasındaki buton metni “Excel Export” olsun.
+- URL şu olmalı:
+  /api/targets/export?format=xlsx
+
+- /vap-projeler sayfasındaki buton metni “Excel Export” olsun.
+- URL şu olmalı:
+  /api/vap-projects/export?format=xlsx
+
+- Dosya indirme uzantısı .xlsx olmalı.
+- CSV için ayrı buton ekleme. Şimdilik ana buton Excel indirsin.
+
+4) xlsx-export.ts helper’ını kullan
+
+Mevcut helper dosyasını kontrol et:
+artifacts/api-server/src/lib/xlsx-export.ts
+
+Eğer helper eksikse sadece minimum gerekli fonksiyonları tamamla:
+- Başlık satırı
+- Worksheet adı
+- Kolon genişliği
+- İlk satır freeze
+- Buffer üretimi
+- sendXlsxResponse
+
+Yeni paket ekleme gerekiyorsa sadece api-server workspace’e ekle. Root package’a ekleme.
+
+5) Test etmeden tamamlandı deme
+
+Şu kontrolleri yap ve sonucu raporla:
+
+- GET /api/targets/export?format=xlsx Content-Type gerçekten:
+  application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+- Dosya adı .xlsx mi?
+- GET /api/vap-projects/export?format=xlsx Content-Type gerçekten xlsx mi?
+- Dosya adı .xlsx mi?
+- GET /api/targets/export?format=csv hâlâ CSV döndürüyor mu?
+- GET /api/vap-projects/export?format=csv hâlâ CSV döndürüyor mu?
+- /hedefler butonu gerçekten format=xlsx çağırıyor mu?
+- /vap-projeler butonu gerçekten format=xlsx çağırıyor mu?
+- ems-dashboard build çalışıyor mu?
+
+Yeni özellik ekleme.
+PDF/Word ekleme.
+Bulk import/export ekleme.
+Sadece yarım kalan XLSX bağlantısını tamamla.
