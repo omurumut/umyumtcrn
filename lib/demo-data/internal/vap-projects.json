@@ -21,5 +21,28 @@
     "status": "idea",
     "notes": null,
     "createdBy": "17bm"
+  },
+  {
+    "actionPlanKey": "kontrol-fabrikasi--elektrik-tuketimi-azaltma-hedefi--led-aydinlatma-donusumu",
+    "projectCode": "VAP-2025-001",
+    "projectTitle": "LED Aydınlatma Dönüşümü VAP Projesi",
+    "projectType": "aydinlatma",
+    "currentSituation": "Üretim bölümünde 320 adet floresan (T8 36W) ve 48 adet HİD (250W) armatür kullanılmaktadır. Toplam kurulu aydınlatma gücü 23.6 kW'dır.",
+    "proposedSolution": "Tüm armatürlerin yüksek verimli LED ile değiştirilmesi: 320 adet T8 LED (18W) ve 48 adet LED projektör (120W). Toplam kurulu güç 11.5 kW'a düşecektir.",
+    "technicalDescription": "LED dönüşüm ile kurulu güç %51 azalacak, aydınlatma süresi günde 16 saat olarak alındığında yıllık tasarruf 45.000 kWh olarak hesaplanmıştır. Renk sıcaklığı 4000K, Ra≥80 seçilecektir.",
+    "annualEnergySavingValue": 45000,
+    "annualEnergySavingUnit": "kWh",
+    "annualCostSaving": 135000,
+    "investmentCost": 280000,
+    "paybackMonths": 25,
+    "co2ReductionTon": 18.9,
+    "measurementVerificationMethod": "Proje öncesi ve sonrası sayaç bazlı aylık elektrik tüketim karşılaştırması. Üretim saati normalleştirmesi uygulanacaktır.",
+    "incentiveStatus": "applied",
+    "feasibilityStatus": "approved",
+    "startDate": "2025-03-01",
+    "endDate": "2025-09-30",
+    "status": "in_progress",
+    "notes": "KOSGEB enerji verimliliği destek programına başvuru yapıldı.",
+    "createdBy": "kontrol_admin"
   }
 ]

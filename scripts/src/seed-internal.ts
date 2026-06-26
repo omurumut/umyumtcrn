@@ -29,6 +29,8 @@ import {
   swotTable,
   risksTable,
   energyTargetsTable,
+  energyActionPlansTable,
+  vapProjectsTable,
 } from "@workspace/db/schema";
 
 const { Pool } = pg;
@@ -281,6 +283,8 @@ async function seed() {
 
   let targetInserted = 0;
   let targetSkipped = 0;
+  // name → DB id (eylem planları için gerekli)
+  const targetIdMap = new Map<string, number>();
 
   for (const item of targetItems) {
     const existing = await db.select({ id: energyTargetsTable.id })
@@ -293,9 +297,10 @@ async function seed() {
 
     if (existing.length > 0) {
       console.log(`  ↩  Hedef zaten mevcut: ${item.name}`);
+      targetIdMap.set(item.name, existing[0].id);
       targetSkipped++;
     } else {
-      await db.insert(energyTargetsTable).values({
+      const [row] = await db.insert(energyTargetsTable).values({
         companyId,
         unitId: unit.id,
         name: item.name,
@@ -311,15 +316,266 @@ async function seed() {
         targetReductionPercent: item.targetReductionPercent,
         status: item.status,
         notes: item.notes,
-      });
+      }).returning({ id: energyTargetsTable.id });
       console.log(`  ✅ Hedef oluşturuldu: ${item.name}`);
+      targetIdMap.set(item.name, row.id);
       targetInserted++;
     }
   }
   console.log(`  Enerji hedefleri: ${targetInserted} eklendi, ${targetSkipped} atlandı`);
 
-  // ── 9. SWOT maddeleri ─────────────────────────────────────────────────────
-  console.log("\n[9/11] SWOT maddeleri");
+  // ── 9. Eylem planları (yeni demo hedefler için) ───────────────────────────
+  console.log("\n[9/13] Eylem planları (demo hedefler)");
+
+  const elektrikTargetId = targetIdMap.get("Elektrik Tüketimi Azaltma Hedefi");
+  const dogalgazTargetId = targetIdMap.get("Doğalgaz Tüketimi Azaltma Hedefi");
+  const yogunlukTargetId = targetIdMap.get("Toplam Enerji Yoğunluğu İyileştirme Hedefi");
+
+  interface ActionPlanSeed {
+    targetId: number;
+    title: string;
+    description: string;
+    responsibleName: string;
+    priority: string;
+    expectedSavingValue: number | null;
+    expectedSavingUnit: string;
+    expectedCostSaving: number | null;
+    investmentCost: number | null;
+    paybackMonths: number | null;
+    startDate: string;
+    dueDate: string;
+    progressPercent: number;
+    status: string;
+    isVap: boolean;
+    notes: string | null;
+  }
+
+  const actionPlanItems: ActionPlanSeed[] = [];
+
+  if (elektrikTargetId) {
+    actionPlanItems.push(
+      {
+        targetId: elektrikTargetId,
+        title: "LED Aydınlatma Dönüşümü",
+        description: "Tüm üretim bölümü aydınlatma armatürlerinin LED teknolojisine dönüştürülmesi. Mevcut floresan ve HİD armatürler yüksek verimli LED ile değiştirilecektir.",
+        responsibleName: "Teknik Hizmetler Müdürü",
+        priority: "high",
+        expectedSavingValue: 45000,
+        expectedSavingUnit: "kWh",
+        expectedCostSaving: 135000,
+        investmentCost: 280000,
+        paybackMonths: 25,
+        startDate: "2025-03-01",
+        dueDate: "2025-09-30",
+        progressPercent: 35,
+        status: "in_progress",
+        isVap: true,  // Bu eylem planına VAP bağlanacak
+        notes: "Pilot uygulama Mart ayında başlatıldı. Montaj %35 tamamlandı.",
+      },
+      {
+        targetId: elektrikTargetId,
+        title: "Kompresör Enerji Verimliliği Optimizasyonu",
+        description: "Basınçlı hava sisteminde kaçak tespiti, basınç set noktası optimizasyonu ve mesai dışı otomatik kapatma sistemi kurulumu.",
+        responsibleName: "Bakım Mühendisi",
+        priority: "high",
+        expectedSavingValue: 38000,
+        expectedSavingUnit: "kWh",
+        expectedCostSaving: 114000,
+        investmentCost: 45000,
+        paybackMonths: 5,
+        startDate: "2025-01-15",
+        dueDate: "2025-06-30",
+        progressPercent: 60,
+        status: "in_progress",
+        isVap: false,
+        notes: "Kaçak tespiti tamamlandı. Basınç optimizasyonu devam ediyor.",
+      },
+    );
+  }
+
+  if (dogalgazTargetId) {
+    actionPlanItems.push(
+      {
+        targetId: dogalgazTargetId,
+        title: "Kazan Baca Gazı Isı Geri Kazanımı",
+        description: "Doğalgaz kazanına ekonomizer ünite eklenerek baca gazı atık ısısından besi suyu ön ısıtmasında yararlanılacaktır.",
+        responsibleName: "Enerji Yöneticisi",
+        priority: "medium",
+        expectedSavingValue: 18000,
+        expectedSavingUnit: "m³",
+        expectedCostSaving: 216000,
+        investmentCost: 320000,
+        paybackMonths: 18,
+        startDate: "2025-06-01",
+        dueDate: "2025-12-31",
+        progressPercent: 10,
+        status: "planned",
+        isVap: false,
+        notes: "Teknik şartname hazırlanıyor. Tedarikçi teklifleri bekleniyor.",
+      },
+      {
+        targetId: dogalgazTargetId,
+        title: "Buhar Dağıtım Hattı Yalıtım İyileştirmesi",
+        description: "Üretim bölümündeki buhar dağıtım borularının yalıtım kalınlıklarının artırılması ve hasarlı yalıtım kısımlarının yenilenmesi.",
+        responsibleName: "Bakım Mühendisi",
+        priority: "medium",
+        expectedSavingValue: 6500,
+        expectedSavingUnit: "m³",
+        expectedCostSaving: 78000,
+        investmentCost: 55000,
+        paybackMonths: 8,
+        startDate: "2025-04-01",
+        dueDate: "2025-07-31",
+        progressPercent: 80,
+        status: "in_progress",
+        isVap: false,
+        notes: "Boru hattı yalıtım çalışmaları %80 tamamlandı.",
+      },
+    );
+  }
+
+  if (yogunlukTargetId) {
+    actionPlanItems.push(
+      {
+        targetId: yogunlukTargetId,
+        title: "Enerji İzleme ve Raporlama Sistemi Kurulumu",
+        description: "Sayaç bazında gerçek zamanlı enerji izleme altyapısı kurulumu ve otomatik üretim bazlı EnPI hesaplama modülü devreye alınması.",
+        responsibleName: "Bilgi İşlem ve Enerji Yönetimi",
+        priority: "high",
+        expectedSavingValue: null,
+        expectedSavingUnit: "kWh",
+        expectedCostSaving: null,
+        investmentCost: 120000,
+        paybackMonths: null,
+        startDate: "2025-02-01",
+        dueDate: "2025-08-31",
+        progressPercent: 45,
+        status: "in_progress",
+        isVap: false,
+        notes: "Altyapı kurulumu tamamlandı. Yazılım entegrasyonu devam ediyor.",
+      },
+      {
+        targetId: yogunlukTargetId,
+        title: "Üretim Çizelgeleme Optimizasyonu ile Pik Yük Yönetimi",
+        description: "Yüksek enerji çeken ekipmanların çalışma saatlerini pik tarife dönemlerinden kaçıracak şekilde üretim çizelgesinin yeniden düzenlenmesi.",
+        responsibleName: "Üretim Müdürü",
+        priority: "medium",
+        expectedSavingValue: 22000,
+        expectedSavingUnit: "kWh",
+        expectedCostSaving: 88000,
+        investmentCost: 0,
+        paybackMonths: 1,
+        startDate: "2025-01-01",
+        dueDate: "2025-03-31",
+        progressPercent: 100,
+        status: "completed",
+        isVap: false,
+        notes: "Çizelge revize edildi. Pik tarife döneminde yük %18 azaldı.",
+      },
+    );
+  }
+
+  let apInserted = 0;
+  let apSkipped = 0;
+  // title → DB id (VAP için gerekli)
+  const actionPlanIdMap = new Map<string, number>();
+
+  for (const ap of actionPlanItems) {
+    const existing = await db.select({ id: energyActionPlansTable.id })
+      .from(energyActionPlansTable)
+      .where(and(
+        eq(energyActionPlansTable.companyId, companyId),
+        eq(energyActionPlansTable.targetId, ap.targetId),
+        eq(energyActionPlansTable.title, ap.title),
+      ))
+      .limit(1);
+
+    if (existing.length > 0) {
+      console.log(`  ↩  Eylem planı zaten mevcut: ${ap.title}`);
+      actionPlanIdMap.set(ap.title, existing[0].id);
+      apSkipped++;
+    } else {
+      const [row] = await db.insert(energyActionPlansTable).values({
+        companyId,
+        targetId: ap.targetId,
+        title: ap.title,
+        description: ap.description,
+        responsibleName: ap.responsibleName,
+        priority: ap.priority,
+        expectedSavingValue: ap.expectedSavingValue,
+        expectedSavingUnit: ap.expectedSavingUnit,
+        expectedCostSaving: ap.expectedCostSaving,
+        investmentCost: ap.investmentCost,
+        paybackMonths: ap.paybackMonths,
+        startDate: ap.startDate,
+        dueDate: ap.dueDate,
+        progressPercent: ap.progressPercent,
+        status: ap.status,
+        isVap: ap.isVap,
+        notes: ap.notes,
+        createdBy: ADMIN_USERNAME,
+      }).returning({ id: energyActionPlansTable.id });
+      console.log(`  ✅ Eylem planı oluşturuldu: ${ap.title}`);
+      actionPlanIdMap.set(ap.title, row.id);
+      apInserted++;
+    }
+  }
+  console.log(`  Eylem planları: ${apInserted} eklendi, ${apSkipped} atlandı`);
+
+  // ── 10. VAP projesi (yalnızca LED Aydınlatma eylemine bağlı) ─────────────
+  console.log("\n[10/13] VAP projesi (demo)");
+
+  const ledActionPlanId = actionPlanIdMap.get("LED Aydınlatma Dönüşümü");
+  let vapInserted = 0;
+  let vapSkipped = 0;
+
+  if (ledActionPlanId) {
+    const existingVap = await db.select({ id: vapProjectsTable.id })
+      .from(vapProjectsTable)
+      .where(and(
+        eq(vapProjectsTable.companyId, companyId),
+        eq(vapProjectsTable.actionPlanId, ledActionPlanId),
+      ))
+      .limit(1);
+
+    if (existingVap.length > 0) {
+      console.log("  ↩  VAP projesi zaten mevcut: LED Aydınlatma Dönüşümü");
+      vapSkipped++;
+    } else {
+      await db.insert(vapProjectsTable).values({
+        companyId,
+        actionPlanId: ledActionPlanId,
+        projectCode: "VAP-2025-001",
+        projectTitle: "LED Aydınlatma Dönüşümü VAP Projesi",
+        projectType: "aydinlatma",
+        currentSituation: "Üretim bölümünde 320 adet floresan (T8 36W) ve 48 adet HİD (250W) armatür kullanılmaktadır. Toplam kurulu aydınlatma gücü 23.6 kW'dır.",
+        proposedSolution: "Tüm armatürlerin yüksek verimli LED ile değiştirilmesi: 320 adet T8 LED (18W) ve 48 adet LED projektör (120W). Toplam kurulu güç 11.5 kW'a düşecektir.",
+        technicalDescription: "LED dönüşüm ile kurulu güç %51 azalacak, aydınlatma süresi günde 16 saat olarak alındığında yıllık tasarruf 45.000 kWh olarak hesaplanmıştır. Renk sıcaklığı 4000K, Ra≥80 seçilecektir.",
+        annualEnergySavingValue: 45000,
+        annualEnergySavingUnit: "kWh",
+        annualCostSaving: 135000,
+        investmentCost: 280000,
+        paybackMonths: 25,
+        co2ReductionTon: 18.9,
+        measurementVerificationMethod: "Proje öncesi ve sonrası sayaç bazlı aylık elektrik tüketim karşılaştırması. Üretim saati normalleştirmesi uygulanacaktır.",
+        incentiveStatus: "applied",
+        feasibilityStatus: "approved",
+        startDate: "2025-03-01",
+        endDate: "2025-09-30",
+        status: "in_progress",
+        notes: "KOSGEB enerji verimliliği destek programına başvuru yapıldı.",
+        createdBy: ADMIN_USERNAME,
+      });
+      console.log("  ✅ VAP projesi oluşturuldu: VAP-2025-001 LED Aydınlatma Dönüşümü");
+      vapInserted++;
+    }
+  } else {
+    console.log("  ⚠️  LED Aydınlatma eylem planı bulunamadı — VAP atlandı.");
+  }
+  console.log(`  VAP projeleri: ${vapInserted} eklendi, ${vapSkipped} atlandı`);
+
+  // ── 11. SWOT maddeleri ────────────────────────────────────────────────────
+  console.log("\n[11/13] SWOT maddeleri");
 
   const swotItems = [
     // Güçlü Yönler
@@ -470,8 +726,8 @@ async function seed() {
   }
   console.log(`  SWOT: ${swotInserted} eklendi, ${swotSkipped} atlandı`);
 
-  // ── 10. Risk ve Fırsat kayıtları ──────────────────────────────────────────
-  console.log("\n[10/11] Risk ve Fırsat kayıtları");
+  // ── 12. Risk ve Fırsat kayıtları ──────────────────────────────────────────
+  console.log("\n[12/13] Risk ve Fırsat kayıtları");
 
   const riskItems = [
     // Riskler
@@ -655,6 +911,8 @@ async function seed() {
   console.log(`  Sayaç          : ${meter.name} (id: ${meter.id})`);
   console.log(`  Tüketim        : ${consumptionInserted} eklendi, ${consumptionSkipped} atlandı`);
   console.log(`  Enerji hedefleri: ${targetInserted} eklendi, ${targetSkipped} atlandı (toplam: ${targetItems.length})`);
+  console.log(`  Eylem planları : ${apInserted} eklendi, ${apSkipped} atlandı (toplam: ${actionPlanItems.length})`);
+  console.log(`  VAP projeleri  : ${vapInserted} eklendi, ${vapSkipped} atlandı`);
   console.log(`  SWOT           : ${swotInserted} eklendi, ${swotSkipped} atlandı (toplam: ${swotItems.length})`);
   console.log(`  Risk+Fırsat    : ${riskInserted} eklendi, ${riskSkipped} atlandı (toplam: ${riskItems.length})`);
   console.log(`\n  Giriş bilgileri:`);
