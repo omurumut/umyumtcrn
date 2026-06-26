@@ -46,5 +46,13 @@
     "name": "Benzin",
     "unit": "litre",
     "active": true
+  },
+  {
+    "energySourceKey": "kontrol-fabrikasi--ana-elektrik-panosu",
+    "unitKey": "kontrol-fabrikasi",
+    "type": "elektrik",
+    "name": "Ana Elektrik Panosu",
+    "unit": "kWh",
+    "active": true
   }
 ]

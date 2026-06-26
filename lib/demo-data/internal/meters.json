@@ -208,5 +208,19 @@
     "subUnitKey": "17-bolge-mudurlugu--agri-isletme-ve-bakim-grup-basmuhendisligi",
     "energySourceKey": "17-bolge-mudurlugu--dogalgaz",
     "energyUseGroupKey": "17-bolge-mudurlugu--17-bolge-mudurlugu--agri-isletme-ve-bakim-grup-basmuhendisligi--agri-idari-bina-dogalgaz"
+  },
+  {
+    "meterKey": "kontrol-fabrikasi--uretim-bolumu--ana-elektrik-sayaci",
+    "name": "Ana Elektrik Sayacı",
+    "type": "elektrik",
+    "recordType": "physical_meter",
+    "location": "Üretim Bölümü Ana Pano",
+    "city": "Ankara",
+    "unit": "kWh",
+    "description": "İskelet sayaç — gerçek veriler uygulama üzerinden girilecek",
+    "unitKey": "kontrol-fabrikasi",
+    "subUnitKey": "kontrol-fabrikasi--uretim-bolumu",
+    "energySourceKey": "kontrol-fabrikasi--ana-elektrik-panosu",
+    "energyUseGroupKey": null
   }
 ]

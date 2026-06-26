@@ -38,5 +38,13 @@
     "city": "Edremit, Van",
     "description": null,
     "active": true
+  },
+  {
+    "subUnitKey": "kontrol-fabrikasi--uretim-bolumu",
+    "unitKey": "kontrol-fabrikasi",
+    "name": "Üretim Bölümü",
+    "city": "Ankara",
+    "description": "Ana üretim bölümü",
+    "active": true
   }
 ]

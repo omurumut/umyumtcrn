@@ -4392,5 +4392,31 @@
     "notes": null,
     "weatherStationName": null,
     "weatherStationNote": null
+  },
+  {
+    "meterKey": "kontrol-fabrikasi--uretim-bolumu--ana-elektrik-sayaci",
+    "year": 2025,
+    "month": 1,
+    "kwh": 0,
+    "tep": 0,
+    "co2": 0,
+    "hdd": 420,
+    "cdd": 0,
+    "notes": "İskelet kayıt — gerçek değer girilecek",
+    "weatherStationName": null,
+    "weatherStationNote": null
+  },
+  {
+    "meterKey": "kontrol-fabrikasi--uretim-bolumu--ana-elektrik-sayaci",
+    "year": 2025,
+    "month": 2,
+    "kwh": 0,
+    "tep": 0,
+    "co2": 0,
+    "hdd": 380,
+    "cdd": 0,
+    "notes": "İskelet kayıt — gerçek değer girilecek",
+    "weatherStationName": null,
+    "weatherStationNote": null
   }
 ]

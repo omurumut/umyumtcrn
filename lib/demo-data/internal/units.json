@@ -9,5 +9,16 @@
     "description": null,
     "active": true,
     "isDemo": false
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "name": "Kontrol Fabrikası",
+    "location": "Ostim OSB, Ankara",
+    "type": "fabrika",
+    "city": "Ankara",
+    "responsible": "Kontrol Yöneticisi",
+    "description": "Internal demo için iskelet fabrika birimi",
+    "active": true,
+    "isDemo": false
   }
 ]

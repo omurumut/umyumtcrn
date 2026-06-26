@@ -1,0 +1,196 @@
+Internal demo şirketi için örnek SWOT, Risk ve Fırsat verileri oluştur.
+
+Amaç:
+ISO 50001 Kontrol Demo şirketinde, kullanıcıya modüllerin nasıl çalıştığını gösterecek gerçekçi ama sade demo kayıtları oluşturmak.
+
+Kurallar:
+- Yeni UI özelliği ekleme.
+- Mevcut modülleri bozma.
+- Sadece demo veri oluştur.
+- Veriler idempotent olmalı; script tekrar çalışırsa duplicate kayıt oluşmamalı.
+- Mevcut internal demo şirketini kullan: “ISO 50001 Kontrol Demo”.
+- Company isolation korunmalı.
+- Eğer mümkünse mevcut seed/internal veya import/export yapısına uygun şekilde ekle.
+- Demo veriler daha sonra export:internal ile lib/demo-data/internal içine alınabilecek yapıda olsun.
+- Eğer doğrudan DB’ye ekleme scripti yazılacaksa güvenli ve tekrar çalıştırılabilir olsun.
+
+Oluşturulacak demo kapsamı:
+
+1. SWOT Analizi
+
+Aşağıdaki örnek SWOT kayıtlarını oluştur:
+
+Güçlü Yönler:
+- Enerji tüketim verilerinin sayaç bazında düzenli takip ediliyor olması
+- Üst yönetimin enerji performansı iyileştirme çalışmalarını desteklemesi
+- Elektrik ve doğalgaz tüketimlerinin geçmiş yıllara göre karşılaştırılabilir olması
+- Önemli enerji kullanımlarının Pareto analizi ile belirlenebilmesi
+
+Zayıf Yönler:
+- Bazı alt birimlerde sayaç okuma ve veri girişlerinin manuel yapılması
+- Enerji performans göstergelerinin tüm tüketim noktalarında henüz olgunlaşmamış olması
+- HDD/CDD dışındaki operasyonel değişkenlerin düzenli takip edilmemesi
+- Enerji verimliliği projeleri için finansal fizibilite kayıtlarının eksik olması
+
+Fırsatlar:
+- Yüksek tüketimli alanlarda VAP projeleri ile enerji tasarrufu potansiyeli bulunması
+- Kompresör, aydınlatma ve HVAC sistemlerinde verimlilik artırıcı iyileştirmeler yapılabilmesi
+- ISO 50001 sistemi sayesinde enerji performansının düzenli raporlanabilmesi
+- Dijital sayaç ve otomatik veri toplama altyapısına geçiş imkânı
+
+Tehditler:
+- Enerji birim fiyatlarındaki artışların işletme maliyetlerini yükseltmesi
+- İklim koşullarındaki değişim nedeniyle ısıtma/soğutma yüklerinin artması
+- Yasal enerji verimliliği yükümlülüklerinin zamanında karşılanamaması
+- Eski ekipmanların arıza ve verimsizlik kaynaklı enerji kayıplarını artırması
+
+2. Risk Kayıtları
+
+Aşağıdaki örnek riskleri oluştur:
+
+Risk 1:
+Başlık: Enerji tüketim verilerinin eksik veya hatalı girilmesi
+Kategori: Veri Yönetimi
+Açıklama: Sayaç okuma veya manuel giriş hataları enerji performans analizlerinin doğruluğunu etkileyebilir.
+Olasılık: 3
+Etki: 4
+Risk puanı: 12
+Risk seviyesi: Orta Risk
+Mevcut kontrol: Aylık tüketim girişlerinin sorumlu personel tarafından kontrol edilmesi
+Aksiyon: Veri giriş ekranlarında zorunlu alan ve tutarlılık kontrollerinin artırılması
+Sorumlu: Enerji Yöneticisi
+Durum: Açık
+
+Risk 2:
+Başlık: Önemli enerji kullanımlarında hedeflenen tasarrufun sağlanamaması
+Kategori: Enerji Performansı
+Açıklama: Belirlenen ÖEK alanlarında planlanan iyileştirme faaliyetleri uygulanmazsa enerji performansı beklenen seviyede iyileşmeyebilir.
+Olasılık: 3
+Etki: 5
+Risk puanı: 15
+Risk seviyesi: Önemli Risk
+Mevcut kontrol: ÖEK analizi ve yıllık hedef takibi
+Aksiyon: Hedeflere bağlı eylem planlarının aylık izlenmesi
+Sorumlu: Birim Enerji Sorumlusu
+Durum: Açık
+
+Risk 3:
+Başlık: Enerji maliyetlerinin bütçe üzerinde gerçekleşmesi
+Kategori: Finansal
+Açıklama: Elektrik ve doğalgaz birim fiyatlarındaki artış enerji maliyetlerinin planlanan bütçeyi aşmasına neden olabilir.
+Olasılık: 4
+Etki: 4
+Risk puanı: 16
+Risk seviyesi: Önemli Risk
+Mevcut kontrol: Aylık enerji maliyet takibi
+Aksiyon: Yüksek tüketimli noktalarda tasarruf projelerinin önceliklendirilmesi
+Sorumlu: Mali İşler ve Enerji Yönetimi
+Durum: İzlemede
+
+Risk 4:
+Başlık: Kritik ekipmanlarda verimsiz çalışma
+Kategori: Operasyonel
+Açıklama: Kompresör, kazan, pompa veya HVAC ekipmanlarının verimsiz çalışması enerji tüketimini artırabilir.
+Olasılık: 4
+Etki: 5
+Risk puanı: 20
+Risk seviyesi: Önemli Risk
+Mevcut kontrol: Periyodik bakım planı
+Aksiyon: Bakım kayıtları ile enerji tüketimlerinin karşılaştırılması
+Sorumlu: Bakım Sorumlusu
+Durum: Açık
+
+Risk 5:
+Başlık: Yasal enerji verimliliği yükümlülüklerinin zamanında karşılanamaması
+Kategori: Uygunluk
+Açıklama: Enerji yönetimi sistemi kayıtları, raporları veya iyileştirme planları zamanında tamamlanmazsa yasal ve kurumsal uygunluk riski oluşabilir.
+Olasılık: 2
+Etki: 5
+Risk puanı: 10
+Risk seviyesi: Orta Risk
+Mevcut kontrol: ISO 50001 dokümantasyon takibi
+Aksiyon: Yıllık uygunluk takvimi oluşturulması
+Sorumlu: Yönetim Temsilcisi
+Durum: Açık
+
+3. Fırsat Kayıtları
+
+Aşağıdaki örnek fırsatları oluştur:
+
+Fırsat 1:
+Başlık: Yüksek verimli aydınlatma dönüşümü
+Kategori: Enerji Verimliliği
+Açıklama: Mevcut aydınlatma sistemlerinin LED armatürlerle değiştirilmesi elektrik tüketimini azaltabilir.
+Olasılık: 4
+Etki: 4
+Fırsat puanı: 16
+Fırsat seviyesi: Önemli Fırsat
+Beklenen fayda: Elektrik tüketiminde azalma ve bakım maliyetlerinde düşüş
+Önerilen aksiyon: Aydınlatma envanteri çıkarılarak yatırım fizibilitesi hazırlanması
+Sorumlu: Teknik Hizmetler
+Durum: Değerlendiriliyor
+
+Fırsat 2:
+Başlık: Kompresör basınç optimizasyonu
+Kategori: Operasyonel İyileştirme
+Açıklama: Basınç set değerlerinin optimize edilmesi ve kaçakların giderilmesi ile elektrik tüketimi azaltılabilir.
+Olasılık: 5
+Etki: 4
+Fırsat puanı: 20
+Fırsat seviyesi: Önemli Fırsat
+Beklenen fayda: Kompresör elektrik tüketiminde düşüş
+Önerilen aksiyon: Basınç ihtiyacı analizi ve kaçak kontrol programı oluşturulması
+Sorumlu: Bakım Sorumlusu
+Durum: Planlandı
+
+Fırsat 3:
+Başlık: Kazan ekonomizer uygulaması
+Kategori: VAP / Yatırım Projesi
+Açıklama: Baca gazı atık ısısından yararlanılarak kazan besi suyu ön ısıtması yapılabilir.
+Olasılık: 3
+Etki: 5
+Fırsat puanı: 15
+Fırsat seviyesi: Önemli Fırsat
+Beklenen fayda: Doğalgaz tüketiminde azalma
+Önerilen aksiyon: Ön fizibilite çalışması yapılması
+Sorumlu: Enerji Yöneticisi
+Durum: Değerlendiriliyor
+
+Fırsat 4:
+Başlık: HDD/CDD bazlı enerji performansı izleme
+Kategori: Veri Analizi
+Açıklama: Isıtma ve soğutma tüketimleri HDD/CDD verileriyle ilişkilendirilerek daha doğru performans analizi yapılabilir.
+Olasılık: 4
+Etki: 3
+Fırsat puanı: 12
+Fırsat seviyesi: Orta Fırsat
+Beklenen fayda: İklim etkisinden arındırılmış enerji performansı takibi
+Önerilen aksiyon: Tüketim verileri ile meteorolojik değişkenlerin düzenli analiz edilmesi
+Sorumlu: Enerji Yönetimi Ekibi
+Durum: Açık
+
+Fırsat 5:
+Başlık: Dijital sayaç ve otomatik veri toplama altyapısı
+Kategori: Dijitalleşme
+Açıklama: Manuel sayaç okuma yerine otomatik veri toplama altyapısı kurulması veri doğruluğunu ve izleme hızını artırabilir.
+Olasılık: 3
+Etki: 4
+Fırsat puanı: 12
+Fırsat seviyesi: Orta Fırsat
+Beklenen fayda: Daha hızlı raporlama, düşük veri hatası, anlık tüketim takibi
+Önerilen aksiyon: Kritik sayaçlar için pilot otomatik okuma projesi planlanması
+Sorumlu: Bilgi İşlem ve Enerji Yönetimi
+Durum: Değerlendiriliyor
+
+Teknik beklenti:
+- Mevcut SWOT, Risk ve Fırsat tablo yapısını önce analiz et.
+- Alan adlarını mevcut schema’ya göre eşleştir.
+- Eğer risk ve fırsat aynı tabloda tutuluyorsa kayıt tipini doğru ayır.
+- Risk matrisinde mevcut uygulamadaki puanlama mantığını kullan.
+- Fırsat matrisinde mevcut uygulamadaki puanlama mantığını kullan.
+- Eksik alan varsa mevcut tabloya yeni kolon ekleme; sadece mevcut alanlara uygun veri üret.
+- Var olan kayıtlarla aynı başlığa sahip kayıt varsa tekrar ekleme.
+- Import/export scriptlerini bozma.
+- Veri ekleme tamamlandıktan sonra pnpm --filter scripts export:internal çalıştır.
+- Export sonucunda swot_items, risks, risk_notes veya fırsat kayıtlarının sayısını raporla.
+- Sonunda değişen dosyaları ve eklenen/atlanan kayıt sayılarını kısa raporla.

@@ -1,1 +1,130 @@
-[]
+[
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "strengths",
+    "title": "Enerji tüketim verilerinin sayaç bazında düzenli takip ediliyor olması",
+    "description": "Her alt birim ve enerji kaynağı için sayaç bazlı aylık tüketim verileri sistematik şekilde kayıt altına alınmaktadır.",
+    "score": 4,
+    "impact": "yuksek"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "strengths",
+    "title": "Üst yönetimin enerji performansı iyileştirme çalışmalarını desteklemesi",
+    "description": "ISO 50001 kapsamında yürütülen faaliyetler üst yönetim tarafından desteklenmekte ve gerekli kaynaklar tahsis edilmektedir.",
+    "score": 4,
+    "impact": "yuksek"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "strengths",
+    "title": "Elektrik ve doğalgaz tüketimlerinin geçmiş yıllara göre karşılaştırılabilir olması",
+    "description": "Çok yıllı tüketim verileri sisteme kayıtlı olup trend analizi ve performans karşılaştırması yapılabilmektedir.",
+    "score": 3,
+    "impact": "orta"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "strengths",
+    "title": "Önemli enerji kullanımlarının Pareto analizi ile belirlenebilmesi",
+    "description": "Tüketim verileri üzerinden önemli enerji kullanım alanları analitik olarak tespit edilerek önceliklendirme yapılabilmektedir.",
+    "score": 4,
+    "impact": "yuksek"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "weaknesses",
+    "title": "Bazı alt birimlerde sayaç okuma ve veri girişlerinin manuel yapılması",
+    "description": "Otomatik veri toplama altyapısı olmayan noktalarda manuel sayaç okuma yapılması veri hata riskini artırmaktadır.",
+    "score": 3,
+    "impact": "orta"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "weaknesses",
+    "title": "Enerji performans göstergelerinin tüm tüketim noktalarında henüz olgunlaşmamış olması",
+    "description": "EnPI hesaplamaları için gerekli değişken verileri bazı tüketim noktaları için eksik ya da tutarsız olabilmektedir.",
+    "score": 3,
+    "impact": "orta"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "weaknesses",
+    "title": "HDD/CDD dışındaki operasyonel değişkenlerin düzenli takip edilmemesi",
+    "description": "Üretim miktarı, çalışma saati gibi enerji performansını etkileyen operasyonel değişkenler sistematik şekilde kaydedilmemektedir.",
+    "score": 2,
+    "impact": "orta"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "weaknesses",
+    "title": "Enerji verimliliği projeleri için finansal fizibilite kayıtlarının eksik olması",
+    "description": "Planlanan iyileştirme projelerinde yatırım geri dönüş süresi ve tasarruf hesaplamalarına ilişkin kayıtlar yetersiz kalmaktadır.",
+    "score": 3,
+    "impact": "orta"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "opportunities",
+    "title": "Yüksek tüketimli alanlarda VAP projeleri ile enerji tasarrufu potansiyeli bulunması",
+    "description": "Kompresör, kazan ve HVAC sistemleri başta olmak üzere yüksek tüketimli noktalarda somut tasarruf projeleri hayata geçirilebilir.",
+    "score": 5,
+    "impact": "yuksek"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "opportunities",
+    "title": "Kompresör, aydınlatma ve HVAC sistemlerinde verimlilik artırıcı iyileştirmeler yapılabilmesi",
+    "description": "Teknik denetim ve ölçüm sonuçları, mevcut ekipmanlarda verimlilik artırıcı iyileştirme fırsatlarına işaret etmektedir.",
+    "score": 4,
+    "impact": "yuksek"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "opportunities",
+    "title": "ISO 50001 sistemi sayesinde enerji performansının düzenli raporlanabilmesi",
+    "description": "Kurulan sistem altyapısı, enerji performans verilerinin periyodik olarak raporlanmasını ve karar alma süreçlerinde kullanılmasını mümkün kılmaktadır.",
+    "score": 4,
+    "impact": "yuksek"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "opportunities",
+    "title": "Dijital sayaç ve otomatik veri toplama altyapısına geçiş imkânı",
+    "description": "Mevcut sayaçların dijital sisteme entegrasyonu ile anlık izleme ve otomatik raporlama yapısı kurulabilir.",
+    "score": 3,
+    "impact": "orta"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "threats",
+    "title": "Enerji birim fiyatlarındaki artışların işletme maliyetlerini yükseltmesi",
+    "description": "Elektrik ve doğalgaz tarifelerindeki yükseliş eğilimi enerji maliyetlerini bütçenin üzerinde gerçekleşme riskini artırmaktadır.",
+    "score": 4,
+    "impact": "yuksek"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "threats",
+    "title": "İklim koşullarındaki değişim nedeniyle ısıtma/soğutma yüklerinin artması",
+    "description": "Aşırı hava koşulları ve iklim değişikliği kaynaklı yük artışları planlanan tüketim bütçelerini aşabilmektedir.",
+    "score": 3,
+    "impact": "orta"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "threats",
+    "title": "Yasal enerji verimliliği yükümlülüklerinin zamanında karşılanamaması",
+    "description": "İlgili mevzuat kapsamında hazırlanması gereken raporların veya iyileştirme planlarının gecikmesi uygunluk riski doğurabilir.",
+    "score": 3,
+    "impact": "yuksek"
+  },
+  {
+    "unitKey": "kontrol-fabrikasi",
+    "category": "threats",
+    "title": "Eski ekipmanların arıza ve verimsizlik kaynaklı enerji kayıplarını artırması",
+    "description": "Ekonomik ömrünü tamamlamış ekipmanlar beklenmedik arızalara ve enerji verimsizliğine yol açabilmektedir.",
+    "score": 4,
+    "impact": "yuksek"
+  }
+]
