@@ -1,0 +1,111 @@
+Internal demo export/import kapsamını tüm aktif modülleri içerecek şekilde kontrol et ve eksik tabloları ekle.
+
+Amaç:
+lib/demo-data/internal altına yapılan internal demo export işlemi, uygulamadaki tüm ana modüllerin verilerini kapsasın. Import işlemi de bu verileri başka hesaba/boş veritabanına güvenli ve idempotent şekilde aktarabilsin.
+
+Önemli kurallar:
+- Mevcut çalışan export/import yapısını bozma.
+- Mevcut internal demo verilerini silme.
+- Scriptler idempotent kalmalı.
+- Aynı veri tekrar import edilirse duplicate oluşturmamalı.
+- Company isolation bozulmamalı.
+- Password hash export edilmemeli.
+- Import sonrası sequence sync yapılmaya devam etmeli.
+- Migration/drop/delete yapma.
+- Sadece export:internal ve import:internal kapsamını genişlet.
+- Gerekirse seed:internal scriptini de yeni modülleri destekleyecek şekilde güncelle ama mevcut seed verilerini bozma.
+
+Kontrol edilecek scriptler:
+- scripts/src/export-internal.ts
+- scripts/src/import-internal.ts
+- scripts/src/seed-internal.ts
+- package.json scriptleri
+- lib/demo-data/internal içeriği
+
+Önce mevcut DB schema’yı ve export/import scriptlerini analiz et.
+Aktif modül tablolarını tespit et.
+Eksik kalan tabloları raporla.
+Sonra eksik tabloları export/import kapsamına ekle.
+
+Internal demo kapsamına dahil edilmesi gereken ana tablolar:
+
+Temel yapı:
+- companies
+- users
+- units
+- sub_units
+- energy_sources
+- energy_use_groups
+- meters
+- consumption
+
+Değişkenler:
+- variables
+- variable_values
+
+Meteoroloji / HDD / CDD:
+- weather_degree_days
+- varsa weather station / station mapping tabloları
+Not:
+MGM gibi çok büyük resmi veri tabloları varsa tüm Türkiye/10 yıl datasını internal demo’ya alma.
+Sadece demo şirketin tüketim/veri setleri için gerekli kayıtları dahil et veya bu tabloları ayrı official-data mantığında bırak.
+Bu ayrımı raporla.
+
+ISO 50001 modülleri:
+- swot_items
+- risks
+- risk_notes
+- seu_assessments
+
+Enerji hedefleri ve VAP:
+- energy_targets
+- energy_action_plans
+- energy_target_progress
+- vap_projects
+
+Varsa ayrıca kontrol et:
+- energy_performance_indicators
+- reports
+- ai_suggestions
+- attachments/documents
+- audit/log tabloları
+
+Kurallar:
+1. Export scripti demo şirketi baz almalı.
+2. Bağlı tablolar doğru sırayla export edilmeli.
+3. Import scripti FK sırasına dikkat etmeli.
+4. ID eşleştirme gerekiyorsa mevcut pattern’e uygun map yapmalı.
+5. Aynı kayıt varsa güncelle veya atla; duplicate oluşturma.
+6. Foreign key ilişkileri korunmalı:
+   - action plan doğru energy_target kaydına bağlanmalı
+   - vap_project doğru action_plan kaydına bağlanmalı
+   - target_progress doğru energy_target kaydına bağlanmalı
+   - SEU ilişkileri korunmalı
+   - consumption meter/sub_unit/energy_source ilişkileri korunmalı
+7. Users export edilirken password_hash export edilmemeli.
+8. Import sonrası sequence sync çalışmalı.
+
+Test:
+1. pnpm --filter scripts export:internal çalıştır.
+2. Export raporunda tüm tabloların sayısını göster.
+3. Özellikle şu tabloların dahil olduğunu doğrula:
+   - energy_targets
+   - energy_action_plans
+   - energy_target_progress
+   - vap_projects
+   - variables
+   - variable_values
+   - swot_items
+   - risks
+   - risk_notes
+   - seu_assessments
+4. Mümkünse temiz/test DB mantığında import:internal çalıştırılabilir mi kontrol et.
+5. En azından mevcut DB’de import idempotent testini yap:
+   pnpm --filter scripts import:internal
+   tekrar çalıştırınca duplicate oluşmadığını raporla.
+6. pnpm run typecheck çalıştır.
+7. Sonunda değişen dosyaları, export edilen tablo sayılarını ve eksik bırakılan tablolar varsa nedenini raporla.
+
+Yeni UI özelliği ekleme.
+PDF/export rapor geliştirme yapma.
+Sadece internal demo export/import kapsamını tamamla.

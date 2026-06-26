@@ -1,5 +1,6 @@
 [
   {
+    "targetKey": "17-bolge-mudurlugu--yillik-bakimlar-zamaninda-yapilacaktir",
     "unitKey": "17-bolge-mudurlugu",
     "name": "yıllık bakımlar zamanında yapılacaktır.",
     "baselineYear": 2026,
@@ -8,19 +9,12 @@
     "notes": "not"
   },
   {
+    "targetKey": "17-bolge-mudurlugu--lede-donusum",
     "unitKey": "17-bolge-mudurlugu",
     "name": "lede dönüşüm",
     "baselineYear": 2025,
     "targetYear": 2027,
     "targetReductionPercent": 10,
     "notes": null
-  },
-  {
-    "unitKey": "17-bolge-mudurlugu",
-    "name": "sdfsdfasdfsadf",
-    "baselineYear": 2025,
-    "targetYear": 2030,
-    "targetReductionPercent": 10,
-    "notes": "adfasdfsadfsda"
   }
 ]

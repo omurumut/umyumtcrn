@@ -11,6 +11,8 @@
  * - Aynı isimden dolayı key çakışması olursa id suffix'i ekler.
  * - passwordHash export edilmez.
  * - createdAt/updatedAt export edilmez.
+ * - MGM tabloları (mgm_stations, mgm_degree_data vb.) resmi global veri
+ *   olduğundan internal demo scope'una dahil edilmez.
  *
  * Çalıştırma:
  *   pnpm --filter scripts export:internal
@@ -36,6 +38,9 @@ import {
   riskNotesTable,
   seuTable,
   energyTargetsTable,
+  energyActionPlansTable,
+  energyTargetProgressTable,
+  vapProjectsTable,
   variablesTable,
   variableValuesTable,
 } from "@workspace/db/schema";
@@ -132,6 +137,9 @@ async function exportInternal() {
     riskNotes,
     seuItems,
     energyTargets,
+    actionPlans,
+    targetProgress,
+    vapProjects,
     variables,
     variableValues,
   ] = await Promise.all([
@@ -147,6 +155,9 @@ async function exportInternal() {
     db.select().from(riskNotesTable).where(eq(riskNotesTable.companyId, companyId)),
     db.select().from(seuTable).where(eq(seuTable.companyId, companyId)),
     db.select().from(energyTargetsTable).where(eq(energyTargetsTable.companyId, companyId)),
+    db.select().from(energyActionPlansTable).where(eq(energyActionPlansTable.companyId, companyId)),
+    db.select().from(energyTargetProgressTable).where(eq(energyTargetProgressTable.companyId, companyId)),
+    db.select().from(vapProjectsTable).where(eq(vapProjectsTable.companyId, companyId)),
     db.select().from(variablesTable).where(eq(variablesTable.companyId, companyId)),
     db.select().from(variableValuesTable).where(eq(variableValuesTable.companyId, companyId)),
   ]);
@@ -222,6 +233,26 @@ async function exportInternal() {
     const candidate = `${unitKey}--${slugify(r.title)}`;
     const key = makeUniqueKey(candidate, riskKeyRegistry, r.id);
     riskKeyMap.set(r.id, key);
+  }
+
+  // Energy target keys: unitKey + name
+  const targetKeyRegistry = new Set<string>();
+  const targetKeyMap = new Map<number, string>();
+  for (const t of energyTargets) {
+    const unitKey = t.unitId ? (unitKeyMap.get(t.unitId) ?? "unknown") : "company";
+    const candidate = `${unitKey}--${slugify(t.name)}`;
+    const key = makeUniqueKey(candidate, targetKeyRegistry, t.id);
+    targetKeyMap.set(t.id, key);
+  }
+
+  // Action plan keys: targetKey + title slug
+  const actionPlanKeyRegistry = new Set<string>();
+  const actionPlanKeyMap = new Map<number, string>();
+  for (const a of actionPlans) {
+    const targetKey = targetKeyMap.get(a.targetId) ?? "unknown";
+    const candidate = `${targetKey}--${slugify(a.title)}`;
+    const key = makeUniqueKey(candidate, actionPlanKeyRegistry, a.id);
+    actionPlanKeyMap.set(a.id, key);
   }
 
   // ── company.json ────────────────────────────────────────────────────────
@@ -417,6 +448,7 @@ async function exportInternal() {
 
   // ── energy-targets.json ──────────────────────────────────────────────────
   const energyTargetsOut = energyTargets.map((t) => ({
+    targetKey: targetKeyMap.get(t.id)!,
     unitKey: t.unitId ? (unitKeyMap.get(t.unitId) ?? null) : null,
     name: t.name,
     baselineYear: t.baselineYear,
@@ -426,23 +458,90 @@ async function exportInternal() {
   }));
   await writeJson(join(OUTPUT_DIR, "energy-targets.json"), energyTargetsOut);
 
+  // ── energy-action-plans.json ─────────────────────────────────────────────
+  const actionPlansOut = actionPlans.map((a) => ({
+    actionPlanKey: actionPlanKeyMap.get(a.id)!,
+    targetKey: targetKeyMap.get(a.targetId)!,
+    title: a.title,
+    description: a.description,
+    responsibleName: a.responsibleName,
+    priority: a.priority,
+    expectedSavingValue: a.expectedSavingValue,
+    expectedSavingUnit: a.expectedSavingUnit,
+    expectedCostSaving: a.expectedCostSaving,
+    investmentCost: a.investmentCost,
+    paybackMonths: a.paybackMonths,
+    startDate: a.startDate,
+    dueDate: a.dueDate,
+    completionDate: a.completionDate,
+    progressPercent: a.progressPercent,
+    status: a.status,
+    isVap: a.isVap,
+    notes: a.notes,
+    createdBy: a.createdBy,
+  }));
+  await writeJson(join(OUTPUT_DIR, "energy-action-plans.json"), actionPlansOut);
+
+  // ── energy-target-progress.json ──────────────────────────────────────────
+  const progressOut = targetProgress.map((p) => ({
+    targetKey: targetKeyMap.get(p.targetId)!,
+    periodYear: p.periodYear,
+    periodMonth: p.periodMonth,
+    actualValue: p.actualValue,
+    actualSavingValue: p.actualSavingValue,
+    comment: p.comment,
+    recordedBy: p.recordedBy,
+  }));
+  await writeJson(join(OUTPUT_DIR, "energy-target-progress.json"), progressOut);
+
+  // ── vap-projects.json ────────────────────────────────────────────────────
+  const vapOut = vapProjects.map((v) => ({
+    actionPlanKey: actionPlanKeyMap.get(v.actionPlanId)!,
+    projectCode: v.projectCode,
+    projectTitle: v.projectTitle,
+    projectType: v.projectType,
+    currentSituation: v.currentSituation,
+    proposedSolution: v.proposedSolution,
+    technicalDescription: v.technicalDescription,
+    annualEnergySavingValue: v.annualEnergySavingValue,
+    annualEnergySavingUnit: v.annualEnergySavingUnit,
+    annualCostSaving: v.annualCostSaving,
+    investmentCost: v.investmentCost,
+    paybackMonths: v.paybackMonths,
+    co2ReductionTon: v.co2ReductionTon,
+    measurementVerificationMethod: v.measurementVerificationMethod,
+    incentiveStatus: v.incentiveStatus,
+    feasibilityStatus: v.feasibilityStatus,
+    startDate: v.startDate,
+    endDate: v.endDate,
+    status: v.status,
+    notes: v.notes,
+    createdBy: v.createdBy,
+  }));
+  await writeJson(join(OUTPUT_DIR, "vap-projects.json"), vapOut);
+
   // ── Özet ────────────────────────────────────────────────────────────────
   console.log(`\n─────────────────────────────────────────────────────`);
   console.log(`🎉 Export tamamlandı!\n`);
-  console.log(`  Birimler          : ${units.length}`);
-  console.log(`  Alt birimler      : ${subUnits.length}`);
-  console.log(`  Enerji kaynakları : ${energySources.length}`);
+  console.log(`  Birimler               : ${units.length}`);
+  console.log(`  Alt birimler           : ${subUnits.length}`);
+  console.log(`  Enerji kaynakları      : ${energySources.length}`);
   console.log(`  Enerji kullanım grupları: ${energyUseGroups.length}`);
-  console.log(`  Sayaçlar          : ${meters.length}`);
-  console.log(`  Tüketim kayıtları : ${consumptionRows.length}`);
-  console.log(`  Kullanıcılar      : ${users.length} (passwordHash hariç)`);
-  console.log(`  Değişkenler       : ${variables.length}`);
-  console.log(`  Değişken değerleri: ${variableValues.length}`);
-  console.log(`  SWOT maddeleri    : ${swotItems.length}`);
-  console.log(`  Riskler           : ${risks.length}`);
-  console.log(`  Risk notları      : ${riskNotes.length}`);
-  console.log(`  SEU / ÖEK         : ${seuItems.length}`);
-  console.log(`  Enerji hedefleri  : ${energyTargets.length}`);
+  console.log(`  Sayaçlar               : ${meters.length}`);
+  console.log(`  Tüketim kayıtları      : ${consumptionRows.length}`);
+  console.log(`  Kullanıcılar           : ${users.length} (passwordHash hariç)`);
+  console.log(`  Değişkenler            : ${variables.length}`);
+  console.log(`  Değişken değerleri     : ${variableValues.length}`);
+  console.log(`  SWOT maddeleri         : ${swotItems.length}`);
+  console.log(`  Riskler                : ${risks.length}`);
+  console.log(`  Risk notları           : ${riskNotes.length}`);
+  console.log(`  SEU / ÖEK              : ${seuItems.length}`);
+  console.log(`  Enerji hedefleri       : ${energyTargets.length}`);
+  console.log(`  Eylem planları         : ${actionPlans.length}`);
+  console.log(`  Hedef ilerleme kayıtları: ${targetProgress.length}`);
+  console.log(`  VAP projeleri          : ${vapProjects.length}`);
+  console.log(`\n  Not: MGM tabloları (mgm_stations, mgm_degree_data) resmi global veri`);
+  console.log(`       olduğundan internal demo kapsamı dışında bırakılmıştır.`);
   console.log(`\n  Çıktı klasörü: ${OUTPUT_DIR}`);
   console.log(`─────────────────────────────────────────────────────\n`);
 

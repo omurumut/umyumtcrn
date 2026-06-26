@@ -1,0 +1,25 @@
+[
+  {
+    "actionPlanKey": "17-bolge-mudurlugu--lede-donusum--lede-donusumler-tamamlanacaktir",
+    "projectCode": null,
+    "projectTitle": "lede dönüşümler tamamlanacaktır",
+    "projectType": null,
+    "currentSituation": null,
+    "proposedSolution": null,
+    "technicalDescription": null,
+    "annualEnergySavingValue": null,
+    "annualEnergySavingUnit": null,
+    "annualCostSaving": 100000,
+    "investmentCost": 300000,
+    "paybackMonths": 36,
+    "co2ReductionTon": null,
+    "measurementVerificationMethod": null,
+    "incentiveStatus": "none",
+    "feasibilityStatus": "not_started",
+    "startDate": "2026-01-01",
+    "endDate": "2026-12-31",
+    "status": "idea",
+    "notes": null,
+    "createdBy": "17bm"
+  }
+]
