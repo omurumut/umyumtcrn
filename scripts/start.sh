@@ -3,6 +3,10 @@ set -e
 
 cd /home/runner/workspace
 
+# Install dependencies if needed
+echo "[start] Installing dependencies..."
+pnpm install --frozen-lockfile=false
+
 # Build API server
 echo "[start] Building API server..."
 pnpm --filter @workspace/api-server run build
