@@ -114,41 +114,50 @@ router.get("/vap-projects/export", requireAuth, async (req, res) => {
       notlar: p.notes ?? "",
     }));
 
-    const HEADERS = [
+    const format = req.query.format === "xlsx" ? "xlsx" : "csv";
+
+    const HEADERS: import("../lib/xlsx-export.js").XlsxColDef[] = [
       { key: "projeKodu", label: "Proje Kodu" },
-      { key: "vapAdi", label: "VAP Adı" },
-      { key: "bagliHedef", label: "Bağlı Hedef" },
-      { key: "bagliEylemPlani", label: "Bağlı Eylem Planı" },
+      { key: "vapAdi", label: "VAP Adı", width: 35, wrapText: true },
+      { key: "bagliHedef", label: "Bağlı Hedef", width: 30, wrapText: true },
+      { key: "bagliEylemPlani", label: "Bağlı Eylem Planı", width: 30, wrapText: true },
       { key: "birim", label: "Birim" },
       { key: "altBirim", label: "Alt Birim" },
       { key: "enerjiKaynagi", label: "Enerji Kaynağı" },
       { key: "projeTuru", label: "Proje Türü" },
-      { key: "mevcutDurum", label: "Mevcut Durum" },
-      { key: "onerilenCozum", label: "Önerilen Çözüm" },
-      { key: "teknikAciklama", label: "Teknik Açıklama" },
-      { key: "yillikEnerjiTasarrufu", label: "Yıllık Enerji Tasarrufu" },
+      { key: "mevcutDurum", label: "Mevcut Durum", width: 35, wrapText: true },
+      { key: "onerilenCozum", label: "Önerilen Çözüm", width: 35, wrapText: true },
+      { key: "teknikAciklama", label: "Teknik Açıklama", width: 35, wrapText: true },
+      { key: "yillikEnerjiTasarrufu", label: "Yıllık Enerji Tasarrufu", type: "number" },
       { key: "yillikEnerjiTasarrufuBirimi", label: "Yıllık Enerji Tasarrufu Birimi" },
-      { key: "yillikMaliTasarruf", label: "Yıllık Mali Tasarruf" },
-      { key: "yatirimMaliyeti", label: "Yatırım Maliyeti" },
-      { key: "geriOdemeSuresi", label: "Geri Ödeme Süresi (ay)" },
-      { key: "co2Azaltimi", label: "CO2 Azaltımı (ton)" },
+      { key: "yillikMaliTasarruf", label: "Yıllık Mali Tasarruf", type: "number" },
+      { key: "yatirimMaliyeti", label: "Yatırım Maliyeti", type: "number" },
+      { key: "geriOdemeSuresi", label: "Geri Ödeme Süresi (ay)", type: "number" },
+      { key: "co2Azaltimi", label: "CO2 Azaltımı (ton)", type: "number" },
       { key: "fizibilite", label: "Fizibilite Durumu" },
       { key: "tesvikDestek", label: "Teşvik/Destek Durumu" },
-      { key: "baslangicTarihi", label: "Başlangıç Tarihi" },
-      { key: "bitisTarihi", label: "Bitiş Tarihi" },
+      { key: "baslangicTarihi", label: "Başlangıç Tarihi", type: "date" },
+      { key: "bitisTarihi", label: "Bitiş Tarihi", type: "date" },
       { key: "projeDurumu", label: "Proje Durumu" },
-      { key: "notlar", label: "Notlar" },
+      { key: "notlar", label: "Notlar", width: 35, wrapText: true },
     ];
 
-    const filename = yearParam && !isNaN(yearParam)
-      ? `vap-projeleri-${yearParam}.csv`
-      : "vap-projeleri.csv";
-
-    const csv = buildCsv(HEADERS, csvRows);
-    sendCsvResponse(res, filename, csv);
+    if (format === "xlsx") {
+      const baseName = yearParam && !isNaN(yearParam)
+        ? `vap-projeleri-${yearParam}.xlsx`
+        : "vap-projeleri.xlsx";
+      const buf = await buildXlsx("VAP Projeleri", HEADERS, csvRows);
+      sendXlsxResponse(res, baseName, buf);
+    } else {
+      const filename = yearParam && !isNaN(yearParam)
+        ? `vap-projeleri-${yearParam}.csv`
+        : "vap-projeleri.csv";
+      const csv = buildCsv(HEADERS, csvRows);
+      sendCsvResponse(res, filename, csv);
+    }
   } catch (err) {
     req.log.error(err);
-    res.status(500).json({ error: "VAP CSV export hatası" });
+    res.status(500).json({ error: "VAP export hatası" });
   }
 });
 

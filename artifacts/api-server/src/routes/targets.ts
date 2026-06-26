@@ -205,48 +205,57 @@ router.get("/targets/export", requireAuth, async (req, res) => {
       }
     }
 
-    // ── CSV çıktısı ───────────────────────────────────────────
-    const HEADERS = [
+    // ── Format & başlıklar ────────────────────────────────────
+    const format = req.query.format === "xlsx" ? "xlsx" : "csv";
+
+    const HEADERS: XlsxColDef[] = [
       { key: "yil", label: "Yıl" },
       { key: "birim", label: "Birim" },
       { key: "altBirim", label: "Alt Birim" },
       { key: "enerjiKaynagi", label: "Enerji Kaynağı" },
       { key: "ilgiliOek", label: "İlgili ÖEK" },
-      { key: "enerjiAmaci", label: "Enerji Amacı" },
-      { key: "enerjiHedfi", label: "Enerji Hedefi" },
+      { key: "enerjiAmaci", label: "Enerji Amacı", width: 35, wrapText: true },
+      { key: "enerjiHedfi", label: "Enerji Hedefi", width: 35, wrapText: true },
       { key: "hedefTipi", label: "Hedef Tipi" },
-      { key: "bazYil", label: "Baz Yıl" },
-      { key: "bazDeger", label: "Baz Değer" },
-      { key: "hedefYil", label: "Hedef Yıl" },
-      { key: "hedefDeger", label: "Hedef Değer" },
-      { key: "gerceklesen", label: "Gerçekleşen Değer" },
+      { key: "bazYil", label: "Baz Yıl", type: "number" },
+      { key: "bazDeger", label: "Baz Değer", type: "number" },
+      { key: "hedefYil", label: "Hedef Yıl", type: "number" },
+      { key: "hedefDeger", label: "Hedef Değer", type: "number" },
+      { key: "gerceklesen", label: "Gerçekleşen Değer", type: "number" },
       { key: "olcuBirimi", label: "Ölçü Birimi" },
-      { key: "hedefAzaltimOrani", label: "Hedef Azaltım Oranı (%)" },
+      { key: "hedefAzaltimOrani", label: "Hedef Azaltım Oranı (%)", type: "number" },
       { key: "hedefDurumu", label: "Hedef Durumu" },
-      { key: "eylemPlani", label: "Eylem Planı" },
+      { key: "eylemPlani", label: "Eylem Planı", width: 35, wrapText: true },
       { key: "sorumlu", label: "Sorumlu" },
-      { key: "baslangicTarihi", label: "Başlangıç Tarihi" },
-      { key: "bitisTarihi", label: "Bitiş Tarihi" },
+      { key: "baslangicTarihi", label: "Başlangıç Tarihi", type: "date" },
+      { key: "bitisTarihi", label: "Bitiş Tarihi", type: "date" },
       { key: "oncelik", label: "Öncelik" },
       { key: "beklenenTasarruf", label: "Beklenen Tasarruf" },
-      { key: "beklenenMaliTasarruf", label: "Beklenen Yıllık Mali Tasarruf" },
-      { key: "yatirimMaliyeti", label: "Yatırım Maliyeti" },
-      { key: "geriOdemeSuresi", label: "Geri Ödeme Süresi (ay)" },
+      { key: "beklenenMaliTasarruf", label: "Beklenen Yıllık Mali Tasarruf", type: "number" },
+      { key: "yatirimMaliyeti", label: "Yatırım Maliyeti", type: "number" },
+      { key: "geriOdemeSuresi", label: "Geri Ödeme Süresi (ay)", type: "number" },
       { key: "eylemDurumu", label: "Eylem Durumu" },
       { key: "ilerleme", label: "İlerleme" },
       { key: "vapMi", label: "VAP mı?" },
-      { key: "notlar", label: "Notlar" },
+      { key: "notlar", label: "Notlar", width: 35, wrapText: true },
     ];
 
-    const filename = yearParam
-      ? `enerji-amac-hedef-eylem-plani-${yearParam}.csv`
-      : "enerji-amac-hedef-eylem-plani.csv";
-
-    const csv = buildCsv(HEADERS, rows);
-    sendCsvResponse(res, filename, csv);
+    if (format === "xlsx") {
+      const baseName = yearParam
+        ? `enerji-amac-hedef-eylem-plani-${yearParam}.xlsx`
+        : "enerji-amac-hedef-eylem-plani.xlsx";
+      const buf = await buildXlsx("Hedefler & Eylem Planları", HEADERS, rows);
+      sendXlsxResponse(res, baseName, buf);
+    } else {
+      const filename = yearParam
+        ? `enerji-amac-hedef-eylem-plani-${yearParam}.csv`
+        : "enerji-amac-hedef-eylem-plani.csv";
+      const csv = buildCsv(HEADERS, rows);
+      sendCsvResponse(res, filename, csv);
+    }
   } catch (err) {
     req.log.error(err);
-    res.status(500).json({ error: "CSV export hatası" });
+    res.status(500).json({ error: "Export hatası" });
   }
 });
 

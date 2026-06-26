@@ -91,7 +91,8 @@ export default function VapProjects() {
     try {
       const params = new URLSearchParams();
       if (unitId !== null) params.set("unitId", unitId.toString());
-      const url = `/api/vap-projects/export${params.size ? "?" + params.toString() : ""}`;
+      params.set("format", "xlsx");
+      const url = `/api/vap-projects/export?${params.toString()}`;
       const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -101,7 +102,7 @@ export default function VapProjects() {
       const blob = await res.blob();
       const disposition = res.headers.get("Content-Disposition") ?? "";
       const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
-      const filename = match ? decodeURIComponent(match[1].trim()) : "vap-projeleri.csv";
+      const filename = match ? decodeURIComponent(match[1].trim()) : "vap-projeleri.xlsx";
       const objUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = objUrl; a.download = filename; a.click();
@@ -304,7 +305,7 @@ export default function VapProjects() {
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={handleCsvExport} disabled={csvLoading} className="gap-2">
             <Download className="h-4 w-4" />
-            {csvLoading ? "İndiriliyor..." : "CSV Export"}
+            {csvLoading ? "İndiriliyor..." : "Excel Export"}
           </Button>
           <Button onClick={() => openCreate()} className="gap-2"><Plus className="h-4 w-4" />Yeni VAP</Button>
         </div>
