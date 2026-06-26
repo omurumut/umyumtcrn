@@ -451,9 +451,17 @@ async function exportInternal() {
     targetKey: targetKeyMap.get(t.id)!,
     unitKey: t.unitId ? (unitKeyMap.get(t.unitId) ?? null) : null,
     name: t.name,
+    objectiveText: t.objectiveText ?? null,
+    targetText: t.targetText ?? null,
+    targetType: t.targetType ?? null,
     baselineYear: t.baselineYear,
+    baselineValue: t.baselineValue ?? null,
     targetYear: t.targetYear,
+    targetValue: t.targetValue ?? null,
+    actualValue: t.actualValue ?? null,
+    unitLabel: t.unitLabel ?? null,
     targetReductionPercent: t.targetReductionPercent,
+    status: t.status ?? null,
     notes: t.notes,
   }));
   await writeJson(join(OUTPUT_DIR, "energy-targets.json"), energyTargetsOut);

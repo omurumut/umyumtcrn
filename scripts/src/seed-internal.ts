@@ -28,6 +28,7 @@ import {
   consumptionTable,
   swotTable,
   risksTable,
+  energyTargetsTable,
 } from "@workspace/db/schema";
 
 const { Pool } = pg;
@@ -227,8 +228,98 @@ async function seed() {
     }
   }
 
-  // ── 8. SWOT maddeleri ─────────────────────────────────────────────────────
-  console.log("\n[8/9] SWOT maddeleri");
+  // ── 8. Enerji hedefleri ───────────────────────────────────────────────────
+  console.log("\n[8/11] Enerji hedefleri");
+
+  const targetItems = [
+    {
+      name: "Elektrik Tüketimi Azaltma Hedefi",
+      objectiveText: "2025–2027 döneminde elektrik tüketimini baz yılına göre azaltmak",
+      targetText: "Baz yıl 2023 elektrik tüketimine kıyasla 2027 yılı sonunda %10 azalma sağlamak",
+      targetType: "reduction_percent",
+      baselineYear: 2023,
+      baselineValue: 450000,
+      targetYear: 2027,
+      targetValue: 405000,
+      actualValue: null as number | null,
+      unitLabel: "kWh",
+      targetReductionPercent: 10,
+      status: "active",
+      notes: "ISO 50001 enerji hedef ve amaçları kapsamında belirlenmiştir.",
+    },
+    {
+      name: "Doğalgaz Tüketimi Azaltma Hedefi",
+      objectiveText: "2025–2027 döneminde doğalgaz tüketimini baz yılına göre azaltmak",
+      targetText: "Baz yıl 2023 doğalgaz tüketimine kıyasla 2027 yılı sonunda %8 azalma sağlamak",
+      targetType: "reduction_percent",
+      baselineYear: 2023,
+      baselineValue: 180000,
+      targetYear: 2027,
+      targetValue: 165600,
+      actualValue: null as number | null,
+      unitLabel: "m³",
+      targetReductionPercent: 8,
+      status: "active",
+      notes: "Isıtma ve proses ısısı kaynaklı tüketim hedeflenmiştir.",
+    },
+    {
+      name: "Toplam Enerji Yoğunluğu İyileştirme Hedefi",
+      objectiveText: "Üretim bazında birim ürün başına enerji tüketimini düşürmek",
+      targetText: "Birim üretim başına düşen enerji tüketimini 2023 baz yılına göre %12 azaltmak",
+      targetType: "intensity",
+      baselineYear: 2023,
+      baselineValue: 2.4,
+      targetYear: 2026,
+      targetValue: 2.11,
+      actualValue: null as number | null,
+      unitLabel: "kWh/adet",
+      targetReductionPercent: 12,
+      status: "active",
+      notes: "Üretim miktarı değişkenine bağlı performans göstergesi olarak izlenecektir.",
+    },
+  ];
+
+  let targetInserted = 0;
+  let targetSkipped = 0;
+
+  for (const item of targetItems) {
+    const existing = await db.select({ id: energyTargetsTable.id })
+      .from(energyTargetsTable)
+      .where(and(
+        eq(energyTargetsTable.companyId, companyId),
+        eq(energyTargetsTable.name, item.name),
+      ))
+      .limit(1);
+
+    if (existing.length > 0) {
+      console.log(`  ↩  Hedef zaten mevcut: ${item.name}`);
+      targetSkipped++;
+    } else {
+      await db.insert(energyTargetsTable).values({
+        companyId,
+        unitId: unit.id,
+        name: item.name,
+        objectiveText: item.objectiveText,
+        targetText: item.targetText,
+        targetType: item.targetType,
+        baselineYear: item.baselineYear,
+        baselineValue: item.baselineValue,
+        targetYear: item.targetYear,
+        targetValue: item.targetValue,
+        actualValue: item.actualValue,
+        unitLabel: item.unitLabel,
+        targetReductionPercent: item.targetReductionPercent,
+        status: item.status,
+        notes: item.notes,
+      });
+      console.log(`  ✅ Hedef oluşturuldu: ${item.name}`);
+      targetInserted++;
+    }
+  }
+  console.log(`  Enerji hedefleri: ${targetInserted} eklendi, ${targetSkipped} atlandı`);
+
+  // ── 9. SWOT maddeleri ─────────────────────────────────────────────────────
+  console.log("\n[9/11] SWOT maddeleri");
 
   const swotItems = [
     // Güçlü Yönler
@@ -379,8 +470,8 @@ async function seed() {
   }
   console.log(`  SWOT: ${swotInserted} eklendi, ${swotSkipped} atlandı`);
 
-  // ── 9. Risk ve Fırsat kayıtları ───────────────────────────────────────────
-  console.log("\n[9/9] Risk ve Fırsat kayıtları");
+  // ── 10. Risk ve Fırsat kayıtları ──────────────────────────────────────────
+  console.log("\n[10/11] Risk ve Fırsat kayıtları");
 
   const riskItems = [
     // Riskler
@@ -559,12 +650,13 @@ async function seed() {
   // ── Özet ──────────────────────────────────────────────────────────────────
   console.log(`\n─────────────────────────────────────────────────────`);
   console.log(`🎉 Internal demo seed tamamlandı.`);
-  console.log(`\n  Şirket    : ${company.name} (id: ${companyId})`);
-  console.log(`  Birim     : ${unit.name} (id: ${unit.id})`);
-  console.log(`  Sayaç     : ${meter.name} (id: ${meter.id})`);
-  console.log(`  Tüketim   : ${consumptionInserted} eklendi, ${consumptionSkipped} atlandı`);
-  console.log(`  SWOT      : ${swotInserted} eklendi, ${swotSkipped} atlandı (toplam: ${swotItems.length})`);
-  console.log(`  Risk+Fırsat: ${riskInserted} eklendi, ${riskSkipped} atlandı (toplam: ${riskItems.length})`);
+  console.log(`\n  Şirket         : ${company.name} (id: ${companyId})`);
+  console.log(`  Birim          : ${unit.name} (id: ${unit.id})`);
+  console.log(`  Sayaç          : ${meter.name} (id: ${meter.id})`);
+  console.log(`  Tüketim        : ${consumptionInserted} eklendi, ${consumptionSkipped} atlandı`);
+  console.log(`  Enerji hedefleri: ${targetInserted} eklendi, ${targetSkipped} atlandı (toplam: ${targetItems.length})`);
+  console.log(`  SWOT           : ${swotInserted} eklendi, ${swotSkipped} atlandı (toplam: ${swotItems.length})`);
+  console.log(`  Risk+Fırsat    : ${riskInserted} eklendi, ${riskSkipped} atlandı (toplam: ${riskItems.length})`);
   console.log(`\n  Giriş bilgileri:`);
   console.log(`    Kullanıcı: ${ADMIN_USERNAME}`);
   console.log(`    Şifre    : admin123`);

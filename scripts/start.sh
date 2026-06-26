@@ -11,8 +11,9 @@ pnpm install --frozen-lockfile=false
 echo "[start] Building API server..."
 pnpm --filter @workspace/api-server run build
 
-# Free port 8080 if in use
+# Free ports if in use
 fuser -k 8080/tcp 2>/dev/null || true
+fuser -k 5000/tcp 2>/dev/null || true
 sleep 1
 
 # Start API server in background

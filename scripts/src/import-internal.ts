@@ -251,9 +251,17 @@ interface EnergyTargetJson {
   targetKey: string;
   unitKey?: string | null;
   name: string;
+  objectiveText?: string | null;
+  targetText?: string | null;
+  targetType?: string | null;
   baselineYear: number;
+  baselineValue?: number | null;
   targetYear: number;
+  targetValue?: number | null;
+  actualValue?: number | null;
+  unitLabel?: string | null;
   targetReductionPercent: number;
+  status?: string | null;
   notes?: string | null;
 }
 
@@ -932,9 +940,17 @@ async function importInternal() {
       companyId,
       unitId,
       name: t.name,
+      objectiveText: t.objectiveText ?? null,
+      targetText: t.targetText ?? null,
+      targetType: t.targetType ?? null,
       baselineYear: t.baselineYear,
+      baselineValue: t.baselineValue ?? null,
       targetYear: t.targetYear,
+      targetValue: t.targetValue ?? null,
+      actualValue: t.actualValue ?? null,
+      unitLabel: t.unitLabel ?? null,
       targetReductionPercent: t.targetReductionPercent,
+      status: t.status ?? "active",
       notes: t.notes ?? null,
     }).returning({ id: energyTargetsTable.id });
     targetIdMap.set(t.targetKey, row.id);
