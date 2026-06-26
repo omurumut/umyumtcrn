@@ -47,9 +47,15 @@ router.get("/energy-action-plans", requireAuth, async (req, res) => {
       .where(conditions.length === 1 ? conditions[0] : and(...conditions))
       .orderBy(energyActionPlansTable.createdAt);
 
+    // Non-admin ve birime atanmamış kullanıcı şirket geneli veri göremez
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId === null) {
+      res.json([]);
+      return;
+    }
+
     // Normal kullanıcı sadece kendi birimini görür
     const filtered =
-      role !== "admin" && role !== "superadmin" && sessionUnitId !== null
+      role !== "admin" && role !== "superadmin"
         ? plans.filter((p) => p.targetUnitId === sessionUnitId)
         : plans;
 
@@ -186,23 +192,29 @@ router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
 
     const [item] = await db.update(energyActionPlansTable).set(updates).where(eq(energyActionPlansTable.id, id)).returning();
 
-    // isVap true'ya çevrilirse ve VAP projesi yoksa oluştur
-    if (Boolean(isVap) && isVap !== undefined) {
-      const existing = await db.select({ id: vapProjectsTable.id })
-        .from(vapProjectsTable)
-        .where(eq(vapProjectsTable.actionPlanId, id));
-      if (existing.length === 0) {
-        const { name: userName } = req.user!;
-        await db.insert(vapProjectsTable).values({
-          companyId: sessionCompanyId,
-          actionPlanId: id,
-          projectTitle: item.title,
-          annualCostSaving: item.expectedCostSaving,
-          investmentCost: item.investmentCost,
-          paybackMonths: item.paybackMonths,
-          status: "idea",
-          createdBy: userName,
-        });
+    // isVap değişti ise VAP kaydını güncelle
+    if (isVap !== undefined) {
+      if (Boolean(isVap)) {
+        // isVap true → bağlı VAP yoksa oluştur
+        const [existingVap] = await db.select({ id: vapProjectsTable.id })
+          .from(vapProjectsTable)
+          .where(eq(vapProjectsTable.actionPlanId, id));
+        if (!existingVap) {
+          const { name: userName } = req.user!;
+          await db.insert(vapProjectsTable).values({
+            companyId: sessionCompanyId,
+            actionPlanId: id,
+            projectTitle: item.title,
+            annualCostSaving: item.expectedCostSaving,
+            investmentCost: item.investmentCost,
+            paybackMonths: item.paybackMonths,
+            status: "idea",
+            createdBy: userName,
+          });
+        }
+      } else {
+        // isVap false → phantom VAP kaydını temizle
+        await db.delete(vapProjectsTable).where(eq(vapProjectsTable.actionPlanId, id));
       }
     }
 

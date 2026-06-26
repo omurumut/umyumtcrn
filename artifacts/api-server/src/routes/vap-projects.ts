@@ -244,6 +244,14 @@ router.post("/vap-projects", requireAuth, async (req, res) => {
       if (target?.unitId !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
     }
 
+    // Duplicate VAP kontrolü — aynı action_plan_id için tek VAP olabilir
+    const [dupVap] = await db.select({ id: vapProjectsTable.id })
+      .from(vapProjectsTable)
+      .where(eq(vapProjectsTable.actionPlanId, parseInt(actionPlanId)));
+    if (dupVap) {
+      res.status(409).json({ error: "Bu eylem planına zaten bir VAP projesi bağlı" }); return;
+    }
+
     const parseOrNull = (v: any) => (v !== undefined && v !== null && v !== "") ? parseFloat(v) : null;
 
     const [item] = await db.insert(vapProjectsTable).values({
@@ -280,11 +288,22 @@ router.post("/vap-projects", requireAuth, async (req, res) => {
 // PUT /api/vap-projects/:id
 router.put("/vap-projects/:id", requireAuth, async (req, res) => {
   try {
-    const { companyId: sessionCompanyId } = req.user!;
+    const { companyId: sessionCompanyId, role, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
     const [existing] = await db.select().from(vapProjectsTable).where(eq(vapProjectsTable.id, id));
     if (!existing) { res.status(404).json({ error: "Bulunamadı" }); return; }
     if (existing.companyId !== sessionCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
+
+    // Birim yetki kontrolü: non-admin sadece kendi birimi kapsamındaki VAP'ı güncelleyebilir
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
+      const [ap] = await db.select({ targetId: energyActionPlansTable.targetId })
+        .from(energyActionPlansTable).where(eq(energyActionPlansTable.id, existing.actionPlanId));
+      if (ap) {
+        const [target] = await db.select({ unitId: energyTargetsTable.unitId })
+          .from(energyTargetsTable).where(eq(energyTargetsTable.id, ap.targetId));
+        if (target?.unitId !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
+      }
+    }
 
     const { projectCode, projectTitle, projectType, currentSituation, proposedSolution,
       technicalDescription, annualEnergySavingValue, annualEnergySavingUnit, annualCostSaving,
@@ -325,11 +344,23 @@ router.put("/vap-projects/:id", requireAuth, async (req, res) => {
 // DELETE /api/vap-projects/:id
 router.delete("/vap-projects/:id", requireAuth, async (req, res) => {
   try {
-    const { companyId: sessionCompanyId } = req.user!;
+    const { companyId: sessionCompanyId, role, unitId: sessionUnitId } = req.user!;
     const id = parseInt(req.params.id as string);
     const [existing] = await db.select().from(vapProjectsTable).where(eq(vapProjectsTable.id, id));
     if (!existing) { res.status(404).send(); return; }
     if (existing.companyId !== sessionCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
+
+    // Birim yetki kontrolü: non-admin sadece kendi birimi kapsamındaki VAP'ı silebilir
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
+      const [ap] = await db.select({ targetId: energyActionPlansTable.targetId })
+        .from(energyActionPlansTable).where(eq(energyActionPlansTable.id, existing.actionPlanId));
+      if (ap) {
+        const [target] = await db.select({ unitId: energyTargetsTable.unitId })
+          .from(energyTargetsTable).where(eq(energyTargetsTable.id, ap.targetId));
+        if (target?.unitId !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
+      }
+    }
+
     await db.delete(vapProjectsTable).where(eq(vapProjectsTable.id, id));
     res.status(204).send();
   } catch (err) {
