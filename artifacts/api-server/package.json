@@ -18,6 +18,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "drizzle-orm": "catalog:",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "node-cron": "^4.4.1",
     "pino": "^9.14.0",

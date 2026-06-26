@@ -1,0 +1,173 @@
+CSV export teknik olarak çalışıyor ancak kullanıcı tarafında dosya çok karışık görünüyor. Bu nedenle Enerji Amaçları/Hedefleri/Eylem Planı ve VAP exportları için XLSX export ekle.
+
+Amaç:
+Kullanıcı CSV yerine düzgün kolonlara ayrılmış, okunabilir Excel dosyası indirebilsin.
+
+Kurallar:
+- Mevcut CSV export endpointlerini bozma.
+- Mevcut CSV export çalışmaya devam etsin.
+- Yeni veri modeli oluşturma.
+- Migration ekleme.
+- Mevcut kayıtları bozma.
+- Auth, company_id ve unit_id yetki kontrollerini koru.
+- Admin sadece kendi şirketinin tüm verisini export edebilsin.
+- Normal kullanıcı sadece yetkili olduğu birimin verisini export edebilsin.
+- Multi-tenant izolasyonu kesinlikle korunmalı.
+- Axios ekleme.
+- Mevcut API client / download helper standardına uy.
+- Eğer projede xlsx paketi yoksa uygun workspace’e ekle.
+- Daha önce root’a paket ekleme hatası yaşandığı için pnpm workspace yapısına dikkat et.
+- XLSX üretimi backend tarafında yapılmalı.
+
+Yeni davranış:
+- Mevcut export endpointlerinde format parametresi desteklensin:
+  - format=csv
+  - format=xlsx
+- Varsayılan format mümkünse xlsx olsun.
+- CSV eski uyumluluk için kalsın.
+
+Endpointler:
+1. GET /api/targets/export?format=xlsx
+2. GET /api/vap-projects/export?format=xlsx
+
+Frontend:
+- /hedefler sayfasındaki buton metni “Excel Export” olsun.
+- /vap-projeler sayfasındaki buton metni “Excel Export” olsun.
+- Butonlar format=xlsx ile dosya indirsin.
+- Gerekirse CSV için ikinci küçük seçenek eklenebilir ama şart değil.
+- İlk aşamada ana buton Excel indirsin.
+
+1) Enerji Amaçları, Hedefleri ve Eylem Planı XLSX
+
+Dosya adı:
+- enerji-amac-hedef-eylem-plani.xlsx
+- year filtresi varsa: enerji-amac-hedef-eylem-plani-2026.xlsx
+
+Worksheet adı:
+- Enerji Hedefleri
+
+Kolonlar mevcut CSV ile aynı olsun:
+- Yıl
+- Birim
+- Alt Birim
+- Enerji Kaynağı
+- İlgili ÖEK
+- Enerji Amacı
+- Enerji Hedefi
+- Hedef Tipi
+- Baz Yıl
+- Baz Değer
+- Hedef Yıl
+- Hedef Değer
+- Gerçekleşen Değer
+- Ölçü Birimi
+- Hedef Azaltım Oranı
+- Hedef Durumu
+- Eylem Planı
+- Sorumlu
+- Başlangıç Tarihi
+- Bitiş Tarihi
+- Öncelik
+- Beklenen Tasarruf
+- Beklenen Yıllık Mali Tasarruf
+- Yatırım Maliyeti
+- Geri Ödeme Süresi
+- Eylem Durumu
+- İlerleme
+- VAP mı?
+- Notlar
+
+2) VAP XLSX
+
+Dosya adı:
+- vap-projeleri.xlsx
+- year filtresi varsa: vap-projeleri-2026.xlsx
+
+Worksheet adı:
+- VAP Projeleri
+
+Kolonlar mevcut CSV ile aynı olsun:
+- Proje Kodu
+- VAP Adı
+- Bağlı Hedef
+- Bağlı Eylem Planı
+- Birim
+- Alt Birim
+- Enerji Kaynağı
+- Proje Türü
+- Mevcut Durum
+- Önerilen Çözüm
+- Teknik Açıklama
+- Yıllık Enerji Tasarrufu
+- Yıllık Enerji Tasarrufu Birimi
+- Yıllık Mali Tasarruf
+- Yatırım Maliyeti
+- Geri Ödeme Süresi
+- CO2 Azaltımı
+- Fizibilite Durumu
+- Teşvik/Destek Durumu
+- Başlangıç Tarihi
+- Bitiş Tarihi
+- Proje Durumu
+- Notlar
+
+Excel okunabilirlik beklentisi:
+- İlk satır başlık satırı olsun.
+- Başlık satırı kalın olsun.
+- Başlık satırı dondurulsun.
+- Kolon genişlikleri otomatik veya makul sabit genişlikte ayarlansın.
+- Uzun metin kolonlarında wrap text aktif olsun.
+- Sayısal değerler sayı olarak yazılsın, mümkünse text olmasın.
+- Tarihler okunabilir formatta yazılsın.
+- Boolean alanlar Türkçe görünsün:
+  - true = Evet
+  - false = Hayır
+- Enum alanlar Türkçe label olarak görünsün:
+  - active = Devam Ediyor
+  - completed = Tamamlandı
+  - planned = Planlandı
+  - in_progress = Devam Ediyor
+  - high = Yüksek
+  - medium = Orta
+  - low = Düşük
+
+Teknik yapı:
+- Mevcut CSV export helper bozulmasın.
+- XLSX için ayrı helper oluştur:
+  artifacts/api-server/src/lib/xlsx-export.ts
+  veya mevcut yardımcı yapıya uygun bir dosya.
+- Veri toplama mantığını mümkünse CSV ve XLSX ortak kullansın.
+- Aynı query/row üretimi iki formatta da kullanılabilsin.
+- İleride firma bazlı özel doküman şablonlarına geçilebileceği için kod modüler kalsın.
+
+Content-Type:
+- XLSX için:
+  application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+- Content-Disposition attachment filename doğru set edilsin.
+
+OpenAPI / Orval:
+- Export endpointlerinde format enum csv/xlsx olarak güncellensin.
+- Codegen gerekiyorsa çalıştır.
+- Frontend download akışı bozulmasın.
+- Dosya blob olarak indirilmeli.
+
+Test:
+- /hedefler sayfasından Excel Export indir.
+- Dosya Excel/LibreOffice/Google Sheets ile düzgün açılıyor mu kontrol et.
+- Kolonlar ayrı ayrı geliyor mu kontrol et.
+- Türkçe karakterler düzgün mü kontrol et.
+- /vap-projeler sayfasından Excel Export indir.
+- VAP Excel dosyasında sadece VAP projeleri geliyor mu kontrol et.
+- CSV export hâlâ çalışıyor mu kontrol et.
+- Admin export yapabiliyor mu?
+- Normal kullanıcı sadece kendi birim verisini export edebiliyor mu?
+- unitId=null normal kullanıcıya 403 güvenlik kontrolü devam ediyor mu?
+- pnpm run typecheck çalıştır.
+- ems-dashboard build çalıştır.
+- Sonunda değişen dosyaları ve test sonuçlarını kısa raporla.
+
+Yeni özellik sınırı:
+- Word/PDF export oluşturma.
+- Firma özel şablon modülü oluşturma.
+- Bulk import/export oluşturma.
+- Sadece mevcut iki standart export için XLSX formatı ekle.

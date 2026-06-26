@@ -6,6 +6,7 @@ import {
   buildCsv, sendCsvResponse,
   VAP_STATUS_LABELS, FEASIBILITY_STATUS_LABELS, INCENTIVE_STATUS_LABELS,
 } from "../lib/csv-export.js";
+import { buildXlsx, sendXlsxResponse, type XlsxColDef } from "../lib/xlsx-export.js";
 
 const router = Router();
 
