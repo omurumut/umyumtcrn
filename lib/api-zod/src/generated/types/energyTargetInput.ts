@@ -13,4 +13,15 @@ export interface EnergyTargetInput {
   targetYear: number;
   targetReductionPercent: number;
   notes?: string;
+  objectiveText?: string;
+  targetText?: string;
+  targetType?: string;
+  baselineValue?: number;
+  targetValue?: number;
+  actualValue?: number;
+  unitLabel?: string;
+  status?: string;
+  subUnitId?: number;
+  energySourceId?: number;
+  seuAssessmentId?: number;
 }

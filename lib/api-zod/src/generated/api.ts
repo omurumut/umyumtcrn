@@ -450,18 +450,31 @@ export const ListTargetsQueryParams = zod.object({
 export const ListTargetsResponseItem = zod.object({
   "id": zod.number(),
   "unitId": zod.number().nullish(),
+  "companyId": zod.number().nullish(),
   "name": zod.string(),
   "baselineYear": zod.number(),
   "targetYear": zod.number(),
   "targetReductionPercent": zod.number(),
   "notes": zod.string().nullish(),
   "createdAt": zod.string(),
+  "updatedAt": zod.string().nullish(),
   "baselineKwh": zod.number().nullish(),
   "yearlyProgress": zod.array(zod.object({
   "year": zod.number(),
   "actualKwh": zod.number().nullish(),
   "reductionPercent": zod.number().nullish()
-}))
+})),
+  "objectiveText": zod.string().nullish(),
+  "targetText": zod.string().nullish(),
+  "targetType": zod.string().nullish(),
+  "baselineValue": zod.number().nullish(),
+  "targetValue": zod.number().nullish(),
+  "actualValue": zod.number().nullish(),
+  "unitLabel": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "subUnitId": zod.number().nullish(),
+  "energySourceId": zod.number().nullish(),
+  "seuAssessmentId": zod.number().nullish()
 })
 export const ListTargetsResponse = zod.array(ListTargetsResponseItem)
 
@@ -475,7 +488,18 @@ export const CreateTargetBody = zod.object({
   "baselineYear": zod.number(),
   "targetYear": zod.number(),
   "targetReductionPercent": zod.number(),
-  "notes": zod.string().optional()
+  "notes": zod.string().optional(),
+  "objectiveText": zod.string().optional(),
+  "targetText": zod.string().optional(),
+  "targetType": zod.string().optional(),
+  "baselineValue": zod.number().optional(),
+  "targetValue": zod.number().optional(),
+  "actualValue": zod.number().optional(),
+  "unitLabel": zod.string().optional(),
+  "status": zod.string().optional(),
+  "subUnitId": zod.number().optional(),
+  "energySourceId": zod.number().optional(),
+  "seuAssessmentId": zod.number().optional()
 })
 
 
@@ -492,18 +516,42 @@ export const UpdateTargetBody = zod.object({
   "baselineYear": zod.number().optional(),
   "targetYear": zod.number().optional(),
   "targetReductionPercent": zod.number().optional(),
-  "notes": zod.string().optional()
+  "notes": zod.string().optional(),
+  "objectiveText": zod.string().optional(),
+  "targetText": zod.string().optional(),
+  "targetType": zod.string().optional(),
+  "baselineValue": zod.number().optional(),
+  "targetValue": zod.number().optional(),
+  "actualValue": zod.number().optional(),
+  "unitLabel": zod.string().optional(),
+  "status": zod.string().optional(),
+  "subUnitId": zod.number().optional(),
+  "energySourceId": zod.number().optional(),
+  "seuAssessmentId": zod.number().optional()
 })
 
 export const UpdateTargetResponse = zod.object({
   "id": zod.number(),
   "unitId": zod.number().nullish(),
+  "companyId": zod.number().nullish(),
   "name": zod.string(),
   "baselineYear": zod.number(),
   "targetYear": zod.number(),
   "targetReductionPercent": zod.number(),
   "notes": zod.string().nullish(),
-  "createdAt": zod.string()
+  "createdAt": zod.string(),
+  "updatedAt": zod.string().nullish(),
+  "objectiveText": zod.string().nullish(),
+  "targetText": zod.string().nullish(),
+  "targetType": zod.string().nullish(),
+  "baselineValue": zod.number().nullish(),
+  "targetValue": zod.number().nullish(),
+  "actualValue": zod.number().nullish(),
+  "unitLabel": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "subUnitId": zod.number().nullish(),
+  "energySourceId": zod.number().nullish(),
+  "seuAssessmentId": zod.number().nullish()
 })
 
 

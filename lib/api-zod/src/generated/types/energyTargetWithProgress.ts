@@ -11,6 +11,8 @@ export interface EnergyTargetWithProgress {
   id: number;
   /** @nullable */
   unitId?: number | null;
+  /** @nullable */
+  companyId?: number | null;
   name: string;
   baselineYear: number;
   targetYear: number;
@@ -19,6 +21,30 @@ export interface EnergyTargetWithProgress {
   notes?: string | null;
   createdAt: string;
   /** @nullable */
+  updatedAt?: string | null;
+  /** @nullable */
   baselineKwh?: number | null;
   yearlyProgress: EnergyTargetWithProgressYearlyProgressItem[];
+  /** @nullable */
+  objectiveText?: string | null;
+  /** @nullable */
+  targetText?: string | null;
+  /** @nullable */
+  targetType?: string | null;
+  /** @nullable */
+  baselineValue?: number | null;
+  /** @nullable */
+  targetValue?: number | null;
+  /** @nullable */
+  actualValue?: number | null;
+  /** @nullable */
+  unitLabel?: string | null;
+  /** @nullable */
+  status?: string | null;
+  /** @nullable */
+  subUnitId?: number | null;
+  /** @nullable */
+  energySourceId?: number | null;
+  /** @nullable */
+  seuAssessmentId?: number | null;
 }

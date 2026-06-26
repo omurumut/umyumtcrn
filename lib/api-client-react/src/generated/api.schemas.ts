@@ -424,6 +424,8 @@ export interface EnergyTarget {
   id: number;
   /** @nullable */
   unitId?: number | null;
+  /** @nullable */
+  companyId?: number | null;
   name: string;
   baselineYear: number;
   targetYear: number;
@@ -431,6 +433,30 @@ export interface EnergyTarget {
   /** @nullable */
   notes?: string | null;
   createdAt: string;
+  /** @nullable */
+  updatedAt?: string | null;
+  /** @nullable */
+  objectiveText?: string | null;
+  /** @nullable */
+  targetText?: string | null;
+  /** @nullable */
+  targetType?: string | null;
+  /** @nullable */
+  baselineValue?: number | null;
+  /** @nullable */
+  targetValue?: number | null;
+  /** @nullable */
+  actualValue?: number | null;
+  /** @nullable */
+  unitLabel?: string | null;
+  /** @nullable */
+  status?: string | null;
+  /** @nullable */
+  subUnitId?: number | null;
+  /** @nullable */
+  energySourceId?: number | null;
+  /** @nullable */
+  seuAssessmentId?: number | null;
 }
 
 export type EnergyTargetWithProgressYearlyProgressItem = {
@@ -445,6 +471,8 @@ export interface EnergyTargetWithProgress {
   id: number;
   /** @nullable */
   unitId?: number | null;
+  /** @nullable */
+  companyId?: number | null;
   name: string;
   baselineYear: number;
   targetYear: number;
@@ -453,8 +481,32 @@ export interface EnergyTargetWithProgress {
   notes?: string | null;
   createdAt: string;
   /** @nullable */
+  updatedAt?: string | null;
+  /** @nullable */
   baselineKwh?: number | null;
   yearlyProgress: EnergyTargetWithProgressYearlyProgressItem[];
+  /** @nullable */
+  objectiveText?: string | null;
+  /** @nullable */
+  targetText?: string | null;
+  /** @nullable */
+  targetType?: string | null;
+  /** @nullable */
+  baselineValue?: number | null;
+  /** @nullable */
+  targetValue?: number | null;
+  /** @nullable */
+  actualValue?: number | null;
+  /** @nullable */
+  unitLabel?: string | null;
+  /** @nullable */
+  status?: string | null;
+  /** @nullable */
+  subUnitId?: number | null;
+  /** @nullable */
+  energySourceId?: number | null;
+  /** @nullable */
+  seuAssessmentId?: number | null;
 }
 
 export interface EnergyTargetInput {
@@ -464,6 +516,17 @@ export interface EnergyTargetInput {
   targetYear: number;
   targetReductionPercent: number;
   notes?: string;
+  objectiveText?: string;
+  targetText?: string;
+  targetType?: string;
+  baselineValue?: number;
+  targetValue?: number;
+  actualValue?: number;
+  unitLabel?: string;
+  status?: string;
+  subUnitId?: number;
+  energySourceId?: number;
+  seuAssessmentId?: number;
 }
 
 export interface EnergyTargetUpdate {
@@ -473,6 +536,17 @@ export interface EnergyTargetUpdate {
   targetYear?: number;
   targetReductionPercent?: number;
   notes?: string;
+  objectiveText?: string;
+  targetText?: string;
+  targetType?: string;
+  baselineValue?: number;
+  targetValue?: number;
+  actualValue?: number;
+  unitLabel?: string;
+  status?: string;
+  subUnitId?: number;
+  energySourceId?: number;
+  seuAssessmentId?: number;
 }
 
 export interface ReportResult {
