@@ -1,6 +1,17 @@
 [
   {
     "unitKey": "17-bolge-mudurlugu",
+    "name": "deneme motorin",
+    "category": "diger",
+    "annualKwh": 49,
+    "percentage": 12.88,
+    "priority": 3,
+    "targetReductionPercent": null,
+    "responsible": null,
+    "notes": null
+  },
+  {
+    "unitKey": "17-bolge-mudurlugu",
     "name": "deneme öek",
     "category": "diger",
     "annualKwh": 60,
