@@ -1,1 +1,110 @@
-[]
+[
+  {
+    "targetKey": "kontrol-fabrikasi--elektrik-tuketimi-azaltma-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 3,
+    "actualValue": 107500,
+    "actualSavingValue": 5000,
+    "comment": "Q1: LED dönüşüm pilotu başladı. Kompresör optimizasyonu hazırlık aşamasında.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--elektrik-tuketimi-azaltma-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 6,
+    "actualValue": 104200,
+    "actualSavingValue": 8300,
+    "comment": "Q2: LED montajı %35 tamamlandı. Kompresör basınç optimizasyonu devreye alındı.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--elektrik-tuketimi-azaltma-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 9,
+    "actualValue": 103800,
+    "actualSavingValue": 8700,
+    "comment": "Q3: LED montajı %70 tamamlandı. Tasarruf eğilimi güçleniyor.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--elektrik-tuketimi-azaltma-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 12,
+    "actualValue": 102100,
+    "actualSavingValue": 10400,
+    "comment": "Q4: LED dönüşümü tamamlandı. Yıllık toplam tasarruf hedefe yakın seyriyor.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--dogalgaz-tuketimi-azaltma-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 3,
+    "actualValue": 44100,
+    "actualSavingValue": 900,
+    "comment": "Q1: Buhar hattı yalıtım çalışmaları başladı. Henüz sınırlı tasarruf.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--dogalgaz-tuketimi-azaltma-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 6,
+    "actualValue": 43500,
+    "actualSavingValue": 1500,
+    "comment": "Q2: Buhar hattı yalıtımı %80 tamamlandı. Kazan ekonomizer teklifleri bekleniyor.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--dogalgaz-tuketimi-azaltma-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 9,
+    "actualValue": 43800,
+    "actualSavingValue": 1200,
+    "comment": "Q3: Yaz döneminde proses ısı yükü arttı. Tasarruf Q2'nin altında kaldı.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--dogalgaz-tuketimi-azaltma-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 12,
+    "actualValue": 44200,
+    "actualSavingValue": 800,
+    "comment": "Q4: Kış yükü artışı nedeniyle tüketim Q3'ün üzerine çıktı. Ekonomizer projesi 2026'ya ertelendi.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--toplam-enerji-yogunlugu-iyilestirme-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 3,
+    "actualValue": 2.38,
+    "actualSavingValue": 0.02,
+    "comment": "Q1: İzleme sistemi kurulumu tamamlandı. Çizelge optimizasyonu başladı. İlerleme henüz sınırlı.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--toplam-enerji-yogunlugu-iyilestirme-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 6,
+    "actualValue": 2.35,
+    "actualSavingValue": 0.05,
+    "comment": "Q2: Pik yük yönetimi tam devrede. Yoğunluk iyileşiyor ancak hedefin (2.11) çok gerisinde.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--toplam-enerji-yogunlugu-iyilestirme-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 9,
+    "actualValue": 2.32,
+    "actualSavingValue": 0.08,
+    "comment": "Q3: LED tasarrufları yoğunluğa yansımaya başladı. Trend olumlu ama hız yetersiz.",
+    "recordedBy": "kontrol_admin"
+  },
+  {
+    "targetKey": "kontrol-fabrikasi--toplam-enerji-yogunlugu-iyilestirme-hedefi",
+    "periodYear": 2025,
+    "periodMonth": 12,
+    "actualValue": 2.28,
+    "actualSavingValue": 0.12,
+    "comment": "Q4: Yıl sonu değeri 2.28 kWh/adet. Hedefe (2.11) ulaşılamadı. 2026 eylem planı güncellenmeli.",
+    "recordedBy": "kontrol_admin"
+  }
+]

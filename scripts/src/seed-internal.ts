@@ -30,6 +30,7 @@ import {
   risksTable,
   energyTargetsTable,
   energyActionPlansTable,
+  energyTargetProgressTable,
   vapProjectsTable,
 } from "@workspace/db/schema";
 
@@ -574,8 +575,164 @@ async function seed() {
   }
   console.log(`  VAP projeleri: ${vapInserted} eklendi, ${vapSkipped} atlandı`);
 
-  // ── 11. SWOT maddeleri ────────────────────────────────────────────────────
-  console.log("\n[11/13] SWOT maddeleri");
+  // ── 11. Hedef ilerleme kayıtları ──────────────────────────────────────────
+  console.log("\n[11/15] Hedef ilerleme kayıtları (2025 çeyreklik)");
+
+  interface ProgressSeed {
+    targetName: string;
+    periodYear: number;
+    periodMonth: number;
+    actualValue: number;
+    actualSavingValue: number | null;
+    comment: string;
+  }
+
+  // Elektrik: baseline 450,000 kWh → hedef 405,000 kWh (%10 azaltma)
+  // Senaryo: hedefe yakın, iyi ilerleme
+  // Çeyreklik baseline: 112,500 kWh | hedef: 101,250 kWh
+  const ELEK_BASE_Q = 112_500;
+
+  // Doğalgaz: baseline 180,000 m³ → hedef 165,600 m³ (%8 azaltma)
+  // Senaryo: orta seviyede ilerleme, hedefin gerisinde
+  // Çeyreklik baseline: 45,000 m³ | hedef: 41,400 m³
+  const GGAS_BASE_Q = 45_000;
+
+  // Enerji Yoğunluğu: baseline 2.4 kWh/adet → hedef 2.11 kWh/adet (%12 iyileştirme)
+  // Senaryo: hafif sapmalı, izlenmesi gereken durum (hedeften uzak)
+  const YOĞUN_BASE = 2.4;
+
+  const progressItems: ProgressSeed[] = [
+    // ── Elektrik (iyi ilerleme) ───────────────────────────────────────────
+    {
+      targetName: "Elektrik Tüketimi Azaltma Hedefi",
+      periodYear: 2025, periodMonth: 3,
+      actualValue: 107_500,
+      actualSavingValue: ELEK_BASE_Q - 107_500,  // 5,000 kWh
+      comment: "Q1: LED dönüşüm pilotu başladı. Kompresör optimizasyonu hazırlık aşamasında.",
+    },
+    {
+      targetName: "Elektrik Tüketimi Azaltma Hedefi",
+      periodYear: 2025, periodMonth: 6,
+      actualValue: 104_200,
+      actualSavingValue: ELEK_BASE_Q - 104_200,  // 8,300 kWh
+      comment: "Q2: LED montajı %35 tamamlandı. Kompresör basınç optimizasyonu devreye alındı.",
+    },
+    {
+      targetName: "Elektrik Tüketimi Azaltma Hedefi",
+      periodYear: 2025, periodMonth: 9,
+      actualValue: 103_800,
+      actualSavingValue: ELEK_BASE_Q - 103_800,  // 8,700 kWh
+      comment: "Q3: LED montajı %70 tamamlandı. Tasarruf eğilimi güçleniyor.",
+    },
+    {
+      targetName: "Elektrik Tüketimi Azaltma Hedefi",
+      periodYear: 2025, periodMonth: 12,
+      actualValue: 102_100,
+      actualSavingValue: ELEK_BASE_Q - 102_100,  // 10,400 kWh
+      comment: "Q4: LED dönüşümü tamamlandı. Yıllık toplam tasarruf hedefe yakın seyriyor.",
+    },
+
+    // ── Doğalgaz (orta seviye ilerleme) ──────────────────────────────────
+    {
+      targetName: "Doğalgaz Tüketimi Azaltma Hedefi",
+      periodYear: 2025, periodMonth: 3,
+      actualValue: 44_100,
+      actualSavingValue: GGAS_BASE_Q - 44_100,   // 900 m³
+      comment: "Q1: Buhar hattı yalıtım çalışmaları başladı. Henüz sınırlı tasarruf.",
+    },
+    {
+      targetName: "Doğalgaz Tüketimi Azaltma Hedefi",
+      periodYear: 2025, periodMonth: 6,
+      actualValue: 43_500,
+      actualSavingValue: GGAS_BASE_Q - 43_500,   // 1,500 m³
+      comment: "Q2: Buhar hattı yalıtımı %80 tamamlandı. Kazan ekonomizer teklifleri bekleniyor.",
+    },
+    {
+      targetName: "Doğalgaz Tüketimi Azaltma Hedefi",
+      periodYear: 2025, periodMonth: 9,
+      actualValue: 43_800,
+      actualSavingValue: GGAS_BASE_Q - 43_800,   // 1,200 m³
+      comment: "Q3: Yaz döneminde proses ısı yükü arttı. Tasarruf Q2'nin altında kaldı.",
+    },
+    {
+      targetName: "Doğalgaz Tüketimi Azaltma Hedefi",
+      periodYear: 2025, periodMonth: 12,
+      actualValue: 44_200,
+      actualSavingValue: GGAS_BASE_Q - 44_200,   // 800 m³
+      comment: "Q4: Kış yükü artışı nedeniyle tüketim Q3'ün üzerine çıktı. Ekonomizer projesi 2026'ya ertelendi.",
+    },
+
+    // ── Enerji Yoğunluğu (hafif sapmalı, izlenmesi gereken durum) ─────────
+    {
+      targetName: "Toplam Enerji Yoğunluğu İyileştirme Hedefi",
+      periodYear: 2025, periodMonth: 3,
+      actualValue: 2.38,
+      actualSavingValue: parseFloat((YOĞUN_BASE - 2.38).toFixed(3)),  // 0.02
+      comment: "Q1: İzleme sistemi kurulumu tamamlandı. Çizelge optimizasyonu başladı. İlerleme henüz sınırlı.",
+    },
+    {
+      targetName: "Toplam Enerji Yoğunluğu İyileştirme Hedefi",
+      periodYear: 2025, periodMonth: 6,
+      actualValue: 2.35,
+      actualSavingValue: parseFloat((YOĞUN_BASE - 2.35).toFixed(3)),  // 0.05
+      comment: "Q2: Pik yük yönetimi tam devrede. Yoğunluk iyileşiyor ancak hedefin (2.11) çok gerisinde.",
+    },
+    {
+      targetName: "Toplam Enerji Yoğunluğu İyileştirme Hedefi",
+      periodYear: 2025, periodMonth: 9,
+      actualValue: 2.32,
+      actualSavingValue: parseFloat((YOĞUN_BASE - 2.32).toFixed(3)),  // 0.08
+      comment: "Q3: LED tasarrufları yoğunluğa yansımaya başladı. Trend olumlu ama hız yetersiz.",
+    },
+    {
+      targetName: "Toplam Enerji Yoğunluğu İyileştirme Hedefi",
+      periodYear: 2025, periodMonth: 12,
+      actualValue: 2.28,
+      actualSavingValue: parseFloat((YOĞUN_BASE - 2.28).toFixed(3)),  // 0.12
+      comment: "Q4: Yıl sonu değeri 2.28 kWh/adet. Hedefe (2.11) ulaşılamadı. 2026 eylem planı güncellenmeli.",
+    },
+  ];
+
+  let progressInserted = 0;
+  let progressSkipped = 0;
+
+  for (const pr of progressItems) {
+    const tId = targetIdMap.get(pr.targetName);
+    if (!tId) {
+      console.log(`  ⚠️  Hedef bulunamadı, atlandı: ${pr.targetName}`);
+      continue;
+    }
+
+    const existing = await db.select({ id: energyTargetProgressTable.id })
+      .from(energyTargetProgressTable)
+      .where(and(
+        eq(energyTargetProgressTable.companyId, companyId),
+        eq(energyTargetProgressTable.targetId, tId),
+        eq(energyTargetProgressTable.periodYear, pr.periodYear),
+        eq(energyTargetProgressTable.periodMonth, pr.periodMonth),
+      ))
+      .limit(1);
+
+    if (existing.length > 0) {
+      progressSkipped++;
+    } else {
+      await db.insert(energyTargetProgressTable).values({
+        companyId,
+        targetId: tId,
+        periodYear: pr.periodYear,
+        periodMonth: pr.periodMonth,
+        actualValue: pr.actualValue,
+        actualSavingValue: pr.actualSavingValue,
+        comment: pr.comment,
+        recordedBy: ADMIN_USERNAME,
+      });
+      progressInserted++;
+    }
+  }
+  console.log(`  Hedef ilerleme: ${progressInserted} eklendi, ${progressSkipped} atlandı (toplam: ${progressItems.length})`);
+
+  // ── 12. SWOT maddeleri ────────────────────────────────────────────────────
+  console.log("\n[12/15] SWOT maddeleri");
 
   const swotItems = [
     // Güçlü Yönler
@@ -726,8 +883,8 @@ async function seed() {
   }
   console.log(`  SWOT: ${swotInserted} eklendi, ${swotSkipped} atlandı`);
 
-  // ── 12. Risk ve Fırsat kayıtları ──────────────────────────────────────────
-  console.log("\n[12/13] Risk ve Fırsat kayıtları");
+  // ── 13. Risk ve Fırsat kayıtları ──────────────────────────────────────────
+  console.log("\n[13/15] Risk ve Fırsat kayıtları");
 
   const riskItems = [
     // Riskler
@@ -913,6 +1070,7 @@ async function seed() {
   console.log(`  Enerji hedefleri: ${targetInserted} eklendi, ${targetSkipped} atlandı (toplam: ${targetItems.length})`);
   console.log(`  Eylem planları : ${apInserted} eklendi, ${apSkipped} atlandı (toplam: ${actionPlanItems.length})`);
   console.log(`  VAP projeleri  : ${vapInserted} eklendi, ${vapSkipped} atlandı`);
+  console.log(`  Hedef ilerleme : ${progressInserted} eklendi, ${progressSkipped} atlandı (toplam: ${progressItems.length})`);
   console.log(`  SWOT           : ${swotInserted} eklendi, ${swotSkipped} atlandı (toplam: ${swotItems.length})`);
   console.log(`  Risk+Fırsat    : ${riskInserted} eklendi, ${riskSkipped} atlandı (toplam: ${riskItems.length})`);
   console.log(`\n  Giriş bilgileri:`);
