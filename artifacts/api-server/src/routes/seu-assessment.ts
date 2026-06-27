@@ -307,7 +307,7 @@ router.get("/seu/assessments/:id", requireAuth, async (req, res) => {
 // ── POST /seu/assessments ────────────────────────────────
 router.post("/seu/assessments", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId, id: userId } = req.user!;
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId, userId } = req.user!;
     const {
       unitId, year, periodStart = 1, periodEnd = 12,
       analysisLevel = "energyUseGroup",

@@ -163,6 +163,7 @@ router.post("/consumption", requireAuth, async (req, res) => {
     let cddVal: number | null = null;
     let weatherStationName: string | null = null;
     let weatherStationNote: string | null = null;
+    let weatherDataMethod: string | null = null;
 
     if (hdd !== undefined && hdd !== null && hdd !== "") {
       hddVal = parseFloat(hdd);
@@ -179,6 +180,7 @@ router.post("/consumption", requireAuth, async (req, res) => {
         cddVal = mgmResult.cdd;
         weatherStationName = mgmResult.stationName;
         weatherStationNote = mgmResult.stationNote;
+        weatherDataMethod = mgmResult.dataMethod ?? null;
       }
     }
 
@@ -203,7 +205,7 @@ router.post("/consumption", requireAuth, async (req, res) => {
       meterName: meter.name,
       weatherStationName,
       weatherStationNote,
-      weatherDataMethod: mgmResult?.dataMethod ?? null,
+      weatherDataMethod,
     });
   } catch (err) {
     req.log.error(err);
