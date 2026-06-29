@@ -196,6 +196,14 @@ export default function Dashboard() {
 
   const mgmtLoading = targetStatusLoading || actionStatusLoading || vapLoading || seuSummaryLoading;
 
+  // Ort. Gerçekleşme görüntüleme hesabı
+  const avgAchDisplay: { value: string; sub: string; color: string } =
+    avgAchievementPct === null
+      ? { value: "İzleme yok", sub: "gerçekleşme girilmemiş", color: "text-muted-foreground" }
+      : avgAchievementPct < 0
+      ? { value: "Sapma var", sub: `%${fmt(Math.abs(avgAchievementPct), 0)} geride`, color: "text-red-400" }
+      : { value: `%${fmt(Math.min(100, avgAchievementPct), 0)}${avgAchievementPct > 100 ? "+" : ""}`, sub: "hedef bazında", color: "text-primary" };
+
   return (
     <div className="space-y-6">
       <div>
@@ -226,7 +234,7 @@ export default function Dashboard() {
           ) : (
             <>
               <MgmtStatBox label="Aktif Hedef" value={activeTargetCount} sub="adet" color="text-blue-400" />
-              <MgmtStatBox label="Ort. Gerçekleşme" value={avgAchievementPct !== null ? `%${fmt(avgAchievementPct, 0)}` : "—"} sub="hedef bazında" color="text-primary" />
+              <MgmtStatBox label="Ort. Gerçekleşme" value={avgAchDisplay.value} sub={avgAchDisplay.sub} color={avgAchDisplay.color} />
               <MgmtStatBox label="Açık Eylem" value={openActionCount} sub="plan / devam" color="text-amber-400" />
               <MgmtStatBox label="Gecikmiş Eylem" value={overdueCount} sub="adet" color={overdueCount > 0 ? "text-red-400" : "text-muted-foreground"} />
               <MgmtStatBox label="Aktif VAP" value={activeVapCount} sub="proje" color="text-purple-400" />
@@ -510,16 +518,23 @@ export default function Dashboard() {
                           style={{ width: `${displayPct}%` }}
                         />
                       </div>
-                      <span className={`text-xs font-semibold w-16 text-right whitespace-nowrap ${isComplete ? "text-green-400" : "text-foreground"}`}>
-                        %{fmt(rawPct, 0)}
+                      <span className={`text-xs font-semibold w-16 text-right whitespace-nowrap ${isComplete ? "text-green-400" : rawPct < 0 ? "text-red-400" : "text-foreground"}`}>
+                        {t.achievementPct == null
+                          ? "—"
+                          : rawPct > 100
+                          ? "%100+"
+                          : rawPct < 0
+                          ? "Sapma"
+                          : `%${fmt(rawPct, 0)}`}
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                       <span>
                         Eylem: {t.actionCount} plan
-                        {t.latestProgress && (
-                          <> · Son: {t.latestProgress.periodYear}/{String(t.latestProgress.periodMonth ?? "").padStart(2, "0")}</>
-                        )}
+                        {t.latestProgress
+                          ? <> · Son: {t.latestProgress.periodYear}/{String(t.latestProgress.periodMonth ?? "").padStart(2, "0")}</>
+                          : <> · <span className="text-amber-500/80">Gerçekleşme girilmedi</span></>
+                        }
                       </span>
                       <span>
                         {t.actualValue != null ? fmt(t.actualValue, 0) : "—"} / {t.targetValue != null ? fmt(t.targetValue, 0) : "—"} {t.unitLabel ?? ""}
@@ -662,8 +677,14 @@ export default function Dashboard() {
                     <div key={v.id} className="flex items-center gap-2 rounded-lg bg-muted/20 px-3 py-2 text-xs">
                       <span className="flex-1 truncate font-medium">{v.projectTitle}</span>
                       <StatusBadge status={v.status} />
-                      {v.annualCostSaving != null && (
+                      {(v.annualEnergySavingValue != null && v.annualEnergySavingValue > 0) ? (
+                        <span className="text-teal-400 whitespace-nowrap shrink-0">
+                          {v.annualEnergySavingValue.toLocaleString("tr-TR")} {v.annualEnergySavingUnit ?? "kWh"}
+                        </span>
+                      ) : (v.annualCostSaving != null && v.annualCostSaving > 0) ? (
                         <span className="text-green-400 whitespace-nowrap shrink-0">{fmtCurrency(v.annualCostSaving)}/yıl</span>
+                      ) : (
+                        <span className="text-muted-foreground whitespace-nowrap shrink-0">—</span>
                       )}
                     </div>
                   ))}
@@ -715,10 +736,16 @@ export default function Dashboard() {
                         <span className="text-xs text-muted-foreground">({u.latestAssessmentYear})</span>
                       </div>
                       <div className="flex items-center gap-3 text-xs">
-                        <span className="text-teal-400 font-semibold">{u.confirmedSeuCount} ÖEK</span>
-                        <span className="text-muted-foreground">{fmt(u.confirmedSeuTep, 1)} TEP</span>
+                        {(u.confirmedSeuCount ?? 0) > 0 ? (
+                          <span className="text-teal-400 font-semibold">{u.confirmedSeuCount} onaylı ÖEK</span>
+                        ) : (
+                          <span className="text-amber-500/80 font-medium">Karar bekleniyor</span>
+                        )}
+                        {(u.confirmedSeuTep ?? 0) > 0 && (
+                          <span className="text-muted-foreground">{fmt(u.confirmedSeuTep, 1)} TEP</span>
+                        )}
                         {(u.overrideCount ?? 0) > 0 && (
-                          <span className="text-amber-400">{u.overrideCount} override</span>
+                          <span className="text-amber-400">{u.overrideCount} manuel değişiklik</span>
                         )}
                       </div>
                     </div>
