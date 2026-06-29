@@ -1,0 +1,128 @@
+ISO 50001 Hedef, Eylem Planı ve VAP Yönetim Raporu backend endpoint'ini ekle.
+
+Amaç:
+Enerji hedefleri, eylem planları, gerçekleşme kayıtları ve VAP bağlantılarını tek bir yönetim raporu olarak HTML formatında indirmek.
+
+Endpoint:
+GET /api/reports/energy-targets/pdf
+
+Not:
+Gerçek PDF üretme.
+Yeni PDF kütüphanesi ekleme.
+Mevcut reports.ts içindeki HTML → Base64 data URL yaklaşımını kullan.
+Çıktı ilk aşamada HTML olsun.
+Frontend daha sonra bu data URL'yi indirir.
+
+Query parametreleri:
+- year
+- unitId
+- status
+- includeVap=true/false
+- includeProgress=true/false
+
+Veri kaynakları:
+- energy_targets
+- energy_action_plans
+- vap_projects
+- energy_target_progress
+- units
+- sub_units
+- energy_sources
+
+Yetki/scope:
+- Mevcut targets/export endpointindeki auth scope mantığını takip et.
+- Normal kullanıcı sadece kendi unitId verisini görebilsin.
+- Admin unitId query ile filtreleyebilsin.
+- Superadmin/company scope bug'ı tekrar oluşmasın.
+
+Yıl filtresi:
+- targetYear = year gibi dar filtre kullanma.
+- Hedef seçili yılda aktifse rapora dahil olsun:
+  baselineYear <= year <= targetYear
+
+Gerçekleşme mantığı:
+- Son gerçekleşme için energy_target_progress tablosundaki en güncel kayıt esas alınsın.
+- energy_targets.actualValue sadece progress yoksa fallback olarak kullanılabilir.
+
+Rapor bölümleri:
+1. Kapak / rapor bilgisi
+   - yıl
+   - birim
+   - oluşturma tarihi
+
+2. Yönetici özeti
+   - toplam hedef
+   - aktif hedef
+   - tamamlanan hedef
+   - açık eylem
+   - gecikmiş eylem
+   - VAP sayısı
+   - toplam yıllık mali tasarruf
+   - toplam yatırım
+
+3. Enerji hedefleri tablosu
+   - hedef adı
+   - amaç
+   - hedef metni
+   - birim
+   - baz yıl
+   - hedef yıl
+   - baz değer
+   - hedef değer
+   - son gerçekleşme
+   - durum
+
+4. Eylem planları tablosu
+   - bağlı hedef
+   - eylem adı
+   - sorumlu
+   - başlangıç
+   - bitiş
+   - durum
+   - ilerleme
+   - beklenen tasarruf
+   - VAP mı?
+
+5. VAP portföyü
+   - includeVap=true ise göster
+   - proje kodu
+   - proje adı
+   - bağlı eylem
+   - yatırım
+   - yıllık mali tasarruf
+   - yıllık enerji tasarrufu
+   - geri ödeme
+   - fizibilite durumu
+
+6. Gerçekleşme kronolojisi
+   - includeProgress=true ise göster
+   - hedef adı
+   - dönem
+   - gerçekleşen değer
+   - tasarruf
+   - açıklama
+
+Önemli:
+- reportsTable'a şimdilik kayıt yazma.
+- Migration yapma.
+- DB şemasını değiştirme.
+- Frontend'e dokunma.
+- OpenAPI/Orval'a şimdilik dokunma.
+- Sadece backend reports.ts içinde endpoint ekle.
+- Typecheck ve build çalıştır.
+
+Test:
+1. pnpm run typecheck
+2. pnpm run build
+3. 2026 yılı ve 17.Bölge Müdürlüğü için endpoint test et.
+4. Dönen data URL içinde 2 hedef, 3 eylem ve 1 VAP görünüyor mu kontrol et.
+5. 2025 yılı ve Kontrol Fabrikası için endpoint test et.
+6. Yetki/scope karışması yok mu kontrol et.
+
+İş sonunda raporla:
+- Değişen dosyalar
+- Endpoint response formatı
+- 2026 / 17.Bölge test sonucu
+- 2025 / Kontrol Fabrikası test sonucu
+- Typecheck sonucu
+- Build sonucu

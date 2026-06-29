@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { db, reportsTable, consumptionTable, swotTable, risksTable, seuTable, metersTable, weatherTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { db, reportsTable, consumptionTable, swotTable, risksTable, seuTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable } from "@workspace/db";
+import { eq, and, SQL, inArray, lte, gte, desc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -198,6 +198,373 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// ── Label maps ──────────────────────────────────────────────────────────────
+const TARGET_STATUS_LABELS: Record<string, string> = {
+  active: "Aktif", completed: "Tamamlandı", cancelled: "İptal", on_hold: "Beklemede",
+};
+const ACTION_STATUS_LABELS: Record<string, string> = {
+  planned: "Planlandı", in_progress: "Devam Ediyor", completed: "Tamamlandı",
+  cancelled: "İptal", on_hold: "Beklemede",
+};
+const FEASIBILITY_STATUS_LABELS: Record<string, string> = {
+  not_started: "Başlanmadı", in_progress: "Devam Ediyor", completed: "Tamamlandı",
+  approved: "Onaylandı", rejected: "Reddedildi",
+};
+
+// GET /api/reports/energy-targets/pdf
+router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+
+    // ── Auth / scope ─────────────────────────────────────────────────────────
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId === null) {
+      res.status(403).json({ error: "Bu rapor için birim yetkisi gerekli" });
+      return;
+    }
+
+    const yearParam = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const statusParam = req.query.status as string | undefined;
+    const includeVap = req.query.includeVap !== "false";
+    const includeProgress = req.query.includeProgress !== "false";
+
+    // ── Fetch targets (baselineYear <= year <= targetYear) ────────────────────
+    // Auth scope mirrors targets.ts: admin → companyId filter; superadmin → no companyId filter; user → own unitId
+    const targetConditions: SQL[] = [
+      lte(energyTargetsTable.baselineYear, yearParam),
+      gte(energyTargetsTable.targetYear, yearParam),
+    ];
+
+    let resolvedUnitId: number | null = null;
+
+    if (role !== "admin" && role !== "superadmin") {
+      // Regular user: locked to own unit
+      resolvedUnitId = sessionUnitId!;
+      targetConditions.push(eq(energyTargetsTable.unitId, resolvedUnitId));
+    } else if (role === "admin") {
+      // Admin: scoped to own company, optional unitId filter
+      targetConditions.push(eq(energyTargetsTable.companyId, sessionCompanyId));
+      const quid = req.query.unitId ? parseInt(req.query.unitId as string) : NaN;
+      if (!isNaN(quid)) {
+        resolvedUnitId = quid;
+        targetConditions.push(eq(energyTargetsTable.unitId, resolvedUnitId));
+      }
+    } else {
+      // Superadmin: sees all companies, optional unitId filter
+      const quid = req.query.unitId ? parseInt(req.query.unitId as string) : NaN;
+      if (!isNaN(quid)) {
+        resolvedUnitId = quid;
+        targetConditions.push(eq(energyTargetsTable.unitId, resolvedUnitId));
+      }
+    }
+
+    if (statusParam) targetConditions.push(eq(energyTargetsTable.status, statusParam));
+
+    const targets = await db
+      .select({
+        id: energyTargetsTable.id,
+        name: energyTargetsTable.name,
+        objectiveText: energyTargetsTable.objectiveText,
+        targetText: energyTargetsTable.targetText,
+        unitLabel: energyTargetsTable.unitLabel,
+        baselineYear: energyTargetsTable.baselineYear,
+        targetYear: energyTargetsTable.targetYear,
+        baselineValue: energyTargetsTable.baselineValue,
+        targetValue: energyTargetsTable.targetValue,
+        actualValue: energyTargetsTable.actualValue,
+        targetReductionPercent: energyTargetsTable.targetReductionPercent,
+        status: energyTargetsTable.status,
+        unitId: energyTargetsTable.unitId,
+        unitName: unitsTable.name,
+      })
+      .from(energyTargetsTable)
+      .leftJoin(unitsTable, eq(energyTargetsTable.unitId, unitsTable.id))
+      .where(and(...targetConditions))
+      .orderBy(energyTargetsTable.createdAt);
+
+    const targetIds = targets.map((t) => t.id);
+
+    // ── Fetch action plans ────────────────────────────────────────────────────
+    const actions =
+      targetIds.length > 0
+        ? await db
+            .select()
+            .from(energyActionPlansTable)
+            .where(inArray(energyActionPlansTable.targetId, targetIds))
+            .orderBy(energyActionPlansTable.createdAt)
+        : [];
+
+    const actionsByTarget: Record<number, typeof actions> = {};
+    for (const a of actions) {
+      if (!actionsByTarget[a.targetId]) actionsByTarget[a.targetId] = [];
+      actionsByTarget[a.targetId].push(a);
+    }
+
+    // ── Fetch latest progress per target ──────────────────────────────────────
+    const progressLatestMap: Record<number, { actualValue: number; actualSavingValue: number | null; periodYear: number; periodMonth: number | null; comment: string | null }> = {};
+    if (targetIds.length > 0) {
+      const allProgress = await db
+        .select()
+        .from(energyTargetProgressTable)
+        .where(inArray(energyTargetProgressTable.targetId, targetIds))
+        .orderBy(desc(energyTargetProgressTable.recordedAt));
+
+      for (const p of allProgress) {
+        if (!progressLatestMap[p.targetId]) {
+          progressLatestMap[p.targetId] = {
+            actualValue: p.actualValue,
+            actualSavingValue: p.actualSavingValue ?? null,
+            periodYear: p.periodYear,
+            periodMonth: p.periodMonth ?? null,
+            comment: p.comment ?? null,
+          };
+        }
+      }
+    }
+
+    // ── Fetch all progress for chronology section ─────────────────────────────
+    const allProgressRows =
+      includeProgress && targetIds.length > 0
+        ? await db
+            .select()
+            .from(energyTargetProgressTable)
+            .where(inArray(energyTargetProgressTable.targetId, targetIds))
+            .orderBy(energyTargetProgressTable.targetId, energyTargetProgressTable.periodYear, energyTargetProgressTable.periodMonth)
+        : [];
+
+    // ── Fetch VAP projects via action plan join ───────────────────────────────
+    const vapActionIds = actions.filter((a) => a.isVap).map((a) => a.id);
+    const vapProjects =
+      includeVap && vapActionIds.length > 0
+        ? await db
+            .select()
+            .from(vapProjectsTable)
+            .where(inArray(vapProjectsTable.actionPlanId, vapActionIds))
+            .orderBy(vapProjectsTable.createdAt)
+        : [];
+
+    // ── Build unit label for header ───────────────────────────────────────────
+    let unitLabel = "Tüm Birimler";
+    if (resolvedUnitId !== null) {
+      const unitRow = targets.find((t) => t.unitId === resolvedUnitId);
+      if (unitRow?.unitName) unitLabel = unitRow.unitName;
+    }
+
+    // ── Summary stats ─────────────────────────────────────────────────────────
+    const totalTargets = targets.length;
+    const activeTargets = targets.filter((t) => t.status === "active").length;
+    const completedTargets = targets.filter((t) => t.status === "completed").length;
+    const openActions = actions.filter((a) => a.status === "planned" || a.status === "in_progress").length;
+    const today = new Date();
+    const overdueActions = actions.filter((a) =>
+      (a.status === "planned" || a.status === "in_progress") && a.dueDate && new Date(a.dueDate) < today
+    ).length;
+    const vapCount = vapProjects.length;
+    const totalCostSaving = vapProjects.reduce((s, v) => s + (v.annualCostSaving ?? 0), 0);
+    const totalInvestment = vapProjects.reduce((s, v) => s + (v.investmentCost ?? 0), 0);
+
+    // ── HTML helpers ──────────────────────────────────────────────────────────
+    const fmtNum = (n: number | null | undefined, dec = 0) =>
+      n != null ? n.toLocaleString("tr-TR", { minimumFractionDigits: dec, maximumFractionDigits: dec }) : "—";
+    const fmtDate = (d: string | null | undefined) => d ?? "—";
+    const statusBadge = (s: string | null | undefined) =>
+      `<span class="badge badge-${s ?? "active"}">${TARGET_STATUS_LABELS[s ?? ""] ?? s ?? "—"}</span>`;
+    const actionBadge = (s: string | null | undefined) =>
+      `<span class="badge badge-${s ?? "planned"}">${ACTION_STATUS_LABELS[s ?? ""] ?? s ?? "—"}</span>`;
+
+    // ── Section: targets table ────────────────────────────────────────────────
+    const targetsHtml = targets.length > 0
+      ? `<table>
+          <tr>
+            <th>Hedef Adı</th><th>Amaç</th><th>Hedef Metni</th><th>Birim</th>
+            <th>Baz Yıl</th><th>Hedef Yıl</th><th>Baz Değer</th><th>Hedef Değer</th>
+            <th>Son Gerçekleşme</th><th>Durum</th>
+          </tr>
+          ${targets.map((t) => {
+            const latest = progressLatestMap[t.id];
+            const actualDisplay = latest ? fmtNum(latest.actualValue, 2) : (t.actualValue != null ? fmtNum(t.actualValue, 2) : "—");
+            return `<tr>
+              <td><strong>${t.name}</strong></td>
+              <td>${t.objectiveText ?? "—"}</td>
+              <td>${t.targetText ?? "—"}</td>
+              <td>${t.unitName ?? "—"}</td>
+              <td>${t.baselineYear}</td>
+              <td>${t.targetYear}</td>
+              <td>${fmtNum(t.baselineValue, 2)} ${t.unitLabel ?? ""}</td>
+              <td>${fmtNum(t.targetValue, 2)} ${t.unitLabel ?? ""}</td>
+              <td>${actualDisplay} ${t.unitLabel ?? ""}</td>
+              <td>${statusBadge(t.status)}</td>
+            </tr>`;
+          }).join("")}
+        </table>`
+      : "<p>Bu kapsam ve yıl için kayıtlı enerji hedefi bulunamadı.</p>";
+
+    // ── Section: action plans table ───────────────────────────────────────────
+    const actionsHtml = actions.length > 0
+      ? `<table>
+          <tr>
+            <th>Bağlı Hedef</th><th>Eylem Adı</th><th>Sorumlu</th>
+            <th>Başlangıç</th><th>Bitiş</th><th>Durum</th><th>İlerleme</th>
+            <th>Beklenen Tasarruf</th><th>VAP mı?</th>
+          </tr>
+          ${actions.map((a) => {
+            const targetName = targets.find((t) => t.id === a.targetId)?.name ?? "—";
+            const saving = a.expectedSavingValue != null
+              ? `${fmtNum(a.expectedSavingValue, 2)} ${a.expectedSavingUnit ?? ""}`
+              : "—";
+            return `<tr>
+              <td>${targetName}</td>
+              <td>${a.title}</td>
+              <td>${a.responsibleName ?? "—"}</td>
+              <td>${fmtDate(a.startDate)}</td>
+              <td>${fmtDate(a.dueDate)}</td>
+              <td>${actionBadge(a.status)}</td>
+              <td>${a.progressPercent != null ? `%${a.progressPercent}` : "—"}</td>
+              <td>${saving}</td>
+              <td>${a.isVap ? "<strong>Evet</strong>" : "Hayır"}</td>
+            </tr>`;
+          }).join("")}
+        </table>`
+      : "<p>Bu hedeflere bağlı eylem planı bulunamadı.</p>";
+
+    // ── Section: VAP portfolio ────────────────────────────────────────────────
+    const vapHtml = includeVap
+      ? vapProjects.length > 0
+        ? `<h2>5. VAP Portföyü</h2>
+          <table>
+            <tr>
+              <th>Proje Kodu</th><th>Proje Adı</th><th>Bağlı Eylem</th>
+              <th>Yatırım (₺)</th><th>Yıllık Mali Tasarruf (₺)</th>
+              <th>Yıllık Enerji Tasarrufu</th><th>Geri Ödeme (ay)</th><th>Fizibilite</th>
+            </tr>
+            ${vapProjects.map((v) => {
+              const linkedAction = actions.find((a) => a.id === v.actionPlanId);
+              const energySaving = v.annualEnergySavingValue != null
+                ? `${fmtNum(v.annualEnergySavingValue, 2)} ${v.annualEnergySavingUnit ?? ""}`
+                : "—";
+              return `<tr>
+                <td>${v.projectCode ?? "—"}</td>
+                <td>${v.projectTitle}</td>
+                <td>${linkedAction?.title ?? "—"}</td>
+                <td>${fmtNum(v.investmentCost, 0)}</td>
+                <td>${fmtNum(v.annualCostSaving, 0)}</td>
+                <td>${energySaving}</td>
+                <td>${fmtNum(v.paybackMonths, 1)}</td>
+                <td>${FEASIBILITY_STATUS_LABELS[v.feasibilityStatus ?? ""] ?? v.feasibilityStatus ?? "—"}</td>
+              </tr>`;
+            }).join("")}
+          </table>`
+        : `<h2>5. VAP Portföyü</h2><p>Bu kapsamda kayıtlı VAP projesi bulunamadı.</p>`
+      : "";
+
+    // ── Section: progress chronology ──────────────────────────────────────────
+    const progressHtml = includeProgress
+      ? allProgressRows.length > 0
+        ? `<h2>6. Gerçekleşme Kronolojisi</h2>
+          <table>
+            <tr>
+              <th>Hedef Adı</th><th>Dönem</th><th>Gerçekleşen Değer</th><th>Tasarruf</th><th>Açıklama</th>
+            </tr>
+            ${allProgressRows.map((p) => {
+              const targetName = targets.find((t) => t.id === p.targetId)?.name ?? "—";
+              const period = p.periodMonth ? `${MONTH_NAMES[p.periodMonth]} ${p.periodYear}` : String(p.periodYear);
+              return `<tr>
+                <td>${targetName}</td>
+                <td>${period}</td>
+                <td>${fmtNum(p.actualValue, 2)}</td>
+                <td>${p.actualSavingValue != null ? fmtNum(p.actualSavingValue, 2) : "—"}</td>
+                <td>${p.comment ?? "—"}</td>
+              </tr>`;
+            }).join("")}
+          </table>`
+        : `<h2>6. Gerçekleşme Kronolojisi</h2><p>Bu hedefler için gerçekleşme kaydı bulunamadı.</p>`
+      : "";
+
+    // ── Full HTML ─────────────────────────────────────────────────────────────
+    const htmlContent = `<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <title>Hedef, Eylem Planı ve VAP Yönetim Raporu — ${yearParam}</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 1100px; margin: 0 auto; padding: 40px; color: #1a202c; }
+    h1 { color: #0f766e; border-bottom: 3px solid #0f766e; padding-bottom: 10px; font-size: 22px; }
+    h2 { color: #1e3a5f; margin-top: 36px; font-size: 16px; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+    th, td { border: 1px solid #e2e8f0; padding: 7px 10px; text-align: left; vertical-align: top; }
+    th { background: #f1f5f9; font-weight: 600; color: #1e3a5f; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 18px 0; }
+    .kpi-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; text-align: center; }
+    .kpi-value { font-size: 26px; font-weight: 700; color: #0f766e; }
+    .kpi-label { font-size: 11px; color: #64748b; margin-top: 4px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-active { background: #d1fae5; color: #065f46; }
+    .badge-completed { background: #dbeafe; color: #1d4ed8; }
+    .badge-cancelled { background: #fee2e2; color: #991b1b; }
+    .badge-on_hold { background: #fef3c7; color: #92400e; }
+    .badge-planned { background: #e0f2fe; color: #0369a1; }
+    .badge-in_progress { background: #fef9c3; color: #713f12; }
+    .cover { margin-bottom: 32px; }
+    .cover p { color: #64748b; font-size: 14px; margin: 4px 0; }
+    .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 14px; color: #94a3b8; font-size: 11px; }
+  </style>
+</head>
+<body>
+
+  <div class="cover">
+    <h1>ISO 50001 Hedef, Eylem Planı ve VAP Yönetim Raporu</h1>
+    <p><strong>Yıl:</strong> ${yearParam}</p>
+    <p><strong>Birim:</strong> ${unitLabel}</p>
+    <p><strong>Oluşturma Tarihi:</strong> ${new Date().toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" })}</p>
+  </div>
+
+  <h2>1. Yönetici Özeti</h2>
+  <div class="kpi-grid">
+    <div class="kpi-box"><div class="kpi-value">${totalTargets}</div><div class="kpi-label">Toplam Hedef</div></div>
+    <div class="kpi-box"><div class="kpi-value">${activeTargets}</div><div class="kpi-label">Aktif Hedef</div></div>
+    <div class="kpi-box"><div class="kpi-value">${completedTargets}</div><div class="kpi-label">Tamamlanan Hedef</div></div>
+    <div class="kpi-box"><div class="kpi-value">${openActions}</div><div class="kpi-label">Açık Eylem</div></div>
+    <div class="kpi-box"><div class="kpi-value">${overdueActions}</div><div class="kpi-label">Gecikmiş Eylem</div></div>
+    <div class="kpi-box"><div class="kpi-value">${vapCount}</div><div class="kpi-label">VAP Sayısı</div></div>
+    <div class="kpi-box"><div class="kpi-value">${fmtNum(totalCostSaving, 0)} ₺</div><div class="kpi-label">Toplam Yıllık Mali Tasarruf</div></div>
+    <div class="kpi-box"><div class="kpi-value">${fmtNum(totalInvestment, 0)} ₺</div><div class="kpi-label">Toplam Yatırım</div></div>
+  </div>
+
+  <h2>2. Enerji Hedefleri Tablosu</h2>
+  ${targetsHtml}
+
+  <h2>3. Eylem Planları Tablosu</h2>
+  ${actionsHtml}
+
+  ${vapHtml}
+
+  ${progressHtml}
+
+  <div class="footer">
+    Bu rapor ISO 50001 Enerji Yönetim Sistemi kapsamında otomatik olarak üretilmiştir.
+    Referans Yıl: ${yearParam} | Birim: ${unitLabel} | Üretim: ${new Date().toLocaleString("tr-TR")}
+  </div>
+</body>
+</html>`;
+
+    const b64 = Buffer.from(htmlContent).toString("base64");
+    const dataUrl = `data:text/html;base64,${b64}`;
+
+    res.json({
+      year: yearParam,
+      unitId: resolvedUnitId,
+      unitLabel,
+      targetCount: totalTargets,
+      actionCount: actions.length,
+      vapCount,
+      dataUrl,
+    });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Rapor üretme hatası" });
   }
 });
 
