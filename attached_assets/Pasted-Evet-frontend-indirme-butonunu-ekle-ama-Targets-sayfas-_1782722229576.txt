@@ -1,0 +1,79 @@
+Evet, frontend indirme butonunu ekle ama Targets sayfasına değil Reports.tsx içine ekle.
+
+Amaç:
+Kullanıcı /raporlar sayfasından “ISO 50001 Hedef, Eylem Planı ve VAP Yönetim Raporu” indirebilsin.
+
+Backend endpoint hazır:
+GET /api/reports/energy-targets/pdf
+
+Önemli:
+- Backend'e dokunma.
+- Migration yapma.
+- OpenAPI/Orval'a dokunma.
+- Yeni bağımlılık ekleme.
+- Sadece frontend Reports.tsx ve gerekiyorsa küçük yardımcı fonksiyonlara dokun.
+- Gerçek PDF üretmeye çalışma; endpoint data:text/html;base64 döndürüyor.
+- İndirilen dosya .html olsun.
+
+Yapılacaklar:
+1. Reports.tsx içinde mevcut rapor oluşturma alanının altına veya yanına yeni bir kart ekle:
+   Başlık:
+   “ISO 50001 Hedef, Eylem Planı ve VAP Yönetim Raporu”
+
+2. Kart açıklaması:
+   “Enerji hedefleri, eylem planları, gerçekleşme kayıtları ve VAP bağlantılarını yönetim raporu olarak indirir.”
+
+3. Filtreler:
+   - year: mevcut yıl seçimi kullanılsın
+   - unitId: mevcut birim filtresi/context varsa kullanılsın
+   - status: opsiyonel dropdown
+     seçenekler: all, active, completed, cancelled
+   - includeVap checkbox default true
+   - includeProgress checkbox default true
+
+4. Buton:
+   “HTML Raporu İndir”
+
+5. Buton tıklanınca:
+   - GET /api/reports/energy-targets/pdf çağrısı yapılsın
+   - Query parametreleri eklensin:
+     year, unitId, status, includeVap, includeProgress
+   - Bearer token / mevcut apiFetch auth pattern'i kullanılsın
+   - Response JSON içindeki dataUrl alınsın
+   - dataUrl ile download tetiklensin
+   - Dosya adı:
+     iso50001-hedef-eylem-vap-raporu-{year}.html
+
+6. Loading state:
+   - Buton disabled olsun
+   - “Rapor hazırlanıyor...” yazsın
+
+7. Error state:
+   - Hata olursa kullanıcıya toast veya mevcut hata gösterim pattern'i ile mesaj göster:
+     “Yönetim raporu oluşturulamadı.”
+
+8. Başarılı durumda:
+   - İndirme tetiklensin
+   - Gerekirse kısa başarı toast'u göster
+
+9. UI dili:
+   - PDF deme, çünkü gerçek PDF değil.
+   - “HTML Raporu İndir” yaz.
+   - Küçük not ekle:
+     “Rapor tarayıcıda açıldıktan sonra PDF olarak kaydedilebilir.”
+
+Test:
+1. pnpm run typecheck
+2. pnpm run build
+3. /raporlar sayfasında kart görünüyor mu?
+4. 2026 / 17.Bölge için indirilen HTML içinde 2 hedef, 3 eylem, 1 VAP bilgisi var mı?
+5. 2025 / Kontrol Fabrikası için indirilen HTML içinde 3 hedef, 6 eylem, 1 VAP bilgisi var mı?
+6. Hata durumunda ekran patlamıyor mu?
+
+İş sonunda raporla:
+- Değişen dosyalar
+- Eklenen UI alanı
+- Kullanılan endpoint
+- İndirilen dosya adı
+- Typecheck sonucu
+- Build sonucu

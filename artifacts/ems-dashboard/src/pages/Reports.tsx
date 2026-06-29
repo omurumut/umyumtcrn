@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useListReports, useGenerateReport, getListReportsQueryKey } from "@workspace/api-client-react";
 import { useYear } from "@/context/YearContext";
 import { useUnit } from "@/context/UnitContext";
+import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -11,12 +12,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FileText, Download, RefreshCw } from "lucide-react";
+import { FileText, Download, RefreshCw, ClipboardList } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Reports() {
   const { year } = useYear();
   const { unitId } = useUnit();
+  const { token } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -25,6 +27,46 @@ export default function Reports() {
   const [includeRisks, setIncludeRisks] = useState(true);
   const [includeSeu, setIncludeSeu] = useState(true);
   const [includeRegression, setIncludeRegression] = useState(true);
+
+  // ── ISO 50001 Hedef/Eylem/VAP raporu state ─────────────────────────────
+  const [targetYear, setTargetYear] = useState(year.toString());
+  const [targetStatus, setTargetStatus] = useState("all");
+  const [targetIncludeVap, setTargetIncludeVap] = useState(true);
+  const [targetIncludeProgress, setTargetIncludeProgress] = useState(true);
+  const [targetLoading, setTargetLoading] = useState(false);
+
+  async function handleTargetReport() {
+    setTargetLoading(true);
+    try {
+      const params = new URLSearchParams({ year: targetYear });
+      if (unitId !== null) params.set("unitId", String(unitId));
+      if (targetStatus !== "all") params.set("status", targetStatus);
+      params.set("includeVap", String(targetIncludeVap));
+      params.set("includeProgress", String(targetIncludeProgress));
+
+      const res = await fetch(`/api/reports/energy-targets/pdf?${params.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (!data.dataUrl) throw new Error("dataUrl eksik");
+
+      const a = document.createElement("a");
+      a.href = data.dataUrl;
+      a.download = `iso50001-hedef-eylem-vap-raporu-${targetYear}.html`;
+      a.click();
+
+      toast({ title: `${targetYear} yılı yönetim raporu indirildi` });
+    } catch {
+      toast({ title: "Yönetim raporu oluşturulamadı.", variant: "destructive" });
+    } finally {
+      setTargetLoading(false);
+    }
+  }
 
   const listParams = unitId !== null ? { unitId } : undefined;
   const { data: reports, isLoading } = useListReports({ query: { queryKey: getListReportsQueryKey() } });
@@ -120,6 +162,79 @@ export default function Reports() {
               <><FileText className="h-4 w-4" /> Rapor Oluştur & İndir</>
             )}
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <ClipboardList className="h-4 w-4" /> ISO 50001 Hedef, Eylem Planı ve VAP Yönetim Raporu
+          </CardTitle>
+          <CardDescription>
+            Enerji hedefleri, eylem planları, gerçekleşme kayıtları ve VAP bağlantılarını yönetim raporu olarak indirir.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>Rapor Yılı</Label>
+              <Select value={targetYear} onValueChange={setTargetYear}>
+                <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                <SelectContent>{years.map(y => <SelectItem key={y} value={y.toString()}>{y}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Hedef Durumu</Label>
+              <Select value={targetStatus} onValueChange={setTargetStatus}>
+                <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tümü</SelectItem>
+                  <SelectItem value="active">Aktif</SelectItem>
+                  <SelectItem value="completed">Tamamlandı</SelectItem>
+                  <SelectItem value="cancelled">İptal</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div>
+            <Label className="mb-2 block">Dahil Edilecek Bölümler</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center gap-2 p-2 rounded-md border border-border/50 bg-muted/20">
+                <Checkbox
+                  id="target-include-vap"
+                  checked={targetIncludeVap}
+                  onCheckedChange={(v) => setTargetIncludeVap(v === true)}
+                />
+                <label htmlFor="target-include-vap" className="text-sm cursor-pointer">VAP Portföyü</label>
+              </div>
+              <div className="flex items-center gap-2 p-2 rounded-md border border-border/50 bg-muted/20">
+                <Checkbox
+                  id="target-include-progress"
+                  checked={targetIncludeProgress}
+                  onCheckedChange={(v) => setTargetIncludeProgress(v === true)}
+                />
+                <label htmlFor="target-include-progress" className="text-sm cursor-pointer">Gerçekleşme Kronolojisi</label>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Button
+              onClick={handleTargetReport}
+              disabled={targetLoading}
+              className="gap-2 w-full sm:w-auto"
+            >
+              {targetLoading ? (
+                <><RefreshCw className="h-4 w-4 animate-spin" /> Rapor hazırlanıyor...</>
+              ) : (
+                <><Download className="h-4 w-4" /> HTML Raporu İndir</>
+              )}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Rapor tarayıcıda açıldıktan sonra PDF olarak kaydedilebilir.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
