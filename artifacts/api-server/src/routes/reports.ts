@@ -302,16 +302,19 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       actionsByTarget[a.targetId].push(a);
     }
 
-    // ── Fetch latest progress per target ──────────────────────────────────────
+    // ── Fetch latest progress per target (scoped to yearParam) ───────────────
     const progressLatestMap: Record<number, { actualValue: number; actualSavingValue: number | null; periodYear: number; periodMonth: number | null; comment: string | null }> = {};
     if (targetIds.length > 0) {
-      const allProgress = await db
+      const yearProgress = await db
         .select()
         .from(energyTargetProgressTable)
-        .where(inArray(energyTargetProgressTable.targetId, targetIds))
+        .where(and(
+          inArray(energyTargetProgressTable.targetId, targetIds),
+          eq(energyTargetProgressTable.periodYear, yearParam),
+        ))
         .orderBy(desc(energyTargetProgressTable.recordedAt));
 
-      for (const p of allProgress) {
+      for (const p of yearProgress) {
         if (!progressLatestMap[p.targetId]) {
           progressLatestMap[p.targetId] = {
             actualValue: p.actualValue,
@@ -324,13 +327,16 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       }
     }
 
-    // ── Fetch all progress for chronology section ─────────────────────────────
+    // ── Fetch chronology progress rows (yearParam only) ───────────────────────
     const allProgressRows =
       includeProgress && targetIds.length > 0
         ? await db
             .select()
             .from(energyTargetProgressTable)
-            .where(inArray(energyTargetProgressTable.targetId, targetIds))
+            .where(and(
+              inArray(energyTargetProgressTable.targetId, targetIds),
+              eq(energyTargetProgressTable.periodYear, yearParam),
+            ))
             .orderBy(energyTargetProgressTable.targetId, energyTargetProgressTable.periodYear, energyTargetProgressTable.periodMonth)
         : [];
 
@@ -380,21 +386,23 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
           <tr>
             <th>Hedef Adı</th><th>Amaç</th><th>Hedef Metni</th><th>Birim</th>
             <th>Baz Yıl</th><th>Hedef Yıl</th><th>Baz Değer</th><th>Hedef Değer</th>
-            <th>Son Gerçekleşme</th><th>Durum</th>
+            <th>Son Gerçekleşme (${yearParam})</th><th>Durum</th>
           </tr>
           ${targets.map((t) => {
             const latest = progressLatestMap[t.id];
-            const actualDisplay = latest ? fmtNum(latest.actualValue, 2) : (t.actualValue != null ? fmtNum(t.actualValue, 2) : "—");
+            const actualDisplay = latest
+              ? `${fmtNum(latest.actualValue, 2)} ${t.unitLabel ?? ""}`.trim()
+              : "Gerçekleşme girilmedi";
             return `<tr>
               <td><strong>${t.name}</strong></td>
-              <td>${t.objectiveText ?? "—"}</td>
-              <td>${t.targetText ?? "—"}</td>
+              <td>${t.objectiveText?.trim() || "Tanımlanmadı"}</td>
+              <td>${t.targetText?.trim() || "Tanımlanmadı"}</td>
               <td>${t.unitName ?? "—"}</td>
               <td>${t.baselineYear}</td>
               <td>${t.targetYear}</td>
               <td>${fmtNum(t.baselineValue, 2)} ${t.unitLabel ?? ""}</td>
               <td>${fmtNum(t.targetValue, 2)} ${t.unitLabel ?? ""}</td>
-              <td>${actualDisplay} ${t.unitLabel ?? ""}</td>
+              <td>${actualDisplay}</td>
               <td>${statusBadge(t.status)}</td>
             </tr>`;
           }).join("")}
@@ -432,7 +440,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     // ── Section: VAP portfolio ────────────────────────────────────────────────
     const vapHtml = includeVap
       ? vapProjects.length > 0
-        ? `<h2>5. VAP Portföyü</h2>
+        ? `<h2>4. VAP Portföyü</h2>
           <table>
             <tr>
               <th>Proje Kodu</th><th>Proje Adı</th><th>Bağlı Eylem</th>
@@ -442,8 +450,8 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
             ${vapProjects.map((v) => {
               const linkedAction = actions.find((a) => a.id === v.actionPlanId);
               const energySaving = v.annualEnergySavingValue != null
-                ? `${fmtNum(v.annualEnergySavingValue, 2)} ${v.annualEnergySavingUnit ?? ""}`
-                : "—";
+                ? `${fmtNum(v.annualEnergySavingValue, 2)} ${v.annualEnergySavingUnit ?? ""}`.trim()
+                : "Henüz girilmedi";
               return `<tr>
                 <td>${v.projectCode ?? "—"}</td>
                 <td>${v.projectTitle}</td>
@@ -456,13 +464,13 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
               </tr>`;
             }).join("")}
           </table>`
-        : `<h2>5. VAP Portföyü</h2><p>Bu kapsamda kayıtlı VAP projesi bulunamadı.</p>`
+        : `<h2>4. VAP Portföyü</h2><p>Bu kapsamda kayıtlı VAP projesi bulunamadı.</p>`
       : "";
 
     // ── Section: progress chronology ──────────────────────────────────────────
     const progressHtml = includeProgress
       ? allProgressRows.length > 0
-        ? `<h2>6. Gerçekleşme Kronolojisi</h2>
+        ? `<h2>5. Gerçekleşme Kronolojisi</h2>
           <table>
             <tr>
               <th>Hedef Adı</th><th>Dönem</th><th>Gerçekleşen Değer</th><th>Tasarruf</th><th>Açıklama</th>
@@ -479,7 +487,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
               </tr>`;
             }).join("")}
           </table>`
-        : `<h2>6. Gerçekleşme Kronolojisi</h2><p>Bu hedefler için gerçekleşme kaydı bulunamadı.</p>`
+        : `<h2>5. Gerçekleşme Kronolojisi</h2><p>${yearParam} yılı için gerçekleşme kaydı bulunamadı.</p>`
       : "";
 
     // ── Full HTML ─────────────────────────────────────────────────────────────
@@ -519,6 +527,9 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     <p><strong>Yıl:</strong> ${yearParam}</p>
     <p><strong>Birim:</strong> ${unitLabel}</p>
     <p><strong>Oluşturma Tarihi:</strong> ${new Date().toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" })}</p>
+    <p style="margin-top:10px; padding:8px 12px; background:#f0fdf4; border-left:3px solid #0f766e; font-size:13px; color:#065f46;">
+      Bu rapor, seçili yılda aktif olan hedefleri ve seçili yıla ait gerçekleşme kayıtlarını içerir.
+    </p>
   </div>
 
   <h2>1. Yönetici Özeti</h2>
