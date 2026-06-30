@@ -3,6 +3,7 @@ import { db, variablesTable, variableValuesTable, weatherDegreeDaysTable, compan
 import { eq, and, ne, isNull, inArray, sql } from "drizzle-orm";
 import { requireAuth, requireAdmin } from "../middlewares/auth.js";
 import { parseIlIlce, findStationByIlIlce } from "../services/mgm-stations-data.js";
+import { lookupStationKeyByLocation, lookupOfficialByStationKey } from "../services/mgm-sync.js";
 
 const router = Router();
 
@@ -454,12 +455,11 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
       res.json({ synced: 0, provinces: [], message: "Sayaçlara bağlı şehir bulunamadı" }); return;
     }
 
-    // 2. Her sayaç şehrini parseIlIlce ile ayrıştır → findStationByIlIlce ile eşleştir
-    //    Önce il + ilçe birebir aranır, yoksa aynı il içinde fallback kullanılır.
+    // 2. Her sayaç şehrini MGM station mapping tablosundan eşleştir (yeni sistem)
     interface CityMapping {
       city: string;
       il: string;
-      stationCode: string;
+      stationKey: string;
       stationName: string;
       isFallback: boolean;
       fallbackNote: string | null;
@@ -470,20 +470,21 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
 
     for (const city of cities) {
       const { il, ilce } = parseIlIlce(city);
-      const lookup = findStationByIlIlce(il, ilce);
-      if (!lookup) {
-        unmatchedCities.push(city);
-        continue;
-      }
-      const fallbackNote = lookup.isFallback && ilce
-        ? `"${city}" için birebir MGM istasyonu bulunamadı. ${il} iline ait "${lookup.station.name}" istasyonu kullanıldı.`
+      // İlçe bazlı eşleşme
+      let mapping = ilce ? await lookupStationKeyByLocation(il, ilce) : null;
+      const isFallback = !mapping;
+      // İl merkezi fallback
+      if (!mapping) mapping = await lookupStationKeyByLocation(il, null);
+      if (!mapping) { unmatchedCities.push(city); continue; }
+      const fallbackNote = isFallback && ilce
+        ? `"${city}" için birebir MGM istasyonu bulunamadı. ${il} iline ait "${mapping.stationName ?? il}" istasyonu kullanıldı.`
         : null;
       cityMappings.push({
         city,
         il,
-        stationCode: lookup.station.stationCode,
-        stationName: lookup.station.name,
-        isFallback: lookup.isFallback,
+        stationKey: mapping.stationKey,
+        stationName: mapping.stationName ?? il,
+        isFallback,
         fallbackNote,
       });
     }
@@ -492,33 +493,38 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
       res.json({
         synced: 0,
         provinces: [],
-        message: `Sayaç şehirleri MGM istasyonlarında eşleşmedi (Aranan: ${cities.join(", ")})`,
+        message: `Sayaç şehirleri MGM istasyon mapping tablosunda eşleşmedi (Aranan: ${cities.join(", ")})`,
       });
       return;
     }
 
-    // 3. Benzersiz istasyon kodları için degree verisi çek
-    const uniqueStationCodes = [...new Set(cityMappings.map(m => m.stationCode))];
+    // 3. Her city → stationKey için resmi degree verisi çek
+    const uniqueStationKeys = [...new Set(cityMappings.map(m => m.stationKey))];
 
+    // resmi kayıtları station_key üzerinden al
     const degreeRows = await db
       .select()
-      .from(mgmDegreeDataTable)
-      .where(inArray(mgmDegreeDataTable.stationCode, uniqueStationCodes));
+      .from(weatherDegreeDaysTable)
+      .where(
+        and(
+          eq(weatherDegreeDaysTable.isOfficial, true),
+          inArray(weatherDegreeDaysTable.stationKey as any, uniqueStationKeys)
+        )
+      );
 
     if (degreeRows.length === 0) {
-      res.json({ synced: 0, provinces: [], message: "MGM pool henüz dolu değil, lütfen bekleyin" }); return;
+      res.json({ synced: 0, provinces: [], message: "Bu istasyonlar için resmi MGM verisi bulunamadı. Önce Excel import yapın." }); return;
     }
 
-    // stationCode → bu istasyonu kullanan tüm şehir mapping'leri
+    // stationKey → bu istasyonu kullanan tüm şehir mapping'leri
     const stationToCities = new Map<string, CityMapping[]>();
     for (const mapping of cityMappings) {
-      const arr = stationToCities.get(mapping.stationCode) ?? [];
+      const arr = stationToCities.get(mapping.stationKey) ?? [];
       arr.push(mapping);
-      stationToCities.set(mapping.stationCode, arr);
+      stationToCities.set(mapping.stationKey, arr);
     }
 
-    // 4. Sadece isOfficial=false, bu şirkete ait hesaplanmış kayıtları sil
-    //    Resmi kayıtlar (isOfficial=true) hiçbir koşulda silinmez.
+    // 4. Sadece isOfficial=false, bu şirkete ait eski hesaplanmış kayıtları sil
     const provinceList = [...new Set(cityMappings.map(m => m.il))];
     await db
       .delete(weatherDegreeDaysTable)
@@ -532,17 +538,18 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
         )
       );
 
-    // 5. Her degree satırı × bu istasyonu kullanan her şehir eşleşmesi için kayıt oluştur
+    // 5. Her resmi degree satırı × bu istasyonu kullanan her şehir eşleşmesi için kayıt oluştur
     type WDDInsert = typeof weatherDegreeDaysTable.$inferInsert;
     const toInsert: WDDInsert[] = [];
     for (const degreeRow of degreeRows) {
-      const mappings = stationToCities.get(degreeRow.stationCode) ?? [];
+      const sk = degreeRow.stationKey;
+      const mappings = sk ? stationToCities.get(sk) ?? [] : [];
       for (const mapping of mappings) {
         toInsert.push({
           companyId,
           province: mapping.il,
           district: null,
-          stationCode: mapping.stationCode,
+          stationCode: degreeRow.stationCode,
           stationName: mapping.stationName,
           stationNote: mapping.fallbackNote,
           date: `${degreeRow.year}-${String(degreeRow.month).padStart(2, "0")}`,
@@ -556,7 +563,7 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
           avgTemperature: null,
           source: "mgm",
           isOfficial: false,
-          dataMethod: "calculated_daily",
+          dataMethod: "official_monthly",
         });
       }
     }
@@ -576,7 +583,7 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
     res.json({
       synced: inserted,
       provinces: provinceList,
-      stations: uniqueStationCodes.length,
+      stations: uniqueStationKeys.length,
       message: `${provinceList.join(", ")} için ${inserted} aylık HDD/CDD kaydı aktarıldı${fallbackMsg}${unmatchedMsg}`,
     });
   } catch (err) {

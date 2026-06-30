@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable } from "@workspace/db";
 import { eq, and, ne, sql } from "drizzle-orm";
-import { requireAuth } from "../middlewares/auth.js";
+import { requireAuth, requireAdmin } from "../middlewares/auth.js";
 import { parseIlIlce } from "../services/mgm-stations-data.js";
 import { toStationKey, lookupOfficialByStationKey, lookupOfficialWeatherDegreeDay, lookupStationKeyByLocation } from "../services/mgm-sync.js";
 
@@ -134,6 +134,8 @@ router.get("/consumption", requireAuth, async (req, res) => {
         hdd: consumptionTable.hdd,
         cdd: consumptionTable.cdd,
         notes: consumptionTable.notes,
+        weatherStationName: consumptionTable.weatherStationName,
+        weatherStationNote: consumptionTable.weatherStationNote,
         createdAt: consumptionTable.createdAt,
       })
       .from(consumptionTable)
@@ -227,27 +229,24 @@ router.post("/consumption", requireAuth, async (req, res) => {
       }
     }
 
-    const result = await db.execute(sql`
-      INSERT INTO consumption
-        (company_id, meter_id, year, month, kwh, tep, co2, hdd, cdd, notes)
-      VALUES
-        (${meter.companyId}, ${meter.id}, ${yr}, ${mo},
-         ${kwhVal}, ${tepVal}, ${co2Val},
-         ${hddVal}, ${cddVal}, ${notes || null})
-      RETURNING
-        id,
-        company_id   AS "companyId",
-        meter_id     AS "meterId",
-        year, month, kwh, tep, co2, hdd, cdd, notes,
-        created_at   AS "createdAt"
-    `);
-    const record = result.rows[0] as Record<string, unknown>;
+    const [record] = await db.insert(consumptionTable).values({
+      companyId: meter.companyId,
+      meterId: meter.id,
+      year: yr,
+      month: mo,
+      kwh: kwhVal,
+      tep: tepVal,
+      co2: co2Val,
+      hdd: hddVal,
+      cdd: cddVal,
+      notes: notes || null,
+      weatherStationName: weatherStationName ?? null,
+      weatherStationNote: weatherStationNote ?? null,
+    }).returning();
 
     res.status(201).json({
       ...record,
       meterName: meter.name,
-      weatherStationName,
-      weatherStationNote,
       weatherDataMethod,
     });
   } catch (err) {
@@ -403,6 +402,89 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
     }
 
     res.json({ imported, total: rows.length, errors });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// POST /api/admin/consumption/refresh-weather — Mevcut tüketim kayıtlarının HDD/CDD'sini yenile
+router.post("/admin/consumption/refresh-weather", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId } = req.user!;
+    const dryRun = req.body?.dryRun === true;
+
+    // superadmin body.companyId ile hedef şirketi belirleyebilir
+    let targetCompanyId: number | null = sessionCompanyId;
+    if (role === "superadmin" && req.body?.companyId) {
+      targetCompanyId = parseInt(req.body.companyId);
+    }
+
+    // Tüm tüketim kayıtlarını sayaç şehriyle birlikte çek
+    const baseQuery = db
+      .select({
+        id: consumptionTable.id,
+        year: consumptionTable.year,
+        month: consumptionTable.month,
+        hdd: consumptionTable.hdd,
+        city: metersTable.city,
+        meterCompanyId: metersTable.companyId,
+      })
+      .from(consumptionTable)
+      .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id));
+
+    const records = targetCompanyId !== null
+      ? await baseQuery.where(eq(metersTable.companyId, targetCompanyId))
+      : await baseQuery;
+
+    let updated = 0;
+    let noData = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (const rec of records) {
+      if (!rec.city) { skipped++; continue; }
+      try {
+        const mgmResult = await autoLookupHddCdd(rec.city, rec.year, rec.month);
+
+        if (dryRun) {
+          if (mgmResult) updated++;
+          else noData++;
+          continue;
+        }
+
+        if (mgmResult) {
+          await db.update(consumptionTable).set({
+            hdd: mgmResult.hdd,
+            cdd: mgmResult.cdd,
+            weatherStationName: mgmResult.stationName,
+            weatherStationNote: mgmResult.stationNote ?? null,
+          }).where(eq(consumptionTable.id, rec.id));
+          updated++;
+        } else {
+          // Resmi MGM verisi yok — hdd/cdd null yap, ondalıklı fallback kalmasın
+          await db.update(consumptionTable).set({
+            hdd: null,
+            cdd: null,
+            weatherStationName: null,
+            weatherStationNote: `Bu dönem (${rec.year}/${rec.month}) ve lokasyon ("${rec.city}") için resmi MGM HDD/CDD verisi bulunamadı.`,
+          }).where(eq(consumptionTable.id, rec.id));
+          noData++;
+        }
+      } catch (err: any) {
+        errors.push(`id=${rec.id}: ${err?.message ?? err}`);
+      }
+    }
+
+    res.json({
+      message: dryRun ? "Kuru çalışma tamamlandı" : "Hava durumu yenileme tamamlandı",
+      dryRun,
+      total: records.length,
+      updated,
+      noData,
+      skipped,
+      errors: errors.slice(0, 20),
+    });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });

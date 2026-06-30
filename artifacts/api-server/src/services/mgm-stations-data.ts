@@ -802,11 +802,21 @@ function normalizeTr(s: string): string {
 // "İl / İlçe" veya "İl" formatını parse et
 export function parseIlIlce(location: string): { il: string; ilce: string | null } {
   const slash = location.indexOf("/");
-  if (slash === -1) return { il: location.trim(), ilce: null };
-  return {
-    il: location.slice(0, slash).trim(),
-    ilce: location.slice(slash + 1).trim() || null,
-  };
+  if (slash !== -1) {
+    // "İl / İlçe" format
+    return {
+      il: location.slice(0, slash).trim(),
+      ilce: location.slice(slash + 1).trim() || null,
+    };
+  }
+  const comma = location.indexOf(",");
+  if (comma !== -1) {
+    // "İlçe, İl" format (ör: "Edremit, Van", "Tatvan, Bitlis")
+    const ilce = location.slice(0, comma).trim() || null;
+    const il = location.slice(comma + 1).trim();
+    return { il, ilce };
+  }
+  return { il: location.trim(), ilce: null };
 }
 
 // İl + ilçe'ye göre istasyon bul; ilçe uyuşmazsa il bazında fallback döner.

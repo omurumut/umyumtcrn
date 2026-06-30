@@ -192,7 +192,7 @@ export default function Consumption() {
   function openEdit(r: any) {
     const m = (allMeters ?? []).find(m => m.id === r.meterId);
     setEditingId(r.id);
-    setMgmStation(r.weatherStationName ? { name: r.weatherStationName, note: r.weatherStationNote ?? null } : null);
+    setMgmStation(r.weatherStationName ? { name: r.weatherStationName, note: r.weatherStationNote ?? null, dataMethod: "official_monthly" } : null);
     setFormEnergySource(m?.energySourceId?.toString() ?? "");
     setFormSubUnit(m?.subUnitId?.toString() ?? "");
     setForm({ meterId: r.meterId.toString(), year: r.year.toString(), month: r.month.toString(), kwh: r.kwh.toString(), tep: r.tep.toString(), co2: r.co2.toString(), hdd: r.hdd?.toString() ?? "", cdd: r.cdd?.toString() ?? "", notes: r.notes ?? "" });
