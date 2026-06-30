@@ -1,0 +1,62 @@
+Mevcut çalışan yapıyı bozma. Gereksiz refactor yapma. Önce sadece tanı koy.
+
+Sorun:
+Sadece Ağrı / Doğubeyazıt değil, farklı il ve ilçelerde de yeni tüketim kaydı girerken HDD/CDD verisi gelmiyor. Bu nedenle sorun tekil MGM station mapping değil, genel MGM lookup veya frontend tüketim formu akışında olabilir.
+
+Lütfen aşağıdaki kontrolleri sırayla yap ve tablo halinde raporla:
+
+1. Yeni oluşturulan sayaçlarda lokasyon verisi DB’ye nasıl kaydediliyor?
+   - meter id
+   - name
+   - city
+   - province varsa
+   - district varsa
+   - company_id
+   - sub_unit_id
+   - created_at
+   Özellikle yeni oluşturulan Ağrı / Doğubeyazıt motorin sayacını kontrol et.
+
+2. Frontend tüketim formunda sayaç seçilince MGM lookup endpoint’ine hangi parametrelerle istek atılıyor?
+   - city mi gönderiliyor?
+   - province/district mi gönderiliyor?
+   - year/month doğru gönderiliyor mu?
+   - URL encode doğru mu?
+
+3. Backend MGM lookup endpoint response’unu en az 5 gerçek sayaç lokasyonu için test et:
+   - Edremit, Van
+   - Tatvan, Bitlis
+   - Ağrı Merkez, Ağrı
+   - Iğdır Merkez, Iğdır
+   - Doğubeyazıt, Ağrı
+   Her biri için 2024 Ocak, 2025 Ocak ve 2026 Ocak test et.
+
+4. Her test için şu tabloyu ver:
+   - request URL
+   - stationFound
+   - stationName
+   - weatherDataMethod
+   - hdd
+   - cdd
+   - message
+
+5. weather_degree_days tablosunda aynı lokasyonlar için 2024 ve 2025 verisi var mı kontrol et.
+   - station_key
+   - station_name
+   - year
+   - month
+   - hdd
+   - cdd
+
+6. Eğer backend doğru HDD/CDD döndürüyorsa ama frontend göstermiyorsa:
+   - frontend response mapping hatasını bul.
+   - tüketim formunda hdd/cdd hangi state alanlarına yazılıyor kontrol et.
+   - eski alan adı / yeni alan adı uyuşmazlığı varsa düzeltme öner.
+
+7. Eğer backend de hdd/cdd döndürmüyorsa:
+   - lookup query’sinde station_key / station_name / city eşleşme hatasını bul.
+   - yeni sayaç city formatı ile mgm_station_mappings formatını karşılaştır.
+   - sadece tanı koy; kod değişikliği yapmadan önce raporla.
+
+8. Multi-tenant companyId ayrımını koru.
+9. Migration veya db push çalıştırma.
+10. Kod değişikliği yapma; önce sadece kök neden raporu ver.
