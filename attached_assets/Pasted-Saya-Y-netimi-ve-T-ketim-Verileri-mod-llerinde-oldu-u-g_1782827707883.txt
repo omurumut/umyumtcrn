@@ -1,0 +1,90 @@
+Sayaç Yönetimi ve Tüketim Verileri modüllerinde olduğu gibi, Enerji Kullanım Grupları modülüne ve Değişken Yönetimi modülünün Değer Girişi sekmesine toplu içeri aktarma / dışarı aktarma özellikleri eklemek istiyorum.
+
+Önemli UX kuralı:
+Mevcut modüllerde şablon, ana ekrandan ayrı bir buton olarak değil, “Toplu İçeri Aktar” penceresinin içinden indiriliyor. Yeni geliştirilecek modüllerde de aynı davranış korunmalı.
+
+Lütfen önce mevcut Sayaç Yönetimi ve Tüketim Verileri modüllerindeki import/export mimarisini ve modal yapısını incele. Aynı kullanıcı deneyimiyle aşağıdaki geliştirmeleri yap.
+
+1. Enerji Kullanım Grupları modülü
+
+Ana ekrana şu butonları ekle:
+- Dışarı Aktar
+- Toplu İçeri Aktar
+
+Toplu İçeri Aktar penceresi içinde şunlar olsun:
+- Şablon İndir
+- Dosya Seç
+- İçeri Aktar
+- Satır bazlı başarı/hata sonucu
+
+Enerji kullanım grubu import şablonu şu alanları içersin:
+- unit_name
+- sub_unit_name
+- energy_source_name
+- group_name
+- description
+- is_active
+
+Kurallar:
+- Kayıtlar company_id bazında izole olmalı.
+- Kullanıcı sadece kendi şirketine ait birim, alt birim ve enerji kaynaklarıyla eşleşen kayıtları içeri aktarabilmeli.
+- Aynı company_id + sub_unit + energy_source + group_name için duplicate kayıt oluşturulmamalı.
+- Eşleşmeyen birim, alt birim veya enerji kaynağı varsa satır bazlı hata dönmeli.
+- Kısmi başarı desteklenmeli: geçerli satırlar kaydedilsin, hatalı satırlar raporlansın.
+- Admin tüm şirket kapsamındaki kayıtları, standart kullanıcı sadece yetkili olduğu birim kapsamındaki kayıtları dışarı aktarabilmeli.
+- Dışarı aktarım mevcut filtreleri dikkate almalı.
+
+2. Değişken Yönetimi / Değer Girişi sekmesi
+
+Değer Girişi sekmesine şu butonları ekle:
+- Dışarı Aktar
+- Toplu İçeri Aktar
+
+Toplu İçeri Aktar penceresi içinde şunlar olsun:
+- Şablon İndir
+- Dosya Seç
+- İçeri Aktar
+- Satır bazlı başarı/hata sonucu
+
+Değişken değer girişi import şablonu şu alanları içersin:
+- variable_name
+- unit_name
+- sub_unit_name
+- year
+- month
+- value
+- note
+
+Kurallar:
+- HDD/CDD gibi isSystemVariable=true olan sistem değişkenleri import edilememeli.
+- Sadece manuel yönetilen değişkenler için değer girişi yapılabilmeli.
+- year ve month zorunlu olmalı.
+- month 1-12 arasında olmalı.
+- value sayısal olmalı.
+- Aynı company_id + variable + sub_unit + year + month için duplicate kayıt oluşturulmamalı.
+- Aynı kayıt tekrar import edilirse güncelleme mi yapılacak yoksa hata mı verilecek mevcut tüketim import mantığına göre tutarlı davran.
+- Standart kullanıcı sadece yetkili olduğu birim/alt birim için veri import edebilmeli.
+- Admin tüm şirket kapsamındaki değişken değerlerini import/export edebilmeli.
+- Hatalı satırlar satır numarası ve açıklama ile kullanıcıya gösterilmeli.
+- Kısmi başarı desteklenmeli.
+
+3. UI/UX kuralları
+
+- Sayaç Yönetimi ve Tüketim Verileri modüllerindeki mevcut import/export buton tasarımını ve modal yapısını yeniden kullan.
+- Ana ekrana ayrıca “Şablon İndir” butonu ekleme.
+- Şablon indirme sadece “Toplu İçeri Aktar” modal/penceresi içinde olsun.
+- Kullanıcı deneyimi tüm modüllerde tutarlı olsun.
+- Import sonrası başarı/hata özeti gösterilsin.
+- Büyük dosyalarda sayfanın kilitlenmemesi için mevcut import yaklaşımı neyse onu takip et.
+
+4. Teknik kurallar
+
+- Önce mevcut import/export servislerini ve helper fonksiyonlarını incele.
+- Mümkünse ortak helper yapısını kullan, kopya kod oluşturma.
+- Backend validasyonu frontend validasyonundan bağımsız olarak kesin yapılmalı.
+- Multi-tenant izolasyon bozulmamalı.
+- Mevcut sayaç, tüketim, değişken ve EnPI akışları bozulmamalı.
+- Kod değişikliğinden sonra typecheck ve build çalıştır.
+
+Amaç:
+Excel tabanlı kurumsal veri girişini kolaylaştırmak, kullanıcıların enerji kullanım gruplarını ve manuel değişken değerlerini toplu şekilde yönetebilmesini sağlamak.
