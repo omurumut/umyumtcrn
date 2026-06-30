@@ -1,0 +1,82 @@
+Sorun hâlâ kullanıcı ekranında devam ediyor. API testlerinde Erciş/Tatvan official_monthly dönüyor ama gerçek uygulama ekranında MGM verisi bulunamadı veya yanlış değer görünüyor.
+
+Yeni kod yazmadan önce lütfen gerçek frontend akışını debug et.
+
+1. Benim ekranda seçtiğim gerçek sayaç/tüketim kaydını tespit et:
+   - meter_id
+   - meter.name
+   - meter.city
+   - meter.district
+   - meter.province varsa
+   - consumption.id
+   - consumption.year
+   - consumption.month
+   - consumption.hdd
+   - consumption.cdd
+   - consumption.weather_station_name
+   - consumption.weather_station_note
+
+2. Tüketim formunda il/ilçe seçilince frontend hangi endpoint’i çağırıyor kontrol et:
+   - GET /api/mgm/lookup mu?
+   - GET /api/mgm/lookup-by-location mı?
+   - /api/weather-degree-days/... gibi başka endpoint mi?
+   - Yoksa HDD/CDD frontend içinde mi hesaplanıyor?
+
+3. Browser Network karşılığıyla aynı isteği terminalden test et.
+   Örnek:
+   - frontend hangi URL’i çağırıyorsa aynısını curl ile çalıştır.
+   - query parametrelerini birebir kullan:
+     city, district, province, year, month
+
+4. Eğer frontend şu formatta gönderiyorsa düzelt:
+   - city=Erciş
+   - district boş
+   - province boş
+
+   Doğru lookup için backend’e şu bilgiler gitmeli:
+   - province=Van
+   - district=Erciş
+   veya
+   - city=Erciş, Van
+
+5. Sayaç lokasyonu kaydını kontrol et:
+   - Sayaç oluşturulurken city alanına sadece “Erciş” yazılmış olabilir.
+   - Eğer city sadece “Erciş” ise backend bunu Van olarak bilemez.
+   - Sayaçta province/district ayrı kolonlar varsa onları kullan.
+   - Yoksa city alanında “Erciş, Van” veya “Van / Erciş” formatı standardize edilmeli.
+
+6. Consumption list/detail ekranı hangi değeri gösteriyor kontrol et:
+   - API lookup sonucu mu?
+   - consumption tablosunda kayıtlı eski hdd/cdd mi?
+   - Eğer eski consumption.hdd/cdd gösteriliyorsa refresh-weather endpointini ilgili companyId ile tekrar çalıştır.
+
+7. Refresh-weather endpointini gerçek şirket için çalıştır:
+   - superadmin isen body içinde companyId gönder.
+   - kontrol_admin ile çalıştırırsan kendi companyId otomatik kullanılmalı.
+   - Sonuçta ilgili tüketim kaydının hdd/cdd/weather_station_name/weather_station_note alanı değişiyor mu doğrula.
+
+8. Şu testleri gerçek UI’daki aynı parametrelerle yap:
+   - Van / Erciş / 2024 Ocak
+   - Bitlis / Tatvan / 2024 Ocak
+   - Edremit, Van / 2026 Ocak
+
+9. Eğer API curl doğru ama UI yanlışsa:
+   - frontend eski endpoint kullanıyor veya eski state gösteriyor demektir.
+   - frontend build’i yenile.
+   - API response alan adları ile frontend’in beklediği alan adlarını karşılaştır:
+     weatherStationName
+     weatherStationNote
+     weatherDataMethod
+     dataMethod
+     hdd
+     cdd
+
+10. Bana şu tabloyu raporla:
+   - UI’da seçilen lokasyon
+   - frontend’in çağırdığı endpoint
+   - gönderilen query/body
+   - backend response
+   - ekranda görünen değer
+   - consumption DB’de kayıtlı değer
+
+Bu tabloyu görmeden yeni özellik veya UI geliştirmesi yapma.
