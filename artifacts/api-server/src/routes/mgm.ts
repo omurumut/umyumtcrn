@@ -97,27 +97,84 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
         return;
       }
 
-      // İlçe istasyonu bulunamadı — il merkezi fallback bilgisini hazırla (otomatik kullanma)
-      const ilFallback = await lookupStationKeyByLocation(il, null);
-      let fallbackHasData = false;
-      if (ilFallback) {
-        const ilData = await lookupOfficialByStationKey(ilFallback.stationKey, yr, mo);
-        fallbackHasData = !!ilData;
+      // İlçe istasyonu bulunamadı — il merkezi çok-adımlı otomatik fallback
+      // Adım 1: mgm_station_mappings → il merkezi
+      const ilFallbackMapping = await lookupStationKeyByLocation(il, null);
+      if (ilFallbackMapping) {
+        const ilData = await lookupOfficialByStationKey(ilFallbackMapping.stationKey, yr, mo);
+        if (ilData) {
+          res.json({
+            stationFound: true,
+            weatherDataMethod: "official_monthly",
+            stationName: ilFallbackMapping.stationName ?? il,
+            matchType: "province_center",
+            matchScore: null,
+            matchedStationName: ilFallbackMapping.stationName ?? null,
+            originalCity: requestedCity,
+            year: yr, month: mo,
+            hdd: ilData.hdd, cdd: ilData.cdd,
+            note: `Seçilen ilçe (${ilce}) için MGM gün-derece verisi bulunamadı. HDD/CDD değerleri ${il} Merkez verisine göre alınmıştır. Gerekirse manuel düzenleyebilirsiniz.`,
+            usedProvinceFallback: true,
+            fallbackStation: null,
+            dataMethod: "official_monthly",
+          });
+          return;
+        }
+      }
+      // Adım 2: station_key slug ile il merkezi
+      const ilKey = toStationKey(il, null);
+      const slugData = await lookupOfficialByStationKey(ilKey, yr, mo);
+      if (slugData) {
+        res.json({
+          stationFound: true,
+          weatherDataMethod: "official_monthly",
+          stationName: slugData.stationName ?? il,
+          matchType: "province_center",
+          matchScore: null,
+          matchedStationName: slugData.stationName ?? null,
+          originalCity: requestedCity,
+          year: yr, month: mo,
+          hdd: slugData.hdd, cdd: slugData.cdd,
+          note: `Seçilen ilçe (${ilce}) için MGM gün-derece verisi bulunamadı. HDD/CDD değerleri ${il} Merkez verisine göre alınmıştır. Gerekirse manuel düzenleyebilirsiniz.`,
+          usedProvinceFallback: true,
+          fallbackStation: null,
+          dataMethod: "official_monthly",
+        });
+        return;
+      }
+      // Adım 3: province text match
+      const provData = await lookupOfficialWeatherDegreeDay(il, yr, mo);
+      if (provData) {
+        res.json({
+          stationFound: true,
+          weatherDataMethod: "official_monthly",
+          stationName: provData.stationName ?? il,
+          matchType: "province_center",
+          matchScore: null,
+          matchedStationName: provData.stationName ?? null,
+          originalCity: requestedCity,
+          year: yr, month: mo,
+          hdd: provData.hdd, cdd: provData.cdd,
+          note: `Seçilen ilçe (${ilce}) için MGM gün-derece verisi bulunamadı. HDD/CDD değerleri ${il} Merkez verisine göre alınmıştır. Gerekirse manuel düzenleyebilirsiniz.`,
+          usedProvinceFallback: true,
+          fallbackStation: null,
+          dataMethod: "official_monthly",
+        });
+        return;
       }
       res.json({
         stationFound: false,
-        weatherDataMethod: "district_station_not_found",
+        weatherDataMethod: "no_official_data",
         stationName: null,
         matchType: null,
         matchedStationName: null,
         originalCity: requestedCity,
         year: yr, month: mo,
         hdd: null, cdd: null,
-        note: "Girilen ilçe için MGM merkezi bulunamadı. İl merkezi alternatif olarak kullanılabilir.",
-        fallbackStation: ilFallback
-          ? { stationKey: ilFallback.stationKey, stationName: ilFallback.stationName, hasData: fallbackHasData }
-          : null,
-        dataMethod: "district_station_not_found",
+        note: "Bu lokasyon için MGM gün-derece verisi bulunamadı. HDD/CDD değerlerini manuel girebilirsiniz.",
+        usedProvinceFallback: false,
+        fallbackStation: null,
+        dataMethod: "no_official_data",
       });
       return;
     }

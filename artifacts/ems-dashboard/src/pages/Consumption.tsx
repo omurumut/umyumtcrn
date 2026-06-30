@@ -77,7 +77,7 @@ export default function Consumption() {
     matchType?: string | null;
     matchedStationName?: string | null;
     stationFound?: boolean;
-    fallbackStation?: { stationKey: string; stationName: string | null; hasData?: boolean } | null;
+    usedProvinceFallback?: boolean;
   } | null>(null);
 
   const { unitId } = useUnit();
@@ -196,7 +196,7 @@ export default function Consumption() {
           matchType: data.matchType ?? null,
           matchedStationName: data.matchedStationName ?? null,
           stationFound: data.stationFound ?? false,
-          fallbackStation: data.fallbackStation ?? null,
+          usedProvinceFallback: data.usedProvinceFallback ?? false,
         });
       }
     } catch {}
@@ -648,68 +648,34 @@ export default function Consumption() {
               <div className="space-y-1.5">
                 {mgmStation ? (
                   <div className={`rounded-md border px-3 py-2 space-y-1 ${
-                    mgmStation.dataMethod === "official_monthly"
+                    mgmStation.dataMethod === "official_monthly" && !mgmStation.usedProvinceFallback
                       ? "border-emerald-600/30 bg-emerald-950/20"
-                      : mgmStation.dataMethod === "no_official_data"
-                      ? "border-amber-600/30 bg-amber-950/20"
-                      : mgmStation.dataMethod === "district_station_not_found"
-                      ? "border-orange-600/30 bg-orange-950/20"
-                      : "border-destructive/30 bg-destructive/10"
+                      : mgmStation.dataMethod === "official_monthly" && mgmStation.usedProvinceFallback
+                      ? "border-blue-600/30 bg-blue-950/20"
+                      : "border-amber-600/30 bg-amber-950/20"
                   }`}>
-                    {/* official_monthly */}
-                    {mgmStation.dataMethod === "official_monthly" && (
+                    {/* Resmi MGM verisi — ilçe tam eşleşti */}
+                    {mgmStation.dataMethod === "official_monthly" && !mgmStation.usedProvinceFallback && (
                       <div className="flex items-center gap-1.5 text-xs flex-wrap">
                         <MapPin className="h-3 w-3 shrink-0 text-emerald-400" />
-                        <span className="font-medium text-emerald-300">Resmi MGM HDD/CDD verisi alındı:</span>
+                        <span className="font-medium text-emerald-300">MGM HDD/CDD verisi alındı:</span>
                         <span className="text-foreground/80">{mgmStation.name}</span>
-                        <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-emerald-600 text-emerald-400 ml-1">Resmi Aylık</Badge>
                       </div>
                     )}
-                    {/* no_official_data */}
-                    {mgmStation.dataMethod === "no_official_data" && (
+                    {/* Resmi MGM verisi — il merkezi fallback */}
+                    {mgmStation.dataMethod === "official_monthly" && mgmStation.usedProvinceFallback && (
+                      <div className="flex items-start gap-1.5 text-xs text-blue-300">
+                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
+                        <span>{mgmStation.note}</span>
+                      </div>
+                    )}
+                    {/* Veri bulunamadı */}
+                    {mgmStation.dataMethod !== "official_monthly" && (
                       <div className="flex items-start gap-1.5 text-xs text-amber-400">
                         <Info className="h-3 w-3 shrink-0 mt-0.5" />
                         <span>
-                          {mgmStation.name
-                            ? <>MGM merkezi bulundu (<strong>{mgmStation.name}</strong>) ancak seçilen dönem için resmi HDD/CDD verisi yok.</>
-                            : "MGM merkezi bulundu ancak seçilen dönem için resmi HDD/CDD verisi yok."}
+                          {mgmStation.note ?? "Seçilen dönem için resmi MGM HDD/CDD verisi bulunamadı. HDD/CDD değerlerini manuel girebilirsiniz."}
                         </span>
-                      </div>
-                    )}
-                    {/* district_station_not_found */}
-                    {mgmStation.dataMethod === "district_station_not_found" && (
-                      <div className="flex items-start gap-1.5 text-xs text-orange-400">
-                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
-                        <span>
-                          Girilen ilçe için MGM merkezi bulunamadı. İl merkezi alternatif olarak önerildi ancak otomatik kullanılmadı.
-                          {mgmStation.fallbackStation?.stationName && (
-                            <> Öneri: <strong>{mgmStation.fallbackStation.stationName}</strong></>
-                          )}
-                        </span>
-                      </div>
-                    )}
-                    {/* station_not_found */}
-                    {mgmStation.dataMethod === "station_not_found" && (
-                      <div className="flex items-start gap-1.5 text-xs text-destructive">
-                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
-                        <span>Sayaç lokasyonu için MGM merkezi bulunamadı.</span>
-                      </div>
-                    )}
-                    {/* alias / fuzzy bilgi mesajı */}
-                    {(mgmStation.matchType === "alias" || mgmStation.matchType === "fuzzy") && mgmStation.dataMethod === "official_monthly" && (
-                      <div className="flex items-start gap-1.5 text-xs text-blue-400/90">
-                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
-                        <span>
-                          Girilen sayaç lokasyonu MGM kayıtlarında farklı yazımla eşleşti: <strong>{mgmStation.matchedStationName ?? mgmStation.name}</strong>
-                          {mgmStation.matchType === "fuzzy" && mgmStation.dataMethod === "official_monthly" && <> (fuzzy)</>}.
-                        </span>
-                      </div>
-                    )}
-                    {/* genel not */}
-                    {mgmStation.note && mgmStation.matchType !== "alias" && mgmStation.matchType !== "fuzzy" && (
-                      <div className="flex items-start gap-1.5 text-xs text-muted-foreground/80">
-                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
-                        <span>{mgmStation.note}</span>
                       </div>
                     )}
                   </div>

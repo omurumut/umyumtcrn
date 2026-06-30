@@ -1,0 +1,39 @@
+HDD/CDD lokasyon eşleştirme mantığını sadeleştir ve kullanıcı dostu hale getir.
+
+Amaç:
+HDD/CDD otomatik verisi önce seçilen il + ilçe eşleşmesine göre alınsın.
+Eğer MGM verisinde seçilen ilçe tam eşleşmiyorsa, sistem otomatik olarak aynı ilin merkez verisine düşsün.
+Kullanıcı gereksiz uyarı/onay akışlarıyla yorulmasın.
+HDD/CDD değerleri tüketim girişinde manuel düzenlenebilir olsun.
+
+Kapsam:
+- Önce mevcut HDD/CDD lokasyon eşleştirme kodunu analiz et.
+- Gereksiz schema değişikliği yapma.
+- Migration oluşturma.
+- Veri silme.
+- Import/export scriptlerine dokunma.
+- Public/internal demo verilerine dokunma.
+
+İstenen davranış:
+1. HDD/CDD verisi bulunurken önce seçilen il + ilçe ile MGM station mapping aranacak.
+2. İl + ilçe tam eşleşirse o ilçenin HDD/CDD değeri kullanılacak.
+3. İlçe eşleşmezse aynı ilin merkez station kaydı otomatik kullanılacak.
+4. İl merkezi fallback kullanılırsa kullanıcıya kayıt sırasında bilgi mesajı gösterilecek:
+   "Seçilen ilçe için MGM gün-derece verisi bulunamadı. HDD/CDD değerleri [İl] Merkez verisine göre alınmıştır. Gerekirse manuel düzenleyebilirsiniz."
+5. Bu mesaj hata/blocking validation olmamalı; kayıt engellenmemeli.
+6. Tüketim girişinde HDD ve CDD alanları manuel düzenlenebilir olmalı.
+7. Kullanıcı manuel HDD/CDD girerse sistem bu değerleri korumalı, otomatik değerle ezmemeli.
+8. POST /api/consumption için:
+   - hdd/cdd değerleri request içinde geldiyse onları kullan.
+   - hdd/cdd gelmediyse otomatik MGM değerini bul.
+   - ilçe eşleşmezse il merkezi fallback kullan.
+9. POST /api/consumption/batch için de aynı mantık geçerli olsun.
+10. Frontend’de gereksiz “sayaç lokasyonu alt birimden farklı” gibi göz yoran uyarılar kaldırılmalı veya sadeleştirilmeli.
+11. Kayıt sonrası response içinde hangi station kullanıldıysa kısa bilgi dönebiliyorsa dönsün.
+12. Typecheck ve build çalıştır.
+13. Sonunda değişen dosyaları ve yeni davranışı kısa özetle.
+
+Basit kural:
+- İlçe eşleşirse ilçe verisi
+- İlçe eşleşmezse il merkezi verisi
+- Kullanıcı isterse manuel düzeltme
