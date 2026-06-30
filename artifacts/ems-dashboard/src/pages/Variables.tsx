@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Pencil, Trash2, Variable, BarChart3, CloudSun, RefreshCw } from "lucide-react";
+import { Plus, Pencil, Trash2, Variable, BarChart3 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -38,7 +38,6 @@ const apiMutate = (token: string | null, method: string, url: string, body?: unk
 // ─── Category / Type labels ──────────────────────────────────────────────────
 
 const CATEGORY_LABELS: Record<string, string> = {
-  climate: "İklim",
   operational: "Operasyonel",
   production: "Üretim",
   calculated: "Hesaplanan",
@@ -46,8 +45,6 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  weather_auto: "Otomatik (İklim)",
-  weather_manual: "Manuel (İklim)",
   production_manual: "Manuel (Üretim)",
   operation_manual: "Manuel (Operasyon)",
   calculated: "Hesaplanan",
@@ -103,24 +100,6 @@ interface VariableValue {
   unitName: string | null;
   subUnitName: string | null;
   meterName: string | null;
-}
-
-interface WeatherDegreeDay {
-  id: number;
-  province: string;
-  district: string | null;
-  stationName: string | null;
-  date: string;
-  year: number | null;
-  month: number | null;
-  periodType: string;
-  hdd: number;
-  cdd: number;
-  avgTemperature: number | null;
-  source: string;
-  isOfficial: boolean;
-  dataMethod: string;
-  stationNote: string | null;
 }
 
 interface SubUnit { id: number; name: string; }
@@ -197,6 +176,7 @@ function VariablesTab() {
   };
 
   const filtered = (variables ?? []).filter(v => {
+    if (v.isSystemVariable) return false;
     if (filterCategory !== "all" && v.category !== filterCategory) return false;
     if (filterActive === "active" && !v.isActive) return false;
     if (filterActive === "passive" && v.isActive) return false;
@@ -595,7 +575,7 @@ function ValuesTab() {
               >
                 <SelectTrigger className="bg-background"><SelectValue placeholder="Değişken seçin" /></SelectTrigger>
                 <SelectContent>
-                  {(variables ?? []).filter(v => v.isActive).map(v => (
+                  {(variables ?? []).filter(v => v.isActive && !v.isSystemVariable).map(v => (
                     <SelectItem key={v.id} value={String(v.id)}>{v.name}</SelectItem>
                   ))}
                 </SelectContent>
@@ -731,197 +711,6 @@ function ValuesTab() {
   );
 }
 
-// ─── Climate Tab ──────────────────────────────────────────────────────────────
-
-interface SyncResult {
-  synced: number;
-  provinces: string[];
-  stations?: number;
-  message: string;
-}
-
-function ClimateTab() {
-  const { token } = useAuth();
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [filterProvince, setFilterProvince] = useState("all");
-  const [lastSync, setLastSync] = useState<SyncResult | null>(null);
-
-  const { data: climateData, isLoading } = useQuery<WeatherDegreeDay[]>({
-    queryKey: ["weather-degree-days", filterProvince],
-    queryFn: () => {
-      const p = new URLSearchParams();
-      if (filterProvince !== "all") p.set("province", filterProvince);
-      return apiFetch(token, `/api/weather-degree-days?${p}`);
-    },
-    enabled: !!token,
-  });
-
-  const { data: meterList } = useQuery<Meter[]>({
-    queryKey: ["meters"],
-    queryFn: () => apiFetch(token, "/api/meters"),
-    enabled: !!token,
-  });
-
-  const syncMutation = useMutation({
-    mutationFn: () => apiMutate(token, "POST", "/api/weather-degree-days/sync"),
-    onSuccess: (result: SyncResult) => {
-      setLastSync(result);
-      queryClient.invalidateQueries({ queryKey: ["weather-degree-days"] });
-      toast({
-        title: result.synced > 0 ? "Senkronizasyon tamamlandı" : "Senkronizasyon bilgisi",
-        description: result.message,
-      });
-    },
-    onError: (e: Error) => toast({ title: "Senkronizasyon hatası", description: e.message, variant: "destructive" }),
-  });
-
-  const provinces = [...new Set((climateData ?? []).map(d => d.province))].sort();
-  const meterCities = [...new Set((meterList ?? []).map(m => m.city))].sort();
-
-  return (
-    <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3">
-        <Select value={filterProvince} onValueChange={setFilterProvince}>
-          <SelectTrigger className="w-44 bg-background"><SelectValue placeholder="İl filtrele" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Tüm İller</SelectItem>
-            {provinces.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <div className="text-sm text-muted-foreground">
-          {(climateData ?? []).length} kayıt
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          {lastSync && lastSync.synced > 0 && (
-            <span className="text-xs text-teal-400">
-              ✓ {lastSync.provinces.join(", ")} — {lastSync.synced} kayıt
-            </span>
-          )}
-          <Button
-            size="sm"
-            className="bg-teal-600 hover:bg-teal-700"
-            onClick={() => syncMutation.mutate()}
-            disabled={syncMutation.isPending}
-          >
-            <RefreshCw className={`h-4 w-4 mr-1 ${syncMutation.isPending ? "animate-spin" : ""}`} />
-            {syncMutation.isPending ? "Senkronize ediliyor..." : "MGM'den Senkronize Et"}
-          </Button>
-        </div>
-      </div>
-
-      {/* Info banner when empty */}
-      {!isLoading && (climateData ?? []).length === 0 && (
-        <Card className="bg-muted/20 border-border border-dashed">
-          <CardContent className="py-6 flex flex-col items-center gap-3 text-center">
-            <CloudSun className="h-8 w-8 text-teal-400/60" />
-            <div>
-              <p className="text-sm font-medium">İklim verisi henüz yüklenmedi</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {meterCities.length > 0
-                  ? `Sayaçlarınızda ${meterCities.join(", ")} şehirleri var. "MGM'den Senkronize Et" butonuna tıklayarak HDD/CDD verilerini otomatik yükleyin.`
-                  : "Önce sayaç ekleyin, ardından MGM pool'undan iklim verisini senkronize edin."}
-              </p>
-            </div>
-            <Button
-              size="sm"
-              className="bg-teal-600 hover:bg-teal-700"
-              onClick={() => syncMutation.mutate()}
-              disabled={syncMutation.isPending}
-            >
-              <RefreshCw className={`h-4 w-4 mr-1 ${syncMutation.isPending ? "animate-spin" : ""}`} />
-              {syncMutation.isPending ? "Yükleniyor..." : "Şimdi Senkronize Et"}
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Meter → City summary chips */}
-      {meterCities.length > 0 && (climateData ?? []).length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {meterCities.map(city => {
-            const hasData = (climateData ?? []).some(d => d.province.toLowerCase() === city.toLowerCase());
-            return (
-              <Badge key={city} variant="outline" className={`text-xs gap-1 ${hasData ? "border-teal-600 text-teal-400" : "border-muted text-muted-foreground"}`}>
-                <CloudSun className="h-3 w-3" />
-                {city}
-                {hasData ? " ✓" : " —"}
-              </Badge>
-            );
-          })}
-        </div>
-      )}
-
-      <Card className="bg-card border-border">
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-muted-foreground">
-                  <th className="text-left px-4 py-3">İl / İstasyon</th>
-                  <th className="text-left px-4 py-3">Dönem</th>
-                  <th className="text-right px-4 py-3">HDD</th>
-                  <th className="text-right px-4 py-3">CDD</th>
-                  <th className="text-right px-4 py-3">Ort. Sıcaklık</th>
-                  <th className="text-left px-4 py-3">Veri Yöntemi</th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading && Array.from({ length: 5 }).map((_, i) => (
-                  <tr key={i} className="border-b border-border/50">
-                    {Array.from({ length: 6 }).map((_, j) => (
-                      <td key={j} className="px-4 py-3"><Skeleton className="h-4 w-full" /></td>
-                    ))}
-                  </tr>
-                ))}
-                {!isLoading && (climateData ?? []).length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                      İklim verisi bulunamadı. Tüketim girişi yapıldığında HDD/CDD verileri burada görünür.
-                    </td>
-                  </tr>
-                )}
-                {(climateData ?? []).map(d => (
-                  <tr key={d.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
-                    <td className="px-4 py-3">
-                      <div className="font-medium flex items-center gap-1.5">
-                        {d.province}
-                        {d.isOfficial && (
-                          <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-emerald-600 text-emerald-400">Resmi</Badge>
-                        )}
-                      </div>
-                      {d.stationName && <div className="text-xs text-muted-foreground">{d.stationName}</div>}
-                      {!d.stationName && d.district && <div className="text-xs text-muted-foreground">{d.district}</div>}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground text-xs">{d.date}</td>
-                    <td className="px-4 py-3 text-right font-mono text-blue-400">{d.hdd.toFixed(1)}</td>
-                    <td className="px-4 py-3 text-right font-mono text-orange-400">{d.cdd.toFixed(1)}</td>
-                    <td className="px-4 py-3 text-right text-muted-foreground">
-                      {d.avgTemperature != null ? `${d.avgTemperature.toFixed(1)}°C` : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-xs">
-                      {d.dataMethod === "official_monthly" && (
-                        <span className="text-emerald-400">Resmi Aylık MGM</span>
-                      )}
-                      {d.dataMethod === "calculated_daily" && (
-                        <span className="text-teal-400">Günlük Hesaplamalı</span>
-                      )}
-                      {d.dataMethod !== "official_monthly" && d.dataMethod !== "calculated_daily" && (
-                        <span className="text-muted-foreground uppercase">{d.dataMethod}</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Variables() {
@@ -943,9 +732,6 @@ export default function Variables() {
           <TabsTrigger value="values" className="gap-2">
             <BarChart3 className="h-4 w-4" /> Değer Girişi
           </TabsTrigger>
-          <TabsTrigger value="climate" className="gap-2">
-            <CloudSun className="h-4 w-4" /> İklim Verileri
-          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="variables" className="mt-4">
@@ -953,9 +739,6 @@ export default function Variables() {
         </TabsContent>
         <TabsContent value="values" className="mt-4">
           <ValuesTab />
-        </TabsContent>
-        <TabsContent value="climate" className="mt-4">
-          <ClimateTab />
         </TabsContent>
       </Tabs>
     </div>
