@@ -6,6 +6,7 @@
 - [EMS MGM Official Pool](ems-mgm-official-pool.md) — migration 0014; station_key slug pattern; official-only consumption lookup; admin sync endpoint; no Open-Meteo fallback in POST
 - [EMS MGM Station Mapping](ems-mgm-station-mapping.md) — migration 0015 mgm_station_mappings (254 istasyon); Excel import API + CLI; ON CONFLICT predicate must match wdd index exactly
 - [EMS MGM Import Index Gap](ems-mgm-import-index-gap.md) — migration 0014 partial unique index missing in live DB causes ALL import rows to fail silently; fix: CREATE UNIQUE INDEX IF NOT EXISTS before import
+- [EMS MGM Lookup Alias Fuzzy](ems-mgm-lookup-alias.md) — lookupStationKeyByLocation in mgm-sync.ts has 4-step matching: exact→normalized→alias→fuzzy (threshold 0.75, same-province only); "Merkez" district → treated as province center; station_mappings must be imported separately via POST /api/admin/mgm/station-mapping/import-excel
 - [Drizzle Migration When Ordering](ems-drizzle-when-ordering.md) — migrate() skips if folderMillis ≤ max(created_at); new migrations need when > all existing when values
 - [EMS SEU Assessment Module](ems-seu-assessment.md) — seuAssessmentsTable + seuAssessmentItemsTable (migration 0008); analyze endpoint groups consumption by 5 levels; role-based save (unit_official vs admin_review); frontend tabbed UI in components/seu/
 - [EMS EnPG/EnRÇ Module](ems-enpg-module.md) — migration 0009 (when 1782600000000); 4 new tables; GET /api/energy-performance/{seu-items,dataset,variables}; page at /performans-gostergeleri; menu under ISO 50001 group

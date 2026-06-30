@@ -1,0 +1,244 @@
+Mevcut çalışan yapıyı bozma. Gereksiz refactor yapma. Önce mevcut dosya yapısını, MGM import scriptlerini, MGM lookup endpoint’ini ve frontend tüketim formundaki HDD/CDD akışını analiz et.
+
+Amaç:
+1. Projedeki eski `mgm_degree_days_last_10_years_final.xlsx` dosyasını, yeni düzeltilmiş `mgm_degree_days_last_10_years_final_FIXED.xlsx` dosyasıyla güvenli şekilde değiştirmek.
+2. MGM verilerini tekrar import etmek.
+3. MGM lookup eşleşmesine güvenli alias/fuzzy desteği eklemek.
+4. Yanlış il merkezine düşme davranışını engellemek.
+5. Tüketim formunda kullanıcıya doğru MGM eşleşme mesajı göstermek.
+
+Önemli kurallar:
+- Mevcut authentication yapısını değiştirme.
+- Multi-tenant companyId ayrımını koru.
+- Gereksiz refactor yapma.
+- Sadece gerekli dosyalarda değişiklik yap.
+- Migration/db push çalıştırma gerekiyorsa önce raporla, kullanıcı onayı olmadan çalıştırma.
+- Mevcut çalışan tüketim, sayaç, MGM lookup ve refresh-weather akışlarını bozma.
+- Önce analiz ve yedekleme yap, sonra değişiklik uygula.
+
+AŞAMA 1 — Excel dosyasını kontrol et ve değiştir:
+1. Repoda mevcut MGM Excel dosyasının tam konumunu bul:
+   - `mgm_degree_days_last_10_years_final.xlsx`
+   - varsa scripts veya import dosyalarının bu dosyayı nereden okuduğunu tespit et.
+2. Mevcut dosyayı silme. Önce yedekle:
+   - `mgm_degree_days_last_10_years_final_BACKUP.xlsx`
+3. Yeni düzeltilmiş dosyayı projeye ekle:
+   - Kaynak dosya: `mgm_degree_days_last_10_years_final_FIXED.xlsx`
+4. Import scripti eski dosya adını bekliyorsa yeni dosyayı şu isimle kullan:
+   - `mgm_degree_days_last_10_years_final.xlsx`
+5. Dosya değişiminden sonra Excel kolonlarını kontrol et. Şu kolonlar eksiksiz olmalı:
+   - station_key
+   - station_name
+   - province
+   - district
+   - year
+   - month
+   - hdd
+   - cdd
+   - hdd_days
+   - cdd_days
+   - annual_hdd
+   - annual_cdd
+   - source
+   - source_url
+   - is_official
+   - mapping_confidence
+   - mapping_note
+6. Import öncesi Excel veri kalite kontrollerini yap ve raporla:
+   - 2025 ADANA Ocak HDD = 191 mi?
+   - 2025 ADANA Şubat HDD = 243 mi?
+   - 2025 ADANA annual_hdd = 661 mi?
+   - 2025 ADANA annual_cdd = 946 mı?
+   - 2025 VAN Ocak HDD 0 değil mi?
+   - 2025 AĞRI Ocak HDD 0 değil mi?
+   - 2025 TATVAN Ocak HDD 0 değil mi?
+   - 2026 satırları var mı?
+   - 2026 sadece yayımlanmış ayları mı içeriyor, Haziran-Aralık için sahte 0 satır var mı?
+7. Eğer bu kontroller başarısızsa import yapma, rapor ver.
+
+AŞAMA 2 — MGM verisini import et:
+1. Mevcut import scriptini bul ve hangi tabloya yazdığını kontrol et:
+   - weather_degree_days
+   - mgm_station_mappings
+   - varsa ilgili diğer MGM tabloları
+2. Import öncesi mevcut kayıt sayısını raporla:
+   - weather_degree_days toplam kayıt
+   - 2025 kayıt sayısı
+   - 2026 kayıt sayısı
+   - 2025 Ocak HDD=0 olan istasyon sayısı
+3. Import scripti upsert çalışıyorsa mevcut veriyi güvenli şekilde güncelle.
+4. Import scripti hatalı şekilde eski kayıtları çoğaltıyorsa kodu minimal düzelt.
+5. Import sonrası şu kontrolleri raporla:
+   - weather_degree_days toplam kayıt
+   - 2025 kayıt sayısı
+   - 2026 kayıt sayısı
+   - 2025 ADANA Ocak HDD
+   - 2025 VAN Ocak HDD
+   - 2025 AĞRI Ocak HDD
+   - 2025 TATVAN Ocak HDD
+   - 2026 en son hangi aya kadar veri var
+6. 2026’da resmi veri olmayan aylar için hdd/cdd 0 yazma. Veri yoksa kayıt olmamalı veya lookup `no_official_data` dönmeli.
+
+AŞAMA 3 — MGM lookup yardımcı fonksiyonlarını analiz et:
+1. MGM lookup endpoint’ini ve yardımcı fonksiyonlarını bul.
+2. Şu akışı çıkar:
+   - frontend tüketim formu sayaç seçince hangi parametreyi gönderiyor?
+   - backend city/province/district bilgisini nasıl parse ediyor?
+   - station mapping nasıl bulunuyor?
+   - weather_degree_days tablosundan yıl/ay verisi nasıl çekiliyor?
+3. Mevcut davranışı bozmadan aşağıdaki güvenli eşleşme sırasını uygula.
+
+AŞAMA 4 — Güvenli alias/fuzzy eşleşme ekle:
+MGM lookup eşleşmesi şu sırayla çalışsın:
+
+1. Exact eşleşme:
+   - Mevcut exact eşleşme önce çalışsın.
+   - Exact eşleşme varsa davranışı değiştirme.
+   - response içinde `matchType: "exact"` dönebilir.
+
+2. Normalize edilmiş il/ilçe slug eşleşmesi:
+   - Exact yoksa normalize edilmiş slug ile dene.
+   - Türkçe karakter, büyük/küçük harf, boşluk, tire farkları normalize edilsin.
+
+3. Alias desteği:
+   Aşağıdaki varyasyonları destekle:
+   - dogubayazit → dogubeyazit
+   - dogubeyazit → dogubeyazit
+   - doğubayazıt → doğubeyazıt
+   - doğubeyazıt → doğubeyazıt
+
+   Alias eşleşmesi yapılırsa response içinde şu alanları döndür:
+   - matchType: "alias"
+   - matchedStationName
+   - originalCity
+   - normalizedCity
+
+4. Fuzzy matching:
+   - Fuzzy matching en son seçenek olsun.
+   - Fuzzy sadece aynı province/il içinde çalışsın.
+   - Başka ile geçiş yapmasın.
+   - Fuzzy skoru belirli eşik altında ise istasyon bulunamadı dönsün.
+   - Eşik değerini açıkça belirt ve raporla.
+   - Fuzzy eşleşme yapılırsa response içinde:
+     - matchType: "fuzzy"
+     - matchScore
+     - matchedStationName
+     - originalCity
+     - normalizedCity
+     bilgilerini döndür.
+
+AŞAMA 5 — Yanlış il merkezine düşme davranışını düzelt:
+1. Eğer kullanıcı/sayaç lokasyonunda ilçe bilgisi varsa ve ilçe istasyonu bulunamazsa sistem otomatik olarak il merkezini doğrudan kullanmasın.
+2. Bu durumda response şu mantıkta dönsün:
+   - stationFound: false
+   - weatherDataMethod: "district_station_not_found"
+   - message: "Girilen ilçe için MGM merkezi bulunamadı. İl merkezi alternatif olarak kullanılabilir."
+   - fallbackStation: varsa il merkezi bilgisi
+3. FallbackStation varsa sadece bilgi olarak dönsün, hdd/cdd değeri doğrudan fallback’ten alınmasın.
+4. Eğer ilçe bilgisi yoksa veya sayaç yalnızca il merkezi olarak tanımlıysa il merkezi kullanılabilir.
+5. Gerçekten hiçbir istasyon eşleşmezse:
+   - stationFound: false
+   - weatherDataMethod: "station_not_found"
+   - message: "Sayaç lokasyonu için MGM merkezi bulunamadı."
+
+AŞAMA 6 — Veri var/yok mesajlarını doğru ayır:
+Lookup endpoint’i şu durumları net ayırsın:
+
+1. İstasyon bulundu + veri bulundu:
+   - stationFound: true
+   - weatherDataMethod: "official_monthly"
+   - hdd: sayı
+   - cdd: sayı
+   - stationName
+   - matchType
+
+2. İstasyon bulundu ama seçilen yıl/ay için resmi veri yok:
+   - stationFound: true
+   - weatherDataMethod: "no_official_data"
+   - hdd: null
+   - cdd: null
+   - stationName
+   - message: "MGM merkezi bulundu ancak seçilen dönem için resmi HDD/CDD verisi bulunamadı."
+
+3. İlçe istasyonu bulunamadı, fallback il merkezi var:
+   - stationFound: false
+   - weatherDataMethod: "district_station_not_found"
+   - hdd: null
+   - cdd: null
+   - fallbackStation
+   - message: "Girilen ilçe için MGM merkezi bulunamadı. İl merkezi alternatif olarak kullanılabilir."
+
+4. Hiç istasyon bulunamadı:
+   - stationFound: false
+   - weatherDataMethod: "station_not_found"
+   - hdd: null
+   - cdd: null
+   - message: "Sayaç lokasyonu için MGM merkezi bulunamadı."
+
+AŞAMA 7 — Frontend tüketim formu mesajlarını güncelle:
+1. Tüketim formunda MGM lookup response alanlarını doğru işle.
+2. `official_monthly` gelirse bilgi/başarı mesajı göster:
+   - “Resmi MGM HDD/CDD verisi alındı: [stationName]”
+3. `no_official_data` gelirse sarı uyarı göster:
+   - “MGM merkezi bulundu ancak seçilen dönem için resmi HDD/CDD verisi yok.”
+4. `station_not_found` gelirse kırmızı uyarı göster:
+   - “Sayaç lokasyonu için MGM merkezi bulunamadı.”
+5. `district_station_not_found` gelirse sarı/kırmızı arası uyarı göster:
+   - “Girilen ilçe için MGM merkezi bulunamadı. İl merkezi alternatif olarak önerildi ancak otomatik kullanılmadı.”
+6. Alias/fuzzy eşleşme varsa kullanıcıya bilgi mesajı göster:
+   - “Girilen sayaç lokasyonu MGM kayıtlarında farklı yazımla eşleşti: [matchedStationName].”
+7. Mevcut kayıt oluşturma ve düzenleme akışını bozma.
+8. Formdaki hdd/cdd alanlarına yalnızca `official_monthly` geldiğinde değer yaz.
+9. `no_official_data`, `station_not_found`, `district_station_not_found` durumlarında hdd/cdd alanlarını 0 yapma; null/boş bırak.
+
+AŞAMA 8 — Testler:
+Kod değişikliklerinden sonra şu testleri yap ve tablo halinde raporla:
+
+Backend lookup testleri:
+1. `Edremit, Van` — 2025 Ocak
+2. `Tatvan, Bitlis` — 2025 Ocak
+3. `Ağrı Merkez, Ağrı` — 2025 Ocak
+4. `Doğubeyazıt, Ağrı` — 2025 Ocak
+5. `Doğubayazıt, Ağrı` — 2025 Ocak
+6. `Doğubayazıt, Ağrı` — 2026 Ocak
+7. `Edremit, Van` — 2026 Haziran veya resmi veri olmayan bir ay
+
+Her test için şunları raporla:
+- request URL
+- stationFound
+- stationName
+- matchType
+- matchScore varsa
+- weatherDataMethod
+- hdd
+- cdd
+- message
+- fallbackStation varsa
+
+Beklenen kritik sonuçlar:
+- `Doğubeyazıt, Ağrı` 2025 Ocak → DOĞUBEYAZIT istasyonu, official_monthly, HDD dolu
+- `Doğubayazıt, Ağrı` 2025 Ocak → alias ile DOĞUBEYAZIT istasyonu, official_monthly, HDD dolu
+- `Doğubayazıt, Ağrı` için artık doğrudan AĞRI il merkezine düşmemeli
+- 2026 resmi veri olmayan ayda hdd/cdd 0 değil null olmalı
+- 2025 soğuk bölgelerde Ocak HDD 0 olmamalı
+
+Frontend testleri:
+1. Yeni tüketim kaydı ekranında sayaç seç.
+2. Yıl/ay değiştir.
+3. Doğru MGM mesajı görünüyor mu kontrol et.
+4. Alias eşleşmede bilgi mesajı görünüyor mu kontrol et.
+5. Veri olmayan ayda hdd/cdd 0 olmuyor mu kontrol et.
+
+AŞAMA 9 — Son rapor:
+İş sonunda şu formatta rapor ver:
+
+1. Değiştirilen dosyalar
+2. Excel dosyası değişim özeti
+3. Import öncesi/sonrası DB kayıt sayıları
+4. 2025 veri kalite kontrol sonuçları
+5. 2026 veri kapsamı
+6. MGM lookup eşleşme mantığı özeti
+7. Backend test sonuçları
+8. Frontend test sonuçları
+9. Migration/db push çalıştırıldı mı? Çalıştırılmadıysa belirt.
+10. Kalan risk veya manuel kontrol gerektiren konu var mı?

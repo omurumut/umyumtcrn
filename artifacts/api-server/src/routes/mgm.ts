@@ -22,6 +22,13 @@ router.get("/mgm/stations", requireAuth, async (req, res) => {
 
 // GET /api/mgm/lookup — Şehir için HDD/CDD değerini getir (YALNIZCA resmi MGM verisi)
 // Query: city, year, month
+// Response alanları:
+//   stationFound: boolean
+//   weatherDataMethod: "official_monthly" | "no_official_data" | "district_station_not_found" | "station_not_found"
+//   matchType: "exact" | "normalized" | "alias" | "fuzzy" | null
+//   matchedStationName: string | null
+//   originalCity: string
+//   fallbackStation: { stationKey, stationName } | null
 router.get("/mgm/lookup", requireAuth, async (req, res) => {
   try {
     const { city, year, month } = req.query;
@@ -45,98 +52,169 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
     const requestedCity = city as string;
     const { il, ilce } = parseIlIlce(requestedCity);
 
-    // 1. mgm_station_mappings: ilçe bazlı eşleşme
+    // ── 1. İlçe bazlı eşleşme (exact → normalized → alias → fuzzy) ──
     if (ilce) {
       const mapping = await lookupStationKeyByLocation(il, ilce);
       if (mapping) {
         const data = await lookupOfficialByStationKey(mapping.stationKey, yr, mo);
         if (data) {
+          const aliasNote = (mapping.matchType === "alias" || mapping.matchType === "fuzzy")
+            ? `Girilen sayaç lokasyonu MGM kayıtlarında farklı yazımla eşleşti: ${mapping.stationName ?? mapping.matchedDistrict}.`
+            : null;
           res.json({
+            stationFound: true,
+            weatherDataMethod: "official_monthly",
             stationName: mapping.stationName ?? data.stationName ?? ilce,
+            matchType: mapping.matchType,
+            matchScore: mapping.matchScore ?? null,
+            matchedStationName: mapping.stationName ?? null,
+            originalCity: requestedCity,
             year: yr, month: mo,
             hdd: data.hdd, cdd: data.cdd,
-            note: data.stationNote ?? null,
+            note: aliasNote ?? data.stationNote ?? null,
+            fallbackStation: null,
             dataMethod: "official_monthly",
           });
           return;
         }
+        // İstasyon bulundu ama bu yıl/ay için veri yok
+        // il merkezi fallback bilgisini hazırla
+        const ilFallback = await lookupStationKeyByLocation(il, null);
+        res.json({
+          stationFound: true,
+          weatherDataMethod: "no_official_data",
+          stationName: mapping.stationName ?? ilce,
+          matchType: mapping.matchType,
+          matchScore: mapping.matchScore ?? null,
+          matchedStationName: mapping.stationName ?? null,
+          originalCity: requestedCity,
+          year: yr, month: mo,
+          hdd: null, cdd: null,
+          note: "MGM merkezi bulundu ancak seçilen dönem için resmi HDD/CDD verisi bulunamadı.",
+          fallbackStation: ilFallback ? { stationKey: ilFallback.stationKey, stationName: ilFallback.stationName } : null,
+          dataMethod: "no_official_data",
+        });
+        return;
       }
+
+      // İlçe istasyonu bulunamadı — il merkezi fallback bilgisini hazırla (otomatik kullanma)
+      const ilFallback = await lookupStationKeyByLocation(il, null);
+      let fallbackHasData = false;
+      if (ilFallback) {
+        const ilData = await lookupOfficialByStationKey(ilFallback.stationKey, yr, mo);
+        fallbackHasData = !!ilData;
+      }
+      res.json({
+        stationFound: false,
+        weatherDataMethod: "district_station_not_found",
+        stationName: null,
+        matchType: null,
+        matchedStationName: null,
+        originalCity: requestedCity,
+        year: yr, month: mo,
+        hdd: null, cdd: null,
+        note: "Girilen ilçe için MGM merkezi bulunamadı. İl merkezi alternatif olarak kullanılabilir.",
+        fallbackStation: ilFallback
+          ? { stationKey: ilFallback.stationKey, stationName: ilFallback.stationName, hasData: fallbackHasData }
+          : null,
+        dataMethod: "district_station_not_found",
+      });
+      return;
     }
 
-    // 2. mgm_station_mappings: il merkezi eşleşmesi
+    // ── 2. İl merkezi eşleşmesi (ilçe yok) ──
     const mappingByIl = await lookupStationKeyByLocation(il, null);
     if (mappingByIl) {
       const data = await lookupOfficialByStationKey(mappingByIl.stationKey, yr, mo);
       if (data) {
-        const note = ilce
-          ? `"${ilce}" için özel MGM istasyonu resmi verisi bulunamadı. ${il} ili merkezi resmi verisi kullanıldı.`
-          : null;
         res.json({
+          stationFound: true,
+          weatherDataMethod: "official_monthly",
           stationName: mappingByIl.stationName ?? data.stationName ?? il,
+          matchType: mappingByIl.matchType,
+          matchScore: mappingByIl.matchScore ?? null,
+          matchedStationName: mappingByIl.stationName ?? null,
+          originalCity: requestedCity,
           year: yr, month: mo,
           hdd: data.hdd, cdd: data.cdd,
-          note: data.stationNote ?? note,
+          note: data.stationNote ?? null,
+          fallbackStation: null,
           dataMethod: "official_monthly",
         });
         return;
       }
+      // İstasyon bulundu ama veri yok
+      res.json({
+        stationFound: true,
+        weatherDataMethod: "no_official_data",
+        stationName: mappingByIl.stationName ?? il,
+        matchType: mappingByIl.matchType,
+        matchScore: mappingByIl.matchScore ?? null,
+        matchedStationName: mappingByIl.stationName ?? null,
+        originalCity: requestedCity,
+        year: yr, month: mo,
+        hdd: null, cdd: null,
+        note: "MGM merkezi bulundu ancak seçilen dönem için resmi HDD/CDD verisi bulunamadı.",
+        fallbackStation: null,
+        dataMethod: "no_official_data",
+      });
+      return;
     }
 
-    // 3. station_key slug fallback (eski kayıtlar / demo verisi)
-    if (ilce) {
-      const sk = toStationKey(il, ilce);
-      const official = await lookupOfficialByStationKey(sk, yr, mo);
-      if (official) {
-        res.json({
-          stationName: official.stationName ?? ilce,
-          year: yr, month: mo,
-          hdd: official.hdd, cdd: official.cdd,
-          note: official.stationNote ?? null,
-          dataMethod: "official_monthly",
-        });
-        return;
-      }
-    }
-
+    // ── 3. station_key slug fallback (eski kayıtlar / demo verisi) ──
     const ilKey = toStationKey(il, null);
     const officialByIl = await lookupOfficialByStationKey(ilKey, yr, mo);
     if (officialByIl) {
-      const note = ilce
-        ? `"${ilce}" için özel MGM istasyonu resmi verisi bulunamadı. ${il} ili merkezi resmi verisi kullanıldı.`
-        : null;
       res.json({
+        stationFound: true,
+        weatherDataMethod: "official_monthly",
         stationName: officialByIl.stationName ?? il,
+        matchType: "exact",
+        matchScore: null,
+        matchedStationName: officialByIl.stationName ?? null,
+        originalCity: requestedCity,
         year: yr, month: mo,
         hdd: officialByIl.hdd, cdd: officialByIl.cdd,
-        note: officialByIl.stationNote ?? note,
+        note: officialByIl.stationNote ?? null,
+        fallbackStation: null,
         dataMethod: "official_monthly",
       });
       return;
     }
 
-    // 4. Province text match (eski kayıtlar için geriye uyum)
+    // ── 4. Province text match (eski kayıtlar için geriye uyum) ──
     const officialByProv = await lookupOfficialWeatherDegreeDay(il, yr, mo);
     if (officialByProv) {
-      const note = ilce
-        ? `"${ilce}" için özel MGM istasyonu resmi verisi bulunamadı. ${il} ili resmi verisi kullanıldı.`
-        : null;
       res.json({
+        stationFound: true,
+        weatherDataMethod: "official_monthly",
         stationName: officialByProv.stationName ?? il,
+        matchType: "exact",
+        matchScore: null,
+        matchedStationName: officialByProv.stationName ?? null,
+        originalCity: requestedCity,
         year: yr, month: mo,
         hdd: officialByProv.hdd, cdd: officialByProv.cdd,
-        note: officialByProv.stationNote ?? note,
+        note: officialByProv.stationNote ?? null,
+        fallbackStation: null,
         dataMethod: "official_monthly",
       });
       return;
     }
 
-    // Resmi MGM verisi yok — Open-Meteo/sentetik fallback KULLANILMIYOR
+    // ── 5. Hiç istasyon ve veri bulunamadı ──
     res.json({
+      stationFound: false,
+      weatherDataMethod: "station_not_found",
       stationName: null,
+      matchType: null,
+      matchedStationName: null,
+      originalCity: requestedCity,
       year: yr, month: mo,
       hdd: null, cdd: null,
-      note: `Bu lokasyon ("${requestedCity}") ve dönem (${yr}/${mo}) için resmi MGM HDD/CDD verisi bulunamadı.`,
-      dataMethod: "no_official_data",
+      note: "Sayaç lokasyonu için MGM merkezi bulunamadı.",
+      fallbackStation: null,
+      dataMethod: "station_not_found",
     });
   } catch (err) {
     req.log.error(err);

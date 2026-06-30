@@ -396,12 +396,73 @@ export async function lookupOfficialByStationKey(
   return rows.length > 0 ? rows[0] : null;
 }
 
+// ── Türkçe normalize (alias/fuzzy için) ─────────────────────────────
+function normalizeTrSlug(s: string): string {
+  return s.trim().toLowerCase()
+    .replace(/ğ/g, "g").replace(/Ğ/g, "g")
+    .replace(/ş/g, "s").replace(/Ş/g, "s")
+    .replace(/ı/g, "i").replace(/İ/g, "i")
+    .replace(/ö/g, "o").replace(/Ö/g, "o")
+    .replace(/ü/g, "u").replace(/Ü/g, "u")
+    .replace(/ç/g, "c").replace(/Ç/g, "c")
+    .replace(/â/g, "a").replace(/î/g, "i").replace(/û/g, "u")
+    .replace(/\s+/g, " ").trim();
+}
+
+// ── Alias haritası: normalize edilmiş giriş → normalize edilmiş doğru ad ─
+const DISTRICT_ALIASES: Record<string, string> = {
+  "dogubayazit": "dogubeyazit",
+  "dogubayaziti": "dogubeyazit",
+  "dogu bayazit": "dogu beyazit",
+};
+
+function applyAlias(normalized: string): string {
+  return DISTRICT_ALIASES[normalized] ?? normalized;
+}
+
+// ── Fuzzy string benzerliği (Levenshtein tabanlı, eşik 0.75) ─────────
+const FUZZY_THRESHOLD = 0.75;
+function stringSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length === 0 || b.length === 0) return 0;
+  const maxLen = Math.max(a.length, b.length);
+  const dp: number[][] = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return 1 - dp[a.length][b.length] / maxLen;
+}
+
+export interface StationLookupResult {
+  stationKey: string;
+  stationName: string | null;
+  matchType: "exact" | "normalized" | "alias" | "fuzzy";
+  matchScore?: number;
+  matchedDistrict?: string | null;
+}
+
 // ── mgm_station_mappings tablosundan station_key lookup ─────────────
 export async function lookupStationKeyByLocation(
   province: string,
   district: string | null
-): Promise<{ stationKey: string; stationName: string | null } | null> {
-  // Önce ilçe bazlı tam eşleşme dene
+): Promise<StationLookupResult | null> {
+  // "Merkez" ilçe ifadesini il merkezi olarak normalize et
+  // Örnek: "Ağrı Merkez" → district=null (il merkezi)
+  if (district) {
+    const dNorm = normalizeTrSlug(district);
+    const pNorm = normalizeTrSlug(province);
+    if (dNorm === "merkez" || dNorm === pNorm + " merkez" || dNorm === pNorm + "merkez") {
+      district = null;
+    }
+  }
+
+  // 1. Exact eşleşme (mevcut davranış)
   if (district) {
     const rows = await db
       .select({ stationKey: mgmStationMappingsTable.stationKey, stationName: mgmStationMappingsTable.stationName })
@@ -412,20 +473,76 @@ export async function lookupStationKeyByLocation(
         eq(mgmStationMappingsTable.isActive, true),
       ))
       .limit(1);
-    if (rows.length > 0) return rows[0];
+    if (rows.length > 0) return { ...rows[0], matchType: "exact" };
   }
 
-  // İl merkezi (district IS NULL veya boş)
-  const rows = await db
-    .select({ stationKey: mgmStationMappingsTable.stationKey, stationName: mgmStationMappingsTable.stationName })
+  // İl merkezi exact eşleşme (district yok)
+  if (!district) {
+    const rows = await db
+      .select({ stationKey: mgmStationMappingsTable.stationKey, stationName: mgmStationMappingsTable.stationName })
+      .from(mgmStationMappingsTable)
+      .where(and(
+        sql`LOWER(${mgmStationMappingsTable.province}) = LOWER(${province})`,
+        sql`(${mgmStationMappingsTable.district} IS NULL OR ${mgmStationMappingsTable.district} = '')`,
+        eq(mgmStationMappingsTable.isActive, true),
+      ))
+      .limit(1);
+    if (rows.length > 0) return { ...rows[0], matchType: "exact" };
+    return null;
+  }
+
+  // 2. Normalize + alias eşleşme
+  const normDistrict = normalizeTrSlug(district);
+  const aliasDistrict = applyAlias(normDistrict);
+  const matchType = aliasDistrict !== normDistrict ? "alias" : "normalized";
+
+  // Aynı ildeki tüm aktif istasyonları çek, normalize + alias ile karşılaştır
+  const provinceRows = await db
+    .select({
+      stationKey: mgmStationMappingsTable.stationKey,
+      stationName: mgmStationMappingsTable.stationName,
+      district: mgmStationMappingsTable.district,
+    })
     .from(mgmStationMappingsTable)
     .where(and(
       sql`LOWER(${mgmStationMappingsTable.province}) = LOWER(${province})`,
-      sql`(${mgmStationMappingsTable.district} IS NULL OR ${mgmStationMappingsTable.district} = '')`,
       eq(mgmStationMappingsTable.isActive, true),
-    ))
-    .limit(1);
-  return rows.length > 0 ? rows[0] : null;
+    ));
+
+  for (const row of provinceRows) {
+    if (!row.district) continue;
+    const rowNorm = normalizeTrSlug(row.district);
+    const rowAlias = applyAlias(rowNorm);
+    if (rowAlias === aliasDistrict) {
+      return {
+        stationKey: row.stationKey,
+        stationName: row.stationName,
+        matchType,
+        matchedDistrict: row.district,
+      };
+    }
+  }
+
+  // 3. Fuzzy eşleşme (yalnızca aynı il içinde, eşik: 0.75)
+  let bestScore = 0;
+  let bestRow: typeof provinceRows[0] | null = null;
+  for (const row of provinceRows) {
+    if (!row.district) continue;
+    const score = stringSimilarity(aliasDistrict, normalizeTrSlug(row.district));
+    if (score > bestScore) { bestScore = score; bestRow = row; }
+  }
+
+  if (bestRow && bestScore >= FUZZY_THRESHOLD) {
+    return {
+      stationKey: bestRow.stationKey,
+      stationName: bestRow.stationName,
+      matchType: "fuzzy",
+      matchScore: Math.round(bestScore * 100) / 100,
+      matchedDistrict: bestRow.district,
+    };
+  }
+
+  return null;
 }
 
 // ── Resmi MGM: il (province) ile arama — ilçe fallback ─────────────

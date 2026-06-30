@@ -70,7 +70,15 @@ export default function Consumption() {
   const [formEnergySource, setFormEnergySource] = useState("");
   const [formSubUnit, setFormSubUnit] = useState("");
   const [hddFetching, setHddFetching] = useState(false);
-  const [mgmStation, setMgmStation] = useState<{ name: string; note: string | null; dataMethod?: string } | null>(null);
+  const [mgmStation, setMgmStation] = useState<{
+    name: string | null;
+    note: string | null;
+    dataMethod?: string;
+    matchType?: string | null;
+    matchedStationName?: string | null;
+    stationFound?: boolean;
+    fallbackStation?: { stationKey: string; stationName: string | null; hasData?: boolean } | null;
+  } | null>(null);
 
   const { unitId } = useUnit();
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
@@ -173,8 +181,23 @@ export default function Consumption() {
       });
       if (res.ok) {
         const data = await res.json();
-        setForm(f => ({ ...f, hdd: data.hdd?.toString() ?? "", cdd: data.cdd?.toString() ?? "" }));
-        setMgmStation({ name: data.stationName, note: data.note ?? null, dataMethod: data.dataMethod ?? undefined });
+        const method = data.weatherDataMethod ?? data.dataMethod ?? "station_not_found";
+        // Yalnızca resmi aylık veri geldiğinde hdd/cdd alanlarını doldur
+        if (method === "official_monthly" && data.hdd != null && data.cdd != null) {
+          setForm(f => ({ ...f, hdd: data.hdd.toString(), cdd: data.cdd.toString() }));
+        } else {
+          // Diğer durumlarda hdd/cdd alanlarını boş bırak (0 yazma)
+          setForm(f => ({ ...f, hdd: "", cdd: "" }));
+        }
+        setMgmStation({
+          name: data.stationName ?? null,
+          note: data.note ?? null,
+          dataMethod: method,
+          matchType: data.matchType ?? null,
+          matchedStationName: data.matchedStationName ?? null,
+          stationFound: data.stationFound ?? false,
+          fallbackStation: data.fallbackStation ?? null,
+        });
       }
     } catch {}
     setHddFetching(false);
@@ -624,20 +647,67 @@ export default function Consumption() {
             {form.meterId && (
               <div className="space-y-1.5">
                 {mgmStation ? (
-                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2 space-y-1">
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
-                      <MapPin className="h-3 w-3 shrink-0 text-emerald-400" />
-                      <span className="font-medium text-foreground/80">MGM İstasyonu:</span>
-                      <span>{mgmStation.name}</span>
-                      {mgmStation.dataMethod === "official_monthly" && (
+                  <div className={`rounded-md border px-3 py-2 space-y-1 ${
+                    mgmStation.dataMethod === "official_monthly"
+                      ? "border-emerald-600/30 bg-emerald-950/20"
+                      : mgmStation.dataMethod === "no_official_data"
+                      ? "border-amber-600/30 bg-amber-950/20"
+                      : mgmStation.dataMethod === "district_station_not_found"
+                      ? "border-orange-600/30 bg-orange-950/20"
+                      : "border-destructive/30 bg-destructive/10"
+                  }`}>
+                    {/* official_monthly */}
+                    {mgmStation.dataMethod === "official_monthly" && (
+                      <div className="flex items-center gap-1.5 text-xs flex-wrap">
+                        <MapPin className="h-3 w-3 shrink-0 text-emerald-400" />
+                        <span className="font-medium text-emerald-300">Resmi MGM HDD/CDD verisi alındı:</span>
+                        <span className="text-foreground/80">{mgmStation.name}</span>
                         <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-emerald-600 text-emerald-400 ml-1">Resmi Aylık</Badge>
-                      )}
-                      {mgmStation.dataMethod === "calculated_daily" && (
-                        <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-teal-600 text-teal-400 ml-1">Günlük Hesaplamalı</Badge>
-                      )}
-                    </div>
-                    {mgmStation.note && (
-                      <div className="flex items-start gap-1.5 text-xs text-amber-400/90">
+                      </div>
+                    )}
+                    {/* no_official_data */}
+                    {mgmStation.dataMethod === "no_official_data" && (
+                      <div className="flex items-start gap-1.5 text-xs text-amber-400">
+                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
+                        <span>
+                          {mgmStation.name
+                            ? <>MGM merkezi bulundu (<strong>{mgmStation.name}</strong>) ancak seçilen dönem için resmi HDD/CDD verisi yok.</>
+                            : "MGM merkezi bulundu ancak seçilen dönem için resmi HDD/CDD verisi yok."}
+                        </span>
+                      </div>
+                    )}
+                    {/* district_station_not_found */}
+                    {mgmStation.dataMethod === "district_station_not_found" && (
+                      <div className="flex items-start gap-1.5 text-xs text-orange-400">
+                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
+                        <span>
+                          Girilen ilçe için MGM merkezi bulunamadı. İl merkezi alternatif olarak önerildi ancak otomatik kullanılmadı.
+                          {mgmStation.fallbackStation?.stationName && (
+                            <> Öneri: <strong>{mgmStation.fallbackStation.stationName}</strong></>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                    {/* station_not_found */}
+                    {mgmStation.dataMethod === "station_not_found" && (
+                      <div className="flex items-start gap-1.5 text-xs text-destructive">
+                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
+                        <span>Sayaç lokasyonu için MGM merkezi bulunamadı.</span>
+                      </div>
+                    )}
+                    {/* alias / fuzzy bilgi mesajı */}
+                    {(mgmStation.matchType === "alias" || mgmStation.matchType === "fuzzy") && mgmStation.dataMethod === "official_monthly" && (
+                      <div className="flex items-start gap-1.5 text-xs text-blue-400/90">
+                        <Info className="h-3 w-3 shrink-0 mt-0.5" />
+                        <span>
+                          Girilen sayaç lokasyonu MGM kayıtlarında farklı yazımla eşleşti: <strong>{mgmStation.matchedStationName ?? mgmStation.name}</strong>
+                          {mgmStation.matchType === "fuzzy" && mgmStation.dataMethod === "official_monthly" && <> (fuzzy)</>}.
+                        </span>
+                      </div>
+                    )}
+                    {/* genel not */}
+                    {mgmStation.note && mgmStation.matchType !== "alias" && mgmStation.matchType !== "fuzzy" && (
+                      <div className="flex items-start gap-1.5 text-xs text-muted-foreground/80">
                         <Info className="h-3 w-3 shrink-0 mt-0.5" />
                         <span>{mgmStation.note}</span>
                       </div>
