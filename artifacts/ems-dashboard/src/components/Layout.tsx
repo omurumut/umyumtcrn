@@ -39,7 +39,7 @@ const USER_NAV = [
   {
     title: "Veri Yönetimi",
     items: [
-      { title: "Birimim", url: "/birimler", icon: Building2 },
+      { title: "Birim Yönetimi", url: "/birimler", icon: Building2 },
       { title: "Enerji Kullanım Grupları", url: "/enerji-kullanim-gruplari", icon: Layers },
       { title: "Sayaç Yönetimi", url: "/sayaclar", icon: Gauge },
       { title: "Tüketim Verileri", url: "/tuketim", icon: Activity },
