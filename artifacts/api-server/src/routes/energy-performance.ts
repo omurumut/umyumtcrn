@@ -594,13 +594,13 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         varValueMap["HDD"] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
           const mn = parseInt(m);
-          if (agg.hddN > 0) varValueMap["HDD"][mn] = agg.hddSum / agg.hddN;
+          if (agg.hddN > 0) varValueMap["HDD"][mn] = Math.round(agg.hddSum / agg.hddN);
         }
       } else if (code === "CDD") {
         varValueMap["CDD"] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
           const mn = parseInt(m);
-          if (agg.cddN > 0) varValueMap["CDD"][mn] = agg.cddSum / agg.cddN;
+          if (agg.cddN > 0) varValueMap["CDD"][mn] = Math.round(agg.cddSum / agg.cddN);
         }
       } else if (code.startsWith("user-")) {
         const varId = parseInt(code.replace("user-", ""));

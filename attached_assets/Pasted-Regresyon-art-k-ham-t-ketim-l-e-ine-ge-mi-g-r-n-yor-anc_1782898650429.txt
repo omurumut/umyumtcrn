@@ -1,0 +1,75 @@
+Regresyon artık ham tüketim ölçeğine geçmiş görünüyor, ancak sonuçlar beklenen Excel/manuel OLS sonuçlarıyla birebir tutmuyor.
+
+Beklenen sadece HDD sonucu:
+Kesişim: -478.721955
+HDD katsayısı: 169.536936
+R²: 0.948287
+Adjusted R²: 0.943116
+
+Yazılım sonucu:
+Kesişim: -454.1471
+HDD katsayısı: 169.511207
+R²: 0.9481
+Adjusted R²: 0.9429
+
+Beklenen HDD + CDD sonucu:
+Kesişim: -1061.864454
+HDD katsayısı: 171.059390
+CDD katsayısı: 15.476117
+R²: 0.948536
+Adjusted R²: 0.937099
+
+Yazılım sonucu:
+Kesişim: -1025.8526
+HDD katsayısı: 171.003923
+CDD katsayısı: 15.167345
+R²: 0.9483
+Adjusted R²: 0.9368
+
+Bu farklar regresyon motorundan çok regresyona giren veri setinin birebir aynı olmadığını düşündürüyor.
+
+Lütfen şu kontrolleri yap:
+
+1. Van Merkez Kampüs Doğalgaz 2025 için regresyona giren gerçek dataset’i backend response içinde veya console log’da ay ay göster.
+2. Her ay için şu alanları göster:
+   - month
+   - rawConsumption / kwh kolonu
+   - tep
+   - HDD
+   - CDD
+   - varsa aggregation sonucu
+   - kaç tüketim kaydı toplandı
+3. Regresyon hesaplamasına giren Y değerleri tam olarak şu değerler mi kontrol et:
+   Ocak 95373
+   Şubat 79794
+   Mart 65052
+   Nisan 30843
+   Mayıs 7685
+   Haziran 500
+   Temmuz 801
+   Ağustos 401
+   Eylül 401
+   Ekim 2522
+   Kasım 37070
+   Aralık 53237
+4. HDD/CDD değerleri tam olarak şu değerler mi kontrol et:
+   Ocak HDD 492 CDD 0
+   Şubat HDD 493 CDD 0
+   Mart HDD 331 CDD 0
+   Nisan HDD 180 CDD 0
+   Mayıs HDD 29 CDD 0
+   Haziran HDD 1 CDD 11
+   Temmuz HDD 0 CDD 84
+   Ağustos HDD 0 CDD 123
+   Eylül HDD 10 CDD 14
+   Ekim HDD 71 CDD 0
+   Kasım HDD 207 CDD 0
+   Aralık HDD 424 CDD 0
+5. Aynı ayda aynı ÖEK/sayaç/veri seti için birden fazla consumption kaydı varsa bunlar toplamaya dahil ediliyor mu kontrol et.
+6. Regresyon endpoint’i veri setini ay bazında nasıl aggregate ediyor kontrol et.
+7. Regresyon fonksiyonuna giden final X ve Y array’lerini logla.
+8. Önce hesaplama motorunu değiştirme. Önce final X/Y dataset’ini doğrula.
+9. Eğer X/Y array birebir yukarıdaki değerlerle aynıysa, regresyon sonucunun da birebir şu değerlere yakın çıkması gerekir:
+   HDD only: intercept -478.721955, HDD 169.536936
+   HDD+CDD: intercept -1061.864454, HDD 171.059390, CDD 15.476117
+10. Typecheck/build çalıştırmadan önce sadece veri izini bul ve raporla.
