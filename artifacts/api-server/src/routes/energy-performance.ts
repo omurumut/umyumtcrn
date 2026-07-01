@@ -26,6 +26,15 @@ const MONTH_LABELS: Record<number, string> = {
   7: "Temmuz", 8: "Ağustos", 9: "Eylül", 10: "Ekim", 11: "Kasım", 12: "Aralık",
 };
 
+// ── Değişken normalizasyon yardımcısı ────────────────────────────────────────
+// HDD ve CDD her zaman tam sayıya yuvarlanır (MGM yayınları tam sayıdır;
+// birden fazla sayaç ortalamasından kesirli değer oluşmasını önler).
+// Diğer değişkenler (tüketim, üretim, maliyet vb.) olduğu gibi kalır.
+function normalizeRegressionVariable(variableKey: string, value: number): number {
+  if (variableKey === "HDD" || variableKey === "CDD") return Math.round(value);
+  return value;
+}
+
 // ── Regresyon matematik yardımcıları ─────────────────────────────────────────
 
 function matMul(A: number[][], B: number[][]): number[][] {
@@ -594,13 +603,13 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         varValueMap["HDD"] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
           const mn = parseInt(m);
-          if (agg.hddN > 0) varValueMap["HDD"][mn] = Math.round(agg.hddSum / agg.hddN);
+          if (agg.hddN > 0) varValueMap["HDD"][mn] = normalizeRegressionVariable("HDD", agg.hddSum / agg.hddN);
         }
       } else if (code === "CDD") {
         varValueMap["CDD"] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
           const mn = parseInt(m);
-          if (agg.cddN > 0) varValueMap["CDD"][mn] = Math.round(agg.cddSum / agg.cddN);
+          if (agg.cddN > 0) varValueMap["CDD"][mn] = normalizeRegressionVariable("CDD", agg.cddSum / agg.cddN);
         }
       } else if (code.startsWith("user-")) {
         const varId = parseInt(code.replace("user-", ""));
@@ -946,13 +955,13 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
         varValueMap[code] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
           const mn = parseInt(m);
-          if (agg.hddN > 0) varValueMap[code][mn] = agg.hddSum / agg.hddN;
+          if (agg.hddN > 0) varValueMap[code][mn] = normalizeRegressionVariable("HDD", agg.hddSum / agg.hddN);
         }
       } else if (code === "CDD") {
         varValueMap[code] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
           const mn = parseInt(m);
-          if (agg.cddN > 0) varValueMap[code][mn] = agg.cddSum / agg.cddN;
+          if (agg.cddN > 0) varValueMap[code][mn] = normalizeRegressionVariable("CDD", agg.cddSum / agg.cddN);
         }
       } else if (code.startsWith("user-")) {
         const varId = parseInt(code.replace("user-", ""));
@@ -969,7 +978,7 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
           const parts = vv.periodStart.split("-");
           if (parts.length >= 2 && parseInt(parts[0]) === year) {
             const mn = parseInt(parts[1]);
-            if (mn >= 1 && mn <= 12) varValueMap[code][mn] = vv.value;
+            if (mn >= 1 && mn <= 12) varValueMap[code][mn] = normalizeRegressionVariable(code, vv.value);
           }
         }
       } else {
@@ -990,7 +999,7 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
             const parts = vv.periodStart.split("-");
             if (parts.length >= 2 && parseInt(parts[0]) === year) {
               const mn = parseInt(parts[1]);
-              if (mn >= 1 && mn <= 12) varValueMap[code][mn] = vv.value;
+              if (mn >= 1 && mn <= 12) varValueMap[code][mn] = normalizeRegressionVariable(code, vv.value);
             }
           }
         }
