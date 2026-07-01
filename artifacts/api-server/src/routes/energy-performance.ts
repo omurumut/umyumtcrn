@@ -1015,7 +1015,7 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
     const warnings: Array<{ month: number; monthLabel: string; issue: string }> = [];
     const toInsert: Array<{
       month: number; actualConsumption: number; expectedConsumption: number;
-      difference: number; eei: number; setValue: number | null;
+      difference: number; eei: number | null; setValue: number | null;
       primaryVarValue: number | null; status: string;
     }> = [];
 
@@ -1051,19 +1051,30 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
         continue;
       }
 
-      // Beklenen tüketim hesapla: intercept + Σ(coeff_i * x_i)
+      // Beklenen tüketim hesapla: intercept + Σ(coeff_i * x_i) — clamp yok, ham matematiksel değer
       let expected = intercept;
       for (let i = 0; i < bvars.length; i++) {
         expected += (bvars[i].coefficient ?? 0) * xVals[i];
       }
-      if (expected <= 0) expected = 0.0001; // sıfır bölme koruması
 
       const difference = actual - expected;
-      const eei = actual / expected;
-      // SET: birinci değişkene göre (varsa)
+
+      // EEI ve SET yalnızca expected > 0 ise hesaplanır
       const primaryVarValue = xVals.length > 0 ? xVals[0] : null;
-      const setValue = primaryVarValue && primaryVarValue > 0 ? actual / primaryVarValue : null;
-      const status = difference < 0 ? "improvement" : "deterioration";
+      let eei: number | null = null;
+      let setValue: number | null = null;
+      let status: string;
+
+      if (expected > 0) {
+        eei = actual / expected;
+        setValue = primaryVarValue && primaryVarValue > 0 ? actual / primaryVarValue : null;
+        status = difference < 0 ? "improvement" : "deterioration";
+      } else {
+        // Beklenen tüketim ≤ 0: fiziksel anlam yok, EEI/SET hesaplanmaz
+        eei = null;
+        setValue = null;
+        status = "negative_expected";
+      }
 
       toInsert.push({ month: m, actualConsumption: actual, expectedConsumption: expected, difference, eei, setValue, primaryVarValue, status });
     }

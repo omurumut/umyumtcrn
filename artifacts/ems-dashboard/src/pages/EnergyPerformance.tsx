@@ -1538,9 +1538,10 @@ export default function EnergyPerformance() {
                 const totalExpected = monitorResults.reduce((s, r) => s + (r.expectedConsumption ?? 0), 0);
                 const totalDiff = totalActual - totalExpected;
                 const finalCusum = monitorResults[monitorResults.length - 1]?.cusum ?? 0;
-                const avgEei = monitorResults.length > 0
-                  ? monitorResults.reduce((s, r) => s + (r.eei ?? 0), 0) / monitorResults.length
-                  : 0;
+                const eeiRows = monitorResults.filter(r => r.eei != null);
+                const avgEei = eeiRows.length > 0
+                  ? eeiRows.reduce((s, r) => s + r.eei!, 0) / eeiRows.length
+                  : null;
 
                 return (
                   <div className="space-y-4">
@@ -1550,7 +1551,7 @@ export default function EnergyPerformance() {
                         { label: `Toplam Gerçekleşen (${baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})`, value: totalActual.toLocaleString("tr-TR", { maximumFractionDigits: 2 }), color: "text-foreground" },
                         { label: `Toplam Beklenen (${baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})`, value: totalExpected.toLocaleString("tr-TR", { maximumFractionDigits: 2 }), color: "text-foreground" },
                         { label: "Kümülatif FARK (CUSUM)", value: finalCusum.toFixed(3), color: finalCusum < 0 ? "text-teal-400" : "text-destructive" },
-                        { label: "Ortalama EEI", value: avgEei.toFixed(4), color: avgEei < 1 ? "text-teal-400" : "text-destructive" },
+                        { label: "Ortalama EEI", value: avgEei != null ? avgEei.toFixed(4) : "—", color: avgEei != null ? (avgEei < 1 ? "text-teal-400" : "text-destructive") : "text-muted-foreground" },
                       ].map(k => (
                         <Card key={k.label} className="border-border/40">
                           <CardContent className="p-3">
@@ -1645,8 +1646,9 @@ export default function EnergyPerformance() {
                             </thead>
                             <tbody>
                               {monitorResults.map((r) => {
-                                const isImprovement = (r.difference ?? 0) < 0;
-                                const rowColor = isImprovement ? "bg-teal-500/5" : (r.difference ?? 0) > 0 ? "bg-destructive/5" : "";
+                                const isNegativeExpected = r.status === "negative_expected";
+                                const isImprovement = !isNegativeExpected && (r.difference ?? 0) < 0;
+                                const rowColor = isNegativeExpected ? "bg-amber-500/5" : isImprovement ? "bg-teal-500/5" : (r.difference ?? 0) > 0 ? "bg-destructive/5" : "";
                                 const MONTHS_FULL = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
                                 return (
                                   <tr key={r.id} className={`border-b border-border/30 ${rowColor}`}>
@@ -1659,18 +1661,20 @@ export default function EnergyPerformance() {
                                     <td className={`p-2.5 text-right tabular-nums font-medium ${(r.cusum ?? 0) < 0 ? "text-teal-400" : "text-destructive"}`}>
                                       {r.cusum != null ? (r.cusum >= 0 ? "+" : "") + r.cusum.toFixed(4) : "—"}
                                     </td>
-                                    <td className={`p-2.5 text-right tabular-nums font-medium ${(r.eei ?? 1) < 1 ? "text-teal-400" : "text-destructive"}`}>
+                                    <td className={`p-2.5 text-right tabular-nums font-medium ${r.eei == null ? "text-muted-foreground" : r.eei < 1 ? "text-teal-400" : "text-destructive"}`}>
                                       {r.eei?.toFixed(4) ?? "—"}
                                     </td>
                                     <td className="p-2.5 text-right tabular-nums text-muted-foreground">
                                       {r.setValue?.toFixed(4) ?? "—"}
                                     </td>
                                     <td className="p-2.5 pr-4 text-center">
-                                      {isImprovement
-                                        ? <span className="inline-flex items-center gap-1 text-teal-400"><CheckCircle2 className="h-3 w-3" />İyileşme</span>
-                                        : (r.difference ?? 0) > 0
-                                          ? <span className="inline-flex items-center gap-1 text-destructive"><AlertTriangle className="h-3 w-3" />Kötüleşme</span>
-                                          : <span className="text-muted-foreground">Nötr</span>
+                                      {isNegativeExpected
+                                        ? <span className="inline-flex items-center gap-1 text-amber-400"><AlertTriangle className="h-3 w-3" />Beklenen ≤ 0</span>
+                                        : isImprovement
+                                          ? <span className="inline-flex items-center gap-1 text-teal-400"><CheckCircle2 className="h-3 w-3" />İyileşme</span>
+                                          : (r.difference ?? 0) > 0
+                                            ? <span className="inline-flex items-center gap-1 text-destructive"><AlertTriangle className="h-3 w-3" />Kötüleşme</span>
+                                            : <span className="text-muted-foreground">Nötr</span>
                                       }
                                     </td>
                                   </tr>
@@ -1687,8 +1691,8 @@ export default function EnergyPerformance() {
                                 <td className={`p-2.5 text-right tabular-nums ${finalCusum < 0 ? "text-teal-400" : "text-destructive"}`}>
                                   {(finalCusum >= 0 ? "+" : "") + finalCusum.toFixed(4)}
                                 </td>
-                                <td className={`p-2.5 text-right tabular-nums ${avgEei < 1 ? "text-teal-400" : "text-destructive"}`}>
-                                  {avgEei.toFixed(4)}
+                                <td className={`p-2.5 text-right tabular-nums ${avgEei == null ? "text-muted-foreground" : avgEei < 1 ? "text-teal-400" : "text-destructive"}`}>
+                                  {avgEei != null ? avgEei.toFixed(4) : "—"}
                                 </td>
                                 <td className="p-2.5 text-right text-muted-foreground">—</td>
                                 <td className="p-2.5 pr-4 text-center">
