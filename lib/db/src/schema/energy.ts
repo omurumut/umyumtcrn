@@ -597,6 +597,8 @@ export const energyBaselinesTable = pgTable("energy_baselines", {
   status: text("status").notNull().default("draft"),
   updateReason: text("update_reason"),
   notes: text("notes"),
+  dependentVariableUnit: text("dependent_variable_unit"),
+  dependentVariableType: text("dependent_variable_type").default("raw_consumption"),
   createdByUserId: integer("created_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

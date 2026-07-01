@@ -316,6 +316,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
       year: number; month: number; kwh: number; tep: number; co2: number;
       hdd: number | null; cdd: number | null; meterId: number;
       meterName: string | null; energySourceName: string | null;
+      meterUnit: string;
     }> = [];
 
     if (matchedMeterIds.length > 0) {
@@ -331,6 +332,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
           meterId: consumptionTable.meterId,
           meterName: metersTable.name,
           energySourceName: energySourcesTable.name,
+          meterUnit: metersTable.unit,
         })
         .from(consumptionTable)
         .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
@@ -349,7 +351,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
     const monthMap: Record<string, {
       year: number; month: number; totalKwh: number; totalTep: number;
       totalCo2: number; hddSum: number | null; cddSum: number | null; hddCount: number; cddCount: number;
-      energySourceName: string | null; meters: string[];
+      energySourceName: string | null; meters: string[]; meterUnit: string | null;
     }> = {};
 
     for (const r of consumptionRows) {
@@ -358,7 +360,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
         monthMap[key] = {
           year: r.year, month: r.month, totalKwh: 0, totalTep: 0,
           totalCo2: 0, hddSum: null, cddSum: null, hddCount: 0, cddCount: 0,
-          energySourceName: r.energySourceName ?? null, meters: [],
+          energySourceName: r.energySourceName ?? null, meters: [], meterUnit: r.meterUnit ?? null,
         };
       }
       monthMap[key].totalKwh += r.kwh ?? 0;
@@ -384,6 +386,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
         cdd: r.cddSum != null && r.cddCount > 0 ? Math.round((r.cddSum / r.cddCount) * 10) / 10 : null,
         energySourceName: r.energySourceName,
         meters: r.meters.join(", "),
+        consumptionUnit: r.meterUnit ?? null,
       }));
 
     // ── Eksik ayları belirle ──────────────────────────────────────────────
@@ -420,6 +423,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
       missingMonths,
       warningMessage,
       consumptionDataset,
+      consumptionUnit: consumptionDataset[0]?.consumptionUnit ?? null,
     });
   } catch (err) {
     req.log.error(err);
@@ -518,6 +522,16 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
     const assessmentUnitId = seuItem.assessmentUnitId;
     if (role === "user" && sessionUnitId && assessmentUnitId !== sessionUnitId) {
       res.status(403).json({ error: "Erişim yetkisi yok" }); return;
+    }
+
+    // Bağımlı değişken birimi: enerji kaynağının ham birimi (m³, kWh, ton, litre vb.)
+    let dependentVariableUnit = "ham tüketim";
+    if (seuItem.energySourceId) {
+      const [esrc] = await db
+        .select({ unit: energySourcesTable.unit })
+        .from(energySourcesTable)
+        .where(eq(energySourcesTable.id, seuItem.energySourceId));
+      if (esrc?.unit) dependentVariableUnit = esrc.unit;
     }
 
     // Eşleşen sayaç ID'leri (dataset endpoint ile aynı öncelik zinciri)
@@ -650,7 +664,7 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         else xs.push(val);
       }
       if (missing.length === 0) {
-        completeMonths.push({ month: m, y: monthAgg[m].tep, xs });
+        completeMonths.push({ month: m, y: monthAgg[m].kwh, xs });
       } else {
         missingVarByMonth[m] = missing;
       }
@@ -736,7 +750,7 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
     const formulaParts = variables.map(v =>
       `${v.coefficient >= 0 ? "+ " : "- "}${Math.abs(v.coefficient).toFixed(6)} × ${v.variableName}`
     );
-    const formulaText = `Beklenen Tüketim (TEP) = ${interceptRounded} ${formulaParts.join(" ")}`;
+    const formulaText = `Beklenen Tüketim (${dependentVariableUnit}) = ${interceptRounded} ${formulaParts.join(" ")}`;
 
     const suggestedVariablesToRemove = insigVars.map(v => v.code);
     const usedMonths = completeMonths.map(r => MONTH_LABELS[r.month] ?? String(r.month));
@@ -759,6 +773,8 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         month: MONTH_LABELS[parseInt(m)] ?? m,
         missingVariables: codes,
       })),
+      dependentVariableUnit,
+      dependentVariableType: "raw_consumption",
     });
   } catch (err) {
     req.log.error(err);
@@ -1000,7 +1016,7 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
         warnings.push({ month: m, monthLabel: MONTH_LABELS[m] ?? `${m}`, issue: "Tüketim verisi eksik" });
         continue;
       }
-      const actual = monthAgg[m].tep;
+      const actual = monthAgg[m].kwh;
 
       // Değişken değerleri kontrolü
       let allPresent = true;
@@ -1155,6 +1171,7 @@ router.get("/energy-performance/baselines", requireAuth, async (req, res) => {
         createdAt: energyBaselinesTable.createdAt,
         updatedAt: energyBaselinesTable.updatedAt,
         createdByName: usersTable.name,
+        dependentVariableUnit: energyBaselinesTable.dependentVariableUnit,
       })
       .from(energyBaselinesTable)
       .leftJoin(usersTable, eq(energyBaselinesTable.createdByUserId, usersTable.id))
@@ -1219,6 +1236,7 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
         sampleSize: number;
         formulaText: string;
         isValid: boolean;
+        dependentVariableUnit?: string;
         variables: Array<{
           variableName: string;
           code: string;
@@ -1304,6 +1322,8 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
       sampleSize: regressionResult.sampleSize,
       formulaText: regressionResult.formulaText,
       isValid: regressionResult.isValid,
+      dependentVariableUnit: regressionResult.dependentVariableUnit ?? null,
+      dependentVariableType: regressionResult.dependentVariableUnit ? "raw_consumption" : null,
       status,
       updateReason: updateReason ?? null,
       notes: notes ?? null,

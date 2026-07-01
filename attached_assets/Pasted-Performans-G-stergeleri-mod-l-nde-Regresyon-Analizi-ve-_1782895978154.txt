@@ -1,0 +1,222 @@
+Performans Göstergeleri modülünde Regresyon Analizi ve EnPG İzleme mantığını birlikte güncellemek istiyorum.
+
+Mevcut durumda regresyon analizinde bağımlı değişken olarak Aylık toplam enerji tüketimi (TEP) kullanılıyor. Bunu değiştireceğiz.
+
+Yeni temel kural:
+
+Regresyon Analizi, EnRQ formülü ve EnPG İzleme TEP ile değil, ilgili ÖEK/veri setinin ham tüketim değeri ile çalışacak.
+
+Örnek:
+- Doğalgaz için m³ tüketim
+- Elektrik için kWh tüketim
+- Kömür için ton tüketim
+- Motorin için litre tüketim
+- Diğer enerji kaynakları için sistemde consumption / amount / quantity / rawConsumption gibi saklanan gerçek ham tüketim değeri
+
+TEP sadece ÖEK sıralaması, Pareto analizi, toplam enerji raporları, şirket/birim karşılaştırmaları ve üst yönetim dashboard özetlerinde kullanılmaya devam edecek.
+
+Yapılacak değişiklikler:
+
+1. Regresyon Analizi bağımlı değişkeni
+
+Regresyon analizinde bağımlı değişken olarak TEP kullanılmasın.
+
+Bağımlı değişken, ilgili ayın gerçek ham tüketim değeri olsun.
+
+Örnek:
+Doğalgaz ÖEK’i için:
+Y = aylık doğalgaz tüketimi (m³)
+
+Elektrik ÖEK’i için:
+Y = aylık elektrik tüketimi (kWh)
+
+Kömür için:
+Y = aylık kömür tüketimi (ton)
+
+TEP değeri regresyon hesabında kullanılmayacak.
+
+2. Regresyon katsayıları ve formül
+
+Kesişim, değişken katsayıları, tahmin değerleri, residual/fark değerleri, grafikler ve tablo sonuçları ham tüketim değeri üzerinden hesaplansın.
+
+R², adjusted R², t istatistiği ve p-value hesaplama mantığı değişmesin. Sadece kullanılan Y değeri TEP yerine ham tüketim değeri olacak.
+
+Tek değişkenli regresyonda model değerlendirmesi için R² kullanılmaya devam etsin.
+Birden fazla değişken varsa adjusted R² kullanılsın.
+Değişken anlamlılığı için p-value < 0.1 kriteri korunsun.
+
+3. Ekran metinleri
+
+Regresyon formülünde artık TEP yazmasın.
+
+Şu ifade artık kullanılmasın:
+“Beklenen Tüketim (TEP)”
+“Bağımlı değişken: Aylık toplam enerji tüketimi (TEP)”
+
+Bunun yerine enerji kaynağına göre ham tüketim birimi gösterilsin.
+
+Örnek doğalgaz için:
+“Beklenen Tüketim (m³) = -478.72 + 169.54 × HDD”
+“Bağımlı değişken: Aylık doğalgaz tüketimi (m³)”
+
+Elektrik için:
+“Beklenen Tüketim (kWh) = ...”
+“Bağımlı değişken: Aylık elektrik tüketimi (kWh)”
+
+Eğer enerji kaynağı birimi sistemde bulunamıyorsa:
+“Bağımlı değişken: Aylık ham tüketim değeri”
+“Beklenen Tüketim”
+
+şeklinde güvenli fallback kullan.
+
+4. EnRQ kayıtları
+
+Aktif EnRQ kaydı hangi bağımlı değişkenle oluşturulduysa EnPG İzleme de aynı birimle çalışmalı.
+
+Yeni oluşturulan EnRQ kayıtları ham tüketim değeri üzerinden saklanmalı/yorumlanmalı.
+
+Mevcut eski EnRQ kayıtları varsa veri bozulmasın. Ancak yeni analizler yeni mantıkla çalışsın.
+
+Gerekirse EnRQ kayıtlarında bağımlı değişken tipi/birimi için metadata alanı kullan:
+- dependentVariableType: raw_consumption
+- dependentVariableUnit: m³ / kWh / ton / litre vb.
+
+Eğer migration gerekiyorsa güvenli migration oluştur.
+
+5. EnPG İzleme mantığı
+
+EnPG İzleme kısmında da TEP kullanılmasın.
+
+EnPG İzleme şu değerlerle çalışsın:
+
+- Gerçek tüketim = ilgili ayın ham tüketim değeri
+- Beklenen tüketim = aktif EnRQ regresyon formülünden hesaplanan ham tüketim değeri
+- Sapma = gerçek ham tüketim - beklenen ham tüketim
+- Sapma yüzdesi = ham tüketim değerleri üzerinden hesaplanan yüzde fark
+
+TEP / totalTep / tepConsumption / energyTep gibi alanlar EnPG İzleme hesaplamasında kullanılmasın.
+
+6. EnPG İzleme ekran metinleri
+
+Şu ifadeler artık kullanılmasın:
+- Gerçek TEP
+- Beklenen TEP
+- TEP farkı
+- TEP bazlı sapma
+
+Bunun yerine enerji kaynağı birimi gösterilsin.
+
+Doğalgaz için:
+- Gerçek Tüketim (m³)
+- Beklenen Tüketim (m³)
+- Sapma (m³)
+- Sapma (%)
+
+Elektrik için:
+- Gerçek Tüketim (kWh)
+- Beklenen Tüketim (kWh)
+- Sapma (kWh)
+- Sapma (%)
+
+Grafiklerde de Y ekseni TEP değil ham tüketim birimi olsun.
+
+7. TEP nerede kalacak?
+
+TEP aşağıdaki alanlarda kullanılmaya devam edecek:
+
+- ÖEK / SEU Pareto sıralaması
+- Toplam enerji tüketimi raporları
+- Farklı enerji kaynaklarının ortak karşılaştırılması
+- Şirket geneli / birim geneli enerji analizleri
+- Üst yönetim dashboard özetleri
+- Toplam TEP, CO2 ve maliyet raporlamaları
+
+Ancak Regresyon Analizi, EnRQ formülü ve EnPG İzleme ham tüketim değeriyle çalışacak.
+
+8. Veri seti hazırlığı
+
+Regresyon veri seti hazırlanırken her ay için şu yapı kullanılmalı:
+
+- month
+- year
+- rawConsumption
+- consumptionUnit
+- HDD
+- CDD
+- diğer seçili değişkenler
+
+Bağımlı değişken olarak rawConsumption kullanılmalı.
+
+TEP alanı veri setinde gösterim/yardımcı bilgi olarak bulunabilir ama regresyon hesabına Y değeri olarak girmemeli.
+
+9. Test beklentisi
+
+Van Merkez Kampüs Doğalgaz 2025 verisiyle test et.
+
+Veri seti:
+
+Ocak tüketim 95373, HDD 492, CDD 0
+Şubat tüketim 79794, HDD 493, CDD 0
+Mart tüketim 65052, HDD 331, CDD 0
+Nisan tüketim 30843, HDD 180, CDD 0
+Mayıs tüketim 7685, HDD 29, CDD 0
+Haziran tüketim 500, HDD 1, CDD 11
+Temmuz tüketim 801, HDD 0, CDD 84
+Ağustos tüketim 401, HDD 0, CDD 123
+Eylül tüketim 401, HDD 10, CDD 14
+Ekim tüketim 2522, HDD 71, CDD 0
+Kasım tüketim 37070, HDD 207, CDD 0
+Aralık tüketim 53237, HDD 424, CDD 0
+
+Sadece HDD regresyonunda yaklaşık beklenen sonuç:
+
+Kesişim: -478.72
+HDD katsayısı: 169.54
+R²: 0.9483
+Adjusted R²: 0.9431
+HDD p-value: yaklaşık 0.000000093
+
+HDD + CDD regresyonunda yaklaşık beklenen sonuç:
+
+Kesişim: -1061.86
+HDD katsayısı: 171.06
+CDD katsayısı: 15.48
+R²: 0.9485
+Adjusted R²: 0.9371
+HDD p-value: yaklaşık 0.00000123
+CDD p-value: yaklaşık 0.8396
+
+Bu testte artık TEP bazlı şu değerlere benzer sonuçlar görünmemeli:
+- Kesişim: -0.3906
+- HDD katsayısı: 0.145780
+- Beklenen Tüketim (TEP)
+
+Bunun yerine ham tüketim bazlı m³ değerleri görünmeli.
+
+10. EnPG İzleme test beklentisi
+
+Sadece HDD modeli aktif EnRQ olarak kaydedildiğinde EnPG İzleme tarafında da beklenen değerler m³ üzerinden hesaplanmalı.
+
+Örnek Ocak:
+HDD = 492
+Formül:
+Beklenen Tüketim (m³) = -478.72 + 169.54 × 492
+Beklenen tüketim yaklaşık 82.933 m³ olmalı.
+Gerçek tüketim 95.373 m³ olmalı.
+Sapma yaklaşık 12.440 m³ olmalı.
+
+Bu değerler TEP’e çevrilmemeli.
+
+11. Kod kalitesi
+
+İlgili backend ve frontend dosyalarını kontrol et.
+Regresyon hesaplayan servis/fonksiyon, veri seti hazırlama endpoint’i, EnRQ kayıt endpoint’i ve EnPG İzleme endpoint’i birlikte güncellensin.
+
+TypeScript typecheck çalıştır.
+Build çalıştır.
+Var olan ÖEK, tüketim, TEP ve raporlama fonksiyonlarını bozma.
+Değişiklik sonrası kısa teknik özet ver:
+- Hangi dosyalar değişti?
+- Regresyon Y değeri nereden alınıyor?
+- EnPG İzleme hangi değeri kullanıyor?
+- TEP nerelerde kullanılmaya devam ediyor?

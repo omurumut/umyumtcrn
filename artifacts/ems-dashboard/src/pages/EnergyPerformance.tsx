@@ -79,6 +79,7 @@ interface ConsumptionRow {
   cdd: number | null;
   energySourceName: string | null;
   meters: string;
+  consumptionUnit: string | null;
 }
 
 type DatasetMatchType = "meter" | "energyUseGroup" | "subUnit" | "unit" | "manual_unlinked";
@@ -113,6 +114,8 @@ interface RegressionResult {
   formulaText: string;
   usedMonths: string[];
   missingVariableMonths: MissingVarMonth[];
+  dependentVariableUnit?: string;
+  dependentVariableType?: string;
   error?: string;
 }
 
@@ -129,6 +132,7 @@ interface DatasetResponse {
   missingMonths: string[];
   warningMessage: string | null;
   consumptionDataset: ConsumptionRow[];
+  consumptionUnit: string | null;
 }
 
 interface VariableItem {
@@ -175,6 +179,7 @@ interface BaselineRecord {
   createdByName: string | null;
   createdAt: string;
   variables: BaselineVariable[];
+  dependentVariableUnit?: string | null;
 }
 
 const UPDATE_REASONS = [
@@ -345,6 +350,7 @@ export default function EnergyPerformance() {
             sampleSize: regressionResult.sampleSize,
             formulaText: regressionResult.formulaText,
             isValid: regressionResult.isValid,
+            dependentVariableUnit: regressionResult.dependentVariableUnit,
             variables: regressionResult.variables.map(v => ({
               variableName: v.variableName,
               code: v.code,
@@ -643,7 +649,7 @@ export default function EnergyPerformance() {
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium">
-                    Aylık Enerji Tüketim Verisi — {dataset?.year ?? year} (Tüketimler TEP cinsinden gösterilmektedir)
+                    Aylık Enerji Tüketim Verisi — {dataset?.year ?? year}{dataset?.consumptionUnit ? ` (${dataset.consumptionUnit} cinsinden)` : ""}
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -673,7 +679,7 @@ export default function EnergyPerformance() {
                           <tr className="border-b border-border/50 text-muted-foreground">
                             <th className="text-left p-2 pl-0 font-medium">Yıl</th>
                             <th className="text-left p-2 font-medium">Ay</th>
-                            <th className="text-right p-2 font-medium">Tüketim (kWh)</th>
+                            <th className="text-right p-2 font-medium">Tüketim ({dataset?.consumptionUnit ?? "kWh"})</th>
                             <th className="text-right p-2 font-medium">TEP</th>
                             <th className="text-right p-2 font-medium">CO₂ (kg)</th>
                             <th className="text-right p-2 font-medium">HDD</th>
@@ -945,7 +951,7 @@ export default function EnergyPerformance() {
                       {
                         label: "Kesişim (Intercept)",
                         value: regressionResult.intercept.toFixed(4),
-                        sub: "TEP",
+                        sub: regressionResult.dependentVariableUnit ?? "ham tüketim",
                         color: "text-foreground",
                       },
                     ].map(card => (
@@ -1021,7 +1027,7 @@ export default function EnergyPerformance() {
                     <CardContent>
                       <p className="text-xs font-mono text-teal-300 break-all">{regressionResult.formulaText}</p>
                       <p className="text-xs text-muted-foreground mt-2">
-                        Bağımlı değişken: Aylık toplam enerji tüketimi (TEP)
+                        Bağımlı değişken: Aylık ham tüketim ({regressionResult.dependentVariableUnit ?? "ham tüketim"})
                       </p>
                     </CardContent>
                   </Card>
@@ -1541,8 +1547,8 @@ export default function EnergyPerformance() {
                     {/* KPI özet */}
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       {[
-                        { label: "Toplam Gerçekleşen (TEP)", value: totalActual.toFixed(3), color: "text-foreground" },
-                        { label: "Toplam Beklenen (TEP)", value: totalExpected.toFixed(3), color: "text-foreground" },
+                        { label: `Toplam Gerçekleşen (${baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})`, value: totalActual.toLocaleString("tr-TR", { maximumFractionDigits: 2 }), color: "text-foreground" },
+                        { label: `Toplam Beklenen (${baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})`, value: totalExpected.toLocaleString("tr-TR", { maximumFractionDigits: 2 }), color: "text-foreground" },
                         { label: "Kümülatif FARK (CUSUM)", value: finalCusum.toFixed(3), color: finalCusum < 0 ? "text-teal-400" : "text-destructive" },
                         { label: "Ortalama EEI", value: avgEei.toFixed(4), color: avgEei < 1 ? "text-teal-400" : "text-destructive" },
                       ].map(k => (
@@ -1558,7 +1564,7 @@ export default function EnergyPerformance() {
                     {/* Grafik 1: Gerçekleşen vs Beklenen */}
                     <Card className="border-border/40">
                       <CardHeader className="pb-2">
-                        <CardTitle className="text-xs font-medium text-muted-foreground">Gerçekleşen vs Beklenen Tüketim (TEP)</CardTitle>
+                        <CardTitle className="text-xs font-medium text-muted-foreground">Gerçekleşen vs Beklenen Tüketim ({baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})</CardTitle>
                       </CardHeader>
                       <CardContent>
                         <ResponsiveContainer width="100%" height={220}>
@@ -1579,7 +1585,7 @@ export default function EnergyPerformance() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <Card className="border-border/40">
                         <CardHeader className="pb-2">
-                          <CardTitle className="text-xs font-medium text-muted-foreground">CUSUM Trendi (TEP)</CardTitle>
+                          <CardTitle className="text-xs font-medium text-muted-foreground">CUSUM Trendi ({baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})</CardTitle>
                         </CardHeader>
                         <CardContent>
                           <ResponsiveContainer width="100%" height={180}>
@@ -1628,10 +1634,10 @@ export default function EnergyPerformance() {
                             <thead>
                               <tr className="border-b border-border/50 text-muted-foreground">
                                 <th className="text-left p-2.5 pl-4 font-medium">Ay</th>
-                                <th className="text-right p-2.5 font-medium">Gerçekleşen (TEP)</th>
-                                <th className="text-right p-2.5 font-medium">Beklenen (TEP)</th>
-                                <th className="text-right p-2.5 font-medium">FARK (TEP)</th>
-                                <th className="text-right p-2.5 font-medium">CUSUM (TEP)</th>
+                                <th className="text-right p-2.5 font-medium">Gerçekleşen ({baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})</th>
+                                <th className="text-right p-2.5 font-medium">Beklenen ({baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})</th>
+                                <th className="text-right p-2.5 font-medium">FARK ({baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})</th>
+                                <th className="text-right p-2.5 font-medium">CUSUM ({baselines?.find(b => b.id === monitorBaselineId)?.dependentVariableUnit ?? "ham tüketim"})</th>
                                 <th className="text-right p-2.5 font-medium">EEI</th>
                                 <th className="text-right p-2.5 font-medium">SET</th>
                                 <th className="text-center p-2.5 pr-4 font-medium">Durum</th>
