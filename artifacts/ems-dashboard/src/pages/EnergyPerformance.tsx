@@ -6,6 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip as UITooltip,
+  TooltipContent as UITooltipContent,
+  TooltipProvider as UITooltipProvider,
+  TooltipTrigger as UITooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/context/AuthContext";
 import { useUnit } from "@/context/UnitContext";
@@ -1669,7 +1675,20 @@ export default function EnergyPerformance() {
                                     </td>
                                     <td className="p-2.5 pr-4 text-center">
                                       {isNegativeExpected
-                                        ? <span className="inline-flex items-center gap-1 text-amber-400"><AlertTriangle className="h-3 w-3" />Beklenen ≤ 0</span>
+                                        ? (
+                                          <UITooltipProvider>
+                                            <UITooltip>
+                                              <UITooltipTrigger asChild>
+                                                <span className="inline-flex items-center gap-1 text-amber-400 cursor-help">
+                                                  <AlertTriangle className="h-3 w-3" />Beklenen ≤ 0
+                                                </span>
+                                              </UITooltipTrigger>
+                                              <UITooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+                                                Regresyon formülü bu ay için sıfır veya negatif beklenen tüketim üretmiştir. Bu durum özellikle düşük HDD/CDD değerli aylarda görülebilir. EEI ve SET bu ay için hesaplanmaz; ay ortalama EEI hesabına dahil edilmez.
+                                              </UITooltipContent>
+                                            </UITooltip>
+                                          </UITooltipProvider>
+                                        )
                                         : isImprovement
                                           ? <span className="inline-flex items-center gap-1 text-teal-400"><CheckCircle2 className="h-3 w-3" />İyileşme</span>
                                           : (r.difference ?? 0) > 0
