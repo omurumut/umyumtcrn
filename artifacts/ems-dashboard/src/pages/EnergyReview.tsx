@@ -231,7 +231,7 @@ export default function EnergyReview() {
 
   const { data: units } = useListUnits(
     {} as any,
-    { query: { queryKey: getListUnitsQueryKey(), enabled: isAdmin } },
+    { query: { queryKey: getListUnitsQueryKey() } },
   );
 
   // Efektif birim: admin → local state; standart kullanıcı → context
@@ -282,7 +282,7 @@ export default function EnergyReview() {
 
   const unitName: string = isAdmin
     ? (effectiveUnitId !== null ? (units as any[])?.find((u: any) => u.id === effectiveUnitId)?.name ?? "" : "Tüm Birimler")
-    : (user?.name ?? "");
+    : ((units as any[])?.find((u: any) => u.id === (user?.unitId ?? null))?.name ?? "");
 
   return (
     <div className="p-6 space-y-6">
@@ -319,10 +319,10 @@ export default function EnergyReview() {
           </div>
         )}
 
-        {/* Standart kullanıcı: sabit birim etiketi */}
-        {!isAdmin && (
+        {/* Standart kullanıcı: sabit birim kapsam etiketi */}
+        {!isAdmin && unitName && (
           <Badge variant="outline" className="text-xs border-teal-600/30 text-teal-400 bg-teal-600/10 shrink-0">
-            {user?.name}
+            Birim: {unitName}
           </Badge>
         )}
       </div>
@@ -473,7 +473,7 @@ export default function EnergyReview() {
           )}
 
           {sources.length > 0 && (
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
               {/* Tablo */}
               <div className="lg:col-span-3">
                 <Card className="bg-card border-border">
@@ -545,15 +545,15 @@ export default function EnergyReview() {
 
               {/* Pie chart */}
               <div className="lg:col-span-2">
-                <Card className="bg-card border-border h-full">
-                  <CardHeader className="pb-2">
+                <Card className="bg-card border-border">
+                  <CardHeader className="pb-1 pt-4 px-4">
                     <CardTitle className="text-sm">TEP Payı Dağılımı</CardTitle>
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-[10px] text-muted-foreground leading-tight">
                       Grafik yalnızca TEP payını gösterir — farklı doğal birimler karşılaştırılmaz.
                     </p>
                   </CardHeader>
-                  <CardContent>
-                    <ResponsiveContainer width="100%" height={260}>
+                  <CardContent className="px-2 pb-3 pt-1">
+                    <ResponsiveContainer width="100%" height={200}>
                       <PieChart>
                         <Pie
                           data={sources}
@@ -561,7 +561,7 @@ export default function EnergyReview() {
                           nameKey="energySourceName"
                           cx="50%"
                           cy="50%"
-                          outerRadius={90}
+                          outerRadius={72}
                           labelLine={false}
                           label={({ tepSharePercent }) => tepSharePercent > 5 ? `%${tepSharePercent.toFixed(0)}` : ""}
                         >
@@ -576,7 +576,7 @@ export default function EnergyReview() {
                             name,
                           ]}
                         />
-                        <Legend iconSize={10} iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                        <Legend iconSize={9} iconType="circle" wrapperStyle={{ fontSize: 10 }} />
                       </PieChart>
                     </ResponsiveContainer>
                   </CardContent>

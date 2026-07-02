@@ -1,0 +1,70 @@
+Enerji Gözden Geçirme → Enerji Kaynakları sekmesinde yalnızca aşağıdaki görsel iyileştirmeleri yap.
+
+Mevcut çalışan hesaplamalara, endpoint’lere, yetkilendirmeye ve veritabanına dokunma.
+Gereksiz refactor yapma.
+Migration oluşturma veya çalıştırma.
+Yıllık karşılaştırma tablosunun mevcut yatay scrollbar yapısını değiştirme; scrollbar zaten çalışıyor.
+
+İncelenecek dosya:
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- gerekiyorsa bu sayfanın kullandığı mevcut ortak UI bileşenleri
+
+1. TEP PAYI DAĞILIMI GRAFİĞİNİ KOMPAKT HALE GETİR
+
+Mevcut grafik gereğinden fazla dikey alan kaplıyor.
+
+Şunları yap:
+- Grafik kartının yüksekliğini azalt.
+- Pasta grafiğini daha kompakt göster.
+- Büyük boşlukları kaldır.
+- Başlık, açıklama, grafik ve lejant arasındaki mesafeleri azalt.
+- Grafik okunabilirliğini koru.
+- Masaüstünde “Kaynak Bazlı Tüketim” tablosu ile “TEP Payı Dağılımı” grafiğini mümkünse aynı satırda göster:
+  - tablo daha geniş alan kullansın
+  - grafik daha dar alan kullansın
+- Küçük ekranlarda kartlar alt alta gelsin.
+- Mevcut responsive yapıyı bozma.
+- Grafikte yalnızca TEP payı gösterilmeye devam etsin.
+- Farklı doğal birimleri grafikte karşılaştırma.
+
+2. ÜSTTE GÖRÜNEN “17bm” ŞERİDİNİ DÜZELT
+
+Sayfanın en üstünde tek başına görünen “17bm” benzeri şeridin kaynağını tespit et.
+
+Şunları kontrol et:
+- Kullanıcı adı mı?
+- Birim adı mı?
+- Hatalı render edilen bir select/input değeri mi?
+- Debug veya geçici içerik mi?
+
+Düzeltme kuralları:
+- Debug veya hatalı içerikse tamamen kaldır.
+- Kullanıcı adıysa bu konumda gösterme.
+- Birim kapsamını temsil ediyorsa kullanıcı adı/kodu yerine gerçek birim adını göster.
+- Birim bilgisi sayfa başlığının sağındaki mevcut Birim filtresinde zaten gösteriliyorsa aynı bilgiyi ikinci kez gösterme.
+- Standart kullanıcıda birim filtresi kapalıysa başlığın yanında sade bir kapsam etiketi gösterilebilir:
+  “Birim: 17. Bölge Müdürlüğü”
+- Firma yöneticisinde mevcut birim dropdown’u yeterliyse ayrıca şerit gösterme.
+- Kod değerini kullanıcıya göstermeme:
+  - “17bm” yerine gerçek birim adı
+  - teknik kullanıcı adı yerine okunabilir kapsam bilgisi
+
+KONTROL
+
+- Firma yöneticisi görünümünü kontrol et.
+- Standart kullanıcı görünümünü kontrol et.
+- “17bm” teknik kodunun ekranda kalmadığını doğrula.
+- TEP Payı grafiğinin daha az dikey alan kapladığını doğrula.
+- Kaynak Bazlı Tüketim tablosunun okunabilir kaldığını doğrula.
+- Yıllık karşılaştırma tablosunun yatay scrollbarının çalışmaya devam ettiğini doğrula.
+- Enerji kaynağı, TEP, CO₂ ve değişim hesaplarına dokunulmadığını doğrula.
+
+TypeScript typecheck ve frontend build çalıştır.
+
+İş sonunda raporla:
+- “17bm” şeridinin kök nedeni
+- Şeritle ilgili yapılan düzeltme
+- Grafik kartının eski ve yeni yerleşimi
+- Değişen dosyalar
+- Typecheck ve build sonuçları
+- Backend ve veritabanına dokunulmadığının teyidi
