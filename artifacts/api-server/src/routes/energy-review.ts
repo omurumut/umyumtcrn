@@ -337,6 +337,131 @@ router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/energy-review/source-comparison
+// Seçili yıl ile bir önceki yılı enerji kaynağı bazında karşılaştırır.
+// Farklı doğal birimler birbiriyle toplanmaz; yüzde değişimi yalnızca aynı
+// energySourceId içinde hesaplanır.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/energy-review/source-comparison", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+
+    const selectedYear = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const previousYear = selectedYear - 1;
+
+    // Standart kullanıcıda session unitId'yi kullan; query parametresine güvenme.
+    const effectiveUnitId: number | null =
+      role === "admin" || role === "superadmin"
+        ? req.query.unitId ? parseInt(req.query.unitId as string) : null
+        : sessionUnitId;
+
+    const meterIds = await getMeterIds(effectiveUnitId, sessionCompanyId);
+    if (meterIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    // Her iki yıl için sayaç bazlı tüketim sorgula
+    const [selectedRows, previousRows] = await Promise.all([
+      db
+        .select({
+          energySourceId: metersTable.energySourceId,
+          rawConsumption: sql<number>`coalesce(sum(${consumptionTable.kwh}), 0)`.as("raw_consumption"),
+          tep: sql<number>`coalesce(sum(${consumptionTable.tep}), 0)`.as("tep"),
+          co2Kg: sql<number>`coalesce(sum(${consumptionTable.co2}), 0)`.as("co2_kg"),
+        })
+        .from(consumptionTable)
+        .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+        .where(buildConsumptionCond(selectedYear, meterIds))
+        .groupBy(metersTable.energySourceId),
+      db
+        .select({
+          energySourceId: metersTable.energySourceId,
+          rawConsumption: sql<number>`coalesce(sum(${consumptionTable.kwh}), 0)`.as("raw_consumption"),
+          tep: sql<number>`coalesce(sum(${consumptionTable.tep}), 0)`.as("tep"),
+          co2Kg: sql<number>`coalesce(sum(${consumptionTable.co2}), 0)`.as("co2_kg"),
+        })
+        .from(consumptionTable)
+        .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+        .where(buildConsumptionCond(previousYear, meterIds))
+        .groupBy(metersTable.energySourceId),
+    ]);
+
+    // Her iki yılda görünen tüm kaynak id'lerini birleştir (union)
+    const allSourceIds = Array.from(
+      new Set([
+        ...selectedRows.map((r) => r.energySourceId),
+        ...previousRows.map((r) => r.energySourceId),
+      ].filter((id): id is number => id !== null)),
+    );
+
+    if (allSourceIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const sources = await db
+      .select({ id: energySourcesTable.id, name: energySourcesTable.name, unit: energySourcesTable.unit })
+      .from(energySourcesTable)
+      .where(inArray(energySourcesTable.id, allSourceIds));
+    const sourceMap = new Map(sources.map((s) => [s.id, s]));
+
+    const selectedMap = new Map(
+      selectedRows
+        .filter((r): r is typeof r & { energySourceId: number } => r.energySourceId !== null)
+        .map((r) => [r.energySourceId, r]),
+    );
+    const previousMap = new Map(
+      previousRows
+        .filter((r): r is typeof r & { energySourceId: number } => r.energySourceId !== null)
+        .map((r) => [r.energySourceId, r]),
+    );
+
+    // Sıfıra bölmeden güvenli yüzde değişimi. Önceki yıl 0 veya veri yoksa null döner.
+    function pctChange(curr: number, prev: number): number | null {
+      if (prev === 0) return null;
+      return Math.round(((curr - prev) / prev) * 10000) / 100;
+    }
+
+    const result = allSourceIds
+      .map((sourceId) => {
+        const source = sourceMap.get(sourceId);
+        const sel = selectedMap.get(sourceId);
+        const prev = previousMap.get(sourceId);
+
+        const selRaw = sel?.rawConsumption ?? 0;
+        const prevRaw = prev?.rawConsumption ?? 0;
+        const selTep = sel?.tep ?? 0;
+        const prevTep = prev?.tep ?? 0;
+        // CO₂ kg → ton dönüşümü burada yapılır
+        const selCo2Ton = (sel?.co2Kg ?? 0) / 1000;
+        const prevCo2Ton = (prev?.co2Kg ?? 0) / 1000;
+
+        return {
+          energySourceId: sourceId,
+          energySourceName: source?.name ?? "Bilinmeyen Kaynak",
+          unitOfMeasure: source?.unit ?? "-",
+          selectedYearRawConsumption: Math.round(selRaw * 1000) / 1000,
+          previousYearRawConsumption: Math.round(prevRaw * 1000) / 1000,
+          rawConsumptionChangePercent: pctChange(selRaw, prevRaw),
+          selectedYearTep: Math.round(selTep * 1000) / 1000,
+          previousYearTep: Math.round(prevTep * 1000) / 1000,
+          tepChangePercent: pctChange(selTep, prevTep),
+          selectedYearCo2Ton: Math.round(selCo2Ton * 100) / 100,
+          previousYearCo2Ton: Math.round(prevCo2Ton * 100) / 100,
+          co2ChangePercent: pctChange(selCo2Ton, prevCo2Ton),
+        };
+      })
+      .sort((a, b) => b.selectedYearTep - a.selectedYearTep);
+
+    res.json(result);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/energy-review/enpi-summary
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {

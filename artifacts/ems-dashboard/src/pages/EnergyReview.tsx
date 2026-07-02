@@ -65,6 +65,21 @@ interface SourceBreakdownItem {
   tepSharePercent: number;
 }
 
+interface SourceComparisonItem {
+  energySourceId: number;
+  energySourceName: string;
+  unitOfMeasure: string;
+  selectedYearRawConsumption: number;
+  previousYearRawConsumption: number;
+  rawConsumptionChangePercent: number | null;
+  selectedYearTep: number;
+  previousYearTep: number;
+  tepChangePercent: number | null;
+  selectedYearCo2Ton: number;
+  previousYearCo2Ton: number;
+  co2ChangePercent: number | null;
+}
+
 interface EnpiSummaryItem {
   seuItemId: number;
   seuName: string;
@@ -159,6 +174,24 @@ function MonitoringBadge({ state }: { state: EnpiSummaryItem["monitoringState"] 
   return <Badge className="bg-muted/30 text-muted-foreground border-border">İzlenmiyor</Badge>;
 }
 
+// Değişim yüzdesini nötr biçimde gösterir: artış/azalış/değişim yok / karşılaştırılamıyor.
+// Pozitif/negatif değişim renklendirmesi yapılmaz (üretim/hava/faaliyet farklılıklarından kaynaklayabilir).
+function ChangeCell({ pct }: { pct: number | null }) {
+  if (pct === null) {
+    return <span className="text-muted-foreground text-[10px]">Karşılaştırılamıyor</span>;
+  }
+  if (pct === 0) {
+    return <span className="text-muted-foreground tabular-nums">—</span>;
+  }
+  const sign = pct > 0 ? "▲" : "▼";
+  const abs = Math.abs(pct);
+  return (
+    <span className="text-foreground tabular-nums">
+      {sign} {pct > 0 ? "+" : ""}{abs.toLocaleString("tr-TR", { minimumFractionDigits: 1, maximumFractionDigits: 2 })}%
+    </span>
+  );
+}
+
 function EmptyState({ message }: { message: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
@@ -229,6 +262,11 @@ export default function EnergyReview() {
   const enpiQ = useQuery<EnpiSummaryItem[]>({
     queryKey: ["energy-review-enpi", year, effectiveUnitId],
     queryFn: () => apiFetch(`${API_BASE}/energy-review/enpi-summary?${buildParams()}`, token),
+  });
+
+  const sourceCompQ = useQuery<SourceComparisonItem[]>({
+    queryKey: ["energy-review-source-comparison", year, effectiveUnitId],
+    queryFn: () => apiFetch(`${API_BASE}/energy-review/source-comparison?${buildParams()}`, token),
   });
 
   const unitCompQ = useQuery<UnitComparisonItem[]>({
@@ -546,6 +584,92 @@ export default function EnergyReview() {
               </div>
             </div>
           )}
+
+          {/* ── Yıllık Karşılaştırma Tablosu ── */}
+          <div className="mt-6 space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold">Yıllık Enerji Kaynağı Karşılaştırması</h3>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Seçili yıl ile bir önceki yıl aynı enerji kaynağı bazında karşılaştırılır. Farklı doğal birimler birbiriyle toplanmaz.
+              </p>
+            </div>
+
+            {sourceCompQ.isError && (
+              <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                Karşılaştırma verileri yüklenemedi: {(sourceCompQ.error as Error)?.message}
+              </div>
+            )}
+
+            {!sourceCompQ.isLoading && !sourceCompQ.isError && (sourceCompQ.data ?? []).length === 0 && (
+              <EmptyState message={`${year} ve ${year - 1} yılları için karşılaştırılacak kaynak tüketimi bulunamadı.`} />
+            )}
+
+            {(sourceCompQ.isLoading || (sourceCompQ.data ?? []).length > 0) && !sourceCompQ.isError && (
+              <Card className="bg-card border-border">
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-border hover:bg-transparent">
+                          <TableHead className="text-xs min-w-[140px]">Enerji Kaynağı</TableHead>
+                          <TableHead className="text-xs">Birim</TableHead>
+                          <TableHead className="text-xs text-right min-w-[90px]">{year} Tüketim</TableHead>
+                          <TableHead className="text-xs text-right min-w-[90px]">{year - 1} Tüketim</TableHead>
+                          <TableHead className="text-xs text-right min-w-[110px]">Tüketim Değişimi</TableHead>
+                          <TableHead className="text-xs text-right min-w-[80px]">{year} TEP</TableHead>
+                          <TableHead className="text-xs text-right min-w-[80px]">{year - 1} TEP</TableHead>
+                          <TableHead className="text-xs text-right min-w-[100px]">TEP Değişimi</TableHead>
+                          <TableHead className="text-xs text-right min-w-[90px]">{year} ton CO₂</TableHead>
+                          <TableHead className="text-xs text-right min-w-[90px]">{year - 1} ton CO₂</TableHead>
+                          <TableHead className="text-xs text-right min-w-[100px]">CO₂ Değişimi</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {sourceCompQ.isLoading ? (
+                          <LoadingRows cols={11} />
+                        ) : (
+                          (sourceCompQ.data ?? []).map((row) => (
+                            <TableRow key={row.energySourceId} className="border-border">
+                              <TableCell className="text-xs font-medium">{row.energySourceName}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground">{row.unitOfMeasure}</TableCell>
+                              <TableCell className="text-xs text-right tabular-nums">
+                                {row.selectedYearRawConsumption.toLocaleString("tr-TR", { maximumFractionDigits: 1 })}
+                              </TableCell>
+                              <TableCell className="text-xs text-right tabular-nums text-muted-foreground">
+                                {row.previousYearRawConsumption.toLocaleString("tr-TR", { maximumFractionDigits: 1 })}
+                              </TableCell>
+                              <TableCell className="text-xs text-right">
+                                <ChangeCell pct={row.rawConsumptionChangePercent} />
+                              </TableCell>
+                              <TableCell className="text-xs text-right tabular-nums">
+                                {row.selectedYearTep.toLocaleString("tr-TR", { maximumFractionDigits: 3 })}
+                              </TableCell>
+                              <TableCell className="text-xs text-right tabular-nums text-muted-foreground">
+                                {row.previousYearTep.toLocaleString("tr-TR", { maximumFractionDigits: 3 })}
+                              </TableCell>
+                              <TableCell className="text-xs text-right">
+                                <ChangeCell pct={row.tepChangePercent} />
+                              </TableCell>
+                              <TableCell className="text-xs text-right tabular-nums">
+                                {row.selectedYearCo2Ton.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-xs text-right tabular-nums text-muted-foreground">
+                                {row.previousYearCo2Ton.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-xs text-right">
+                                <ChangeCell pct={row.co2ChangePercent} />
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
         </TabsContent>
 
         {/* ══════════════════════════════════════════════════════════════ */}

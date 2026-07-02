@@ -1,0 +1,138 @@
+Enerji Gözden Geçirme modülündeki “Enerji Kaynakları” sekmesine yıllık karşılaştırma tablosu ekle.
+
+Amaç:
+Seçili yıl ile bir önceki yılı enerji kaynağı bazında karşılaştırmak.
+
+Önemli kurallar:
+- Farklı enerji kaynaklarının doğal tüketim birimlerini birbirleriyle toplama.
+- Elektrik yalnızca elektrikle, doğalgaz yalnızca doğalgazla karşılaştırılsın.
+- Kaynaklar arası ortak değerlendirme TEP üzerinden yapılsın.
+- Toplam kWh üretme.
+- Mevcut çalışan yapıyı bozma.
+- Gereksiz refactor yapma.
+- Multi-tenant companyId ve unitId güvenliğini koru.
+- Authentication yapısına dokunma.
+- Migration oluşturma veya çalıştırma.
+
+İncelenecek dosyalar:
+- artifacts/api-server/src/routes/energy-review.ts
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- lib/db/src/schema/energy.ts
+- ilgili auth ve context yapıları
+
+BACKEND
+
+Mevcut source-breakdown endpoint’ini bozma.
+
+Yeni endpoint ekle:
+
+GET /api/energy-review/source-comparison
+
+Parametreler:
+- year
+- unitId, mevcut yetki kurallarına göre
+
+Karşılaştırma:
+- selectedYear = year
+- previousYear = year - 1
+
+Her enerji kaynağı için şu alanları döndür:
+
+- energySourceId
+- energySourceName
+- unitOfMeasure
+
+- selectedYearRawConsumption
+- previousYearRawConsumption
+- rawConsumptionChangePercent
+
+- selectedYearTep
+- previousYearTep
+- tepChangePercent
+
+- selectedYearCo2Ton
+- previousYearCo2Ton
+- co2ChangePercent
+
+Kurallar:
+- Her iki yılda bulunan enerji kaynaklarını tek satırda birleştir.
+- Bir yılda olup diğer yılda olmayan kaynakları da listeden düşürme.
+- Önceki yıl değeri 0 veya null ise yüzde değişimi güvenli şekilde null döndür.
+- Sıfıra bölme yapma.
+- CO₂ kg olarak saklanıyorsa endpoint’te ton’a çevir.
+- rawConsumption yalnızca aynı energySourceId için karşılaştırılsın.
+- unitOfMeasure energy source kaydından gelsin.
+- Farklı kaynakların rawConsumption değerlerinden genel toplam üretme.
+- Şirket filtresini tüm sorgulara uygula.
+- Standart kullanıcıda query unitId değerine güvenme; session unitId uygula.
+
+FRONTEND
+
+Enerji Gözden Geçirme → Enerji Kaynakları sekmesinde mevcut kaynak bazlı tüketim ve TEP payı görünümünü koru.
+
+Altına yeni bölüm ekle:
+
+Başlık:
+“Yıllık Enerji Kaynağı Karşılaştırması”
+
+Alt açıklama:
+“Seçili yıl ile bir önceki yıl aynı enerji kaynağı bazında karşılaştırılır. Farklı doğal birimler birbiriyle toplanmaz.”
+
+Tablo kolonları:
+
+- Enerji Kaynağı
+- Birim
+- [Seçili Yıl] Tüketim
+- [Önceki Yıl] Tüketim
+- Tüketim Değişimi
+- [Seçili Yıl] TEP
+- [Önceki Yıl] TEP
+- TEP Değişimi
+- [Seçili Yıl] ton CO₂
+- [Önceki Yıl] ton CO₂
+- CO₂ Değişimi
+
+Gösterim kuralları:
+- Değişim yüzdelerini pozitif/negatif işaretle göster.
+- Önceki yıl değeri yoksa yüzde yerine “Karşılaştırılamıyor” göster.
+- 0 değeri ile veri yok durumunu ayır.
+- Seçili yıl değiştiğinde tablo yenilensin.
+- Eski yıl verisini yükleme sırasında ekranda tutma; skeleton göster.
+- Veri yoksa açık empty state göster.
+- Mobilde tablo yatay kaydırılabilir olsun.
+- Mevcut tasarım sistemini kullan.
+
+ÖNEMLİ YORUM KURALI:
+Pozitif veya negatif değişimi otomatik olarak “iyi” veya “kötü” şeklinde renklendirme.
+Çünkü tüketim artışı üretim, hava koşulları veya faaliyet değişkenlerinden kaynaklanabilir.
+Sadece:
+- artış
+- azalış
+- değişim yok
+durumunu nötr biçimde göster.
+
+KONTROL
+
+Ayrı ayrı doğrula:
+1. Firma geneli 2026 vs 2025
+2. Tek birim 2026 vs 2025
+3. Standart kullanıcı yalnızca kendi birimi
+4. Bir yılda olup diğer yılda olmayan enerji kaynağı
+5. Önceki yıl 0 olduğunda yüzde değişim
+6. CO₂ değerlerinin ton cinsinden doğru olması
+7. TEP toplamlarının mevcut source-breakdown verileriyle uyumu
+8. Farklı doğal birimlerin hiçbir yerde toplanmaması
+
+TypeScript typecheck çalıştır.
+Frontend build çalıştır.
+Backend build çalıştır.
+Migration çalıştırma.
+
+İş sonunda raporla:
+- Eklenen endpoint
+- Karşılaştırma hesabı
+- Yetkilendirme davranışı
+- Değişen dosyalar
+- Test edilen örnek yıllar ve sonuçlar
+- Typecheck ve build sonuçları
+- Veritabanına dokunulmadığının teyidi
