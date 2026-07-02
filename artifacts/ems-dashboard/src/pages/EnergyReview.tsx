@@ -94,11 +94,19 @@ interface EnpiSummaryItem {
   r2Score: number | null;
   adjustedR2Score: number | null;
   resultCount: number;
+  lastResultYear: number | null;
+  lastResultMonth: number | null;
   lastResultPeriod: string | null;
   latestEei: number | null;
+  latestSet: number | null;
   cumulativeCusum: number | null;
+  latestExpectedConsumption: number | null;
+  latestActualConsumption: number | null;
+  latestVariance: number | null;
+  latestVariancePercent: number | null;
   existingStatus: string | null;
-  monitoringState: "not_monitored" | "baseline_without_results" | "monitored";
+  monitoringState: "not_monitored" | "baseline_without_results" | "monitored" | "missing_relation";
+  dataRelationState: "complete" | "missing_unit" | "missing_energy_source" | "missing_energy_use_group" | "missing_baseline_link" | "missing_result_link";
 }
 
 interface UnitComparisonItem {
@@ -168,10 +176,12 @@ function KpiCard({
 
 function MonitoringBadge({ state }: { state: EnpiSummaryItem["monitoringState"] }) {
   if (state === "monitored")
-    return <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30">İzleniyor</Badge>;
+    return <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30 text-[10px]">İzleniyor</Badge>;
   if (state === "baseline_without_results")
-    return <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30">EnRÇ Var / Sonuç Yok</Badge>;
-  return <Badge className="bg-muted/30 text-muted-foreground border-border">İzlenmiyor</Badge>;
+    return <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30 text-[10px]">EnRÇ Var / Sonuç Yok</Badge>;
+  if (state === "missing_relation")
+    return <Badge className="bg-red-600/20 text-red-400 border-red-600/30 text-[10px]">Veri İlişkisi Eksik</Badge>;
+  return <Badge className="bg-muted/30 text-muted-foreground border-border text-[10px]">İzlenmiyor</Badge>;
 }
 
 // Değişim yüzdesini nötr biçimde gösterir: artış/azalış/değişim yok / karşılaştırılamıyor.
@@ -229,6 +239,12 @@ export default function EnergyReview() {
   // Admin kullanıcı için lokal birim filtresi (context'ten bağımsız seçim)
   const [selectedUnitId, setSelectedUnitId] = useState<number | null>(null);
 
+  // ÖEK & EnPG sekmesi filtreleri
+  const [enpiFilterState, setEnpiFilterState] = useState("all");
+  const [enpiFilterUnit, setEnpiFilterUnit] = useState("all");
+  const [enpiFilterSource, setEnpiFilterSource] = useState("all");
+  const [enpiFilterOnlyMissing, setEnpiFilterOnlyMissing] = useState(false);
+
   const { data: units } = useListUnits(
     {} as any,
     { query: { queryKey: getListUnitsQueryKey() } },
@@ -279,6 +295,15 @@ export default function EnergyReview() {
   const sources = sourceQ.data ?? [];
   const enpiList = enpiQ.data ?? [];
   const unitList = unitCompQ.data ?? [];
+
+  // ÖEK filtreli liste
+  const filteredEnpiList = enpiList.filter((item) => {
+    if (enpiFilterState !== "all" && item.monitoringState !== enpiFilterState) return false;
+    if (isAdmin && enpiFilterUnit !== "all" && String(item.unitId) !== enpiFilterUnit) return false;
+    if (enpiFilterSource !== "all" && item.energySourceName !== enpiFilterSource) return false;
+    if (enpiFilterOnlyMissing && item.monitoringState !== "missing_relation") return false;
+    return true;
+  });
 
   const unitName: string = isAdmin
     ? (effectiveUnitId !== null ? (units as any[])?.find((u: any) => u.id === effectiveUnitId)?.name ?? "" : "Tüm Birimler")
@@ -675,7 +700,7 @@ export default function EnergyReview() {
         {/* ══════════════════════════════════════════════════════════════ */}
         {/* Tab 3: ÖEK & EnPG Performansı                                 */}
         {/* ══════════════════════════════════════════════════════════════ */}
-        <TabsContent value="enpi" className="mt-4">
+        <TabsContent value="enpi" className="mt-4 space-y-4">
           {enpiQ.isError && (
             <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive flex items-center gap-2">
               <AlertCircle className="h-4 w-4 shrink-0" />
@@ -683,66 +708,205 @@ export default function EnergyReview() {
             </div>
           )}
 
-          {!enpiQ.isLoading && enpiList.length === 0 && !enpiQ.isError && (
-            <EmptyState message="Bu birim için kabul edilmiş ÖEK bulunamadı." />
+          {/* ── Özet KPI kartları ── */}
+          {(enpiList.length > 0 || enpiQ.isFetching) && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <KpiCard
+                title="Toplam ÖEK"
+                value={enpiQ.isFetching ? "—" : enpiList.length}
+                icon={Activity}
+                accent="muted"
+              />
+              <KpiCard
+                title="Aktif EnRÇ Modeli"
+                value={enpiQ.isFetching ? "—" : enpiList.filter((i) => i.baselineId !== null).length}
+                icon={TrendingUp}
+                accent="teal"
+              />
+              <KpiCard
+                title="İzlenen ÖEK"
+                value={enpiQ.isFetching ? "—" : enpiList.filter((i) => i.monitoringState === "monitored").length}
+                icon={CheckCircle2}
+                accent="teal"
+              />
+              <KpiCard
+                title="EnRÇ Var / Sonuç Yok"
+                value={enpiQ.isFetching ? "—" : enpiList.filter((i) => i.monitoringState === "baseline_without_results").length}
+                icon={Clock}
+                accent="amber"
+              />
+              <KpiCard
+                title="İzlenmeyen ÖEK"
+                value={enpiQ.isFetching ? "—" : enpiList.filter((i) => i.monitoringState === "not_monitored").length}
+                icon={AlertCircle}
+                accent="muted"
+              />
+              <KpiCard
+                title="Veri İlişkisi Eksik"
+                value={enpiQ.isFetching ? "—" : enpiList.filter((i) => i.monitoringState === "missing_relation").length}
+                icon={AlertTriangle}
+                accent={enpiList.filter((i) => i.monitoringState === "missing_relation").length > 0 ? "red" : "muted"}
+              />
+            </div>
           )}
 
-          {(enpiList.length > 0 || enpiQ.isLoading) && (
+          {/* ── Filtreler ── */}
+          {(enpiList.length > 0 || enpiQ.isFetching) && (
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Label className="text-xs text-muted-foreground whitespace-nowrap">İzleme</Label>
+                <Select value={enpiFilterState} onValueChange={setEnpiFilterState}>
+                  <SelectTrigger className="h-8 text-xs w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Tümü</SelectItem>
+                    <SelectItem value="monitored">İzleniyor</SelectItem>
+                    <SelectItem value="baseline_without_results">EnRÇ Var / Sonuç Yok</SelectItem>
+                    <SelectItem value="not_monitored">İzlenmiyor</SelectItem>
+                    <SelectItem value="missing_relation">Veri İlişkisi Eksik</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {isAdmin && (
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Birim</Label>
+                  <Select value={enpiFilterUnit} onValueChange={setEnpiFilterUnit}>
+                    <SelectTrigger className="h-8 text-xs w-40">
+                      <SelectValue placeholder="Tümü" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Tümü</SelectItem>
+                      {Array.from(new Set(enpiList.map((i) => i.unitId).filter(Boolean))).map((uid) => {
+                        const found = enpiList.find((i) => i.unitId === uid);
+                        return found ? (
+                          <SelectItem key={uid!} value={String(uid)}>{found.unitName ?? String(uid)}</SelectItem>
+                        ) : null;
+                      })}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <Label className="text-xs text-muted-foreground whitespace-nowrap">Enerji Kaynağı</Label>
+                <Select value={enpiFilterSource} onValueChange={setEnpiFilterSource}>
+                  <SelectTrigger className="h-8 text-xs w-36">
+                    <SelectValue placeholder="Tümü" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Tümü</SelectItem>
+                    {Array.from(new Set(enpiList.map((i) => i.energySourceName).filter((s): s is string => s !== null))).map((src) => (
+                      <SelectItem key={src} value={src}>{src}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="enpiOnlyMissing"
+                  checked={enpiFilterOnlyMissing}
+                  onChange={(e) => setEnpiFilterOnlyMissing(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-border accent-teal-500"
+                />
+                <Label htmlFor="enpiOnlyMissing" className="text-xs text-muted-foreground cursor-pointer whitespace-nowrap">
+                  Sadece eksik ilişkiler
+                </Label>
+              </div>
+            </div>
+          )}
+
+          {/* ── Boş durum ── */}
+          {!enpiQ.isFetching && enpiList.length === 0 && !enpiQ.isError && (
+            <EmptyState message="Bu dönem için kabul edilmiş ÖEK bulunamadı." />
+          )}
+
+          {!enpiQ.isFetching && enpiList.length > 0 && filteredEnpiList.length === 0 && (
+            <EmptyState message="Seçili filtrelere uyan ÖEK bulunamadı." />
+          )}
+
+          {/* ── Tablo ── */}
+          {(filteredEnpiList.length > 0 || enpiQ.isFetching) && (
             <Card className="bg-card border-border">
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow className="border-border hover:bg-transparent">
-                        <TableHead className="text-xs min-w-[140px]">ÖEK Adı</TableHead>
-                        {isAdmin && <TableHead className="text-xs">Birim</TableHead>}
-                        <TableHead className="text-xs">Enerji Kullanım Grubu</TableHead>
-                        <TableHead className="text-xs">Enerji Kaynağı</TableHead>
-                        <TableHead className="text-xs">EnRÇ Durumu</TableHead>
-                        <TableHead className="text-xs text-right">R²</TableHead>
-                        <TableHead className="text-xs">Son Dönem</TableHead>
-                        <TableHead className="text-xs text-right">Son EEI</TableHead>
-                        <TableHead className="text-xs text-right">Kümülatif CUSUM</TableHead>
-                        <TableHead className="text-xs">İzleme</TableHead>
+                        <TableHead className="text-xs min-w-[140px]">ÖEK</TableHead>
+                        {isAdmin && <TableHead className="text-xs min-w-[100px]">Birim</TableHead>}
+                        <TableHead className="text-xs min-w-[120px]">Enerji Kul. Grubu</TableHead>
+                        <TableHead className="text-xs min-w-[100px]">Enerji Kaynağı</TableHead>
+                        <TableHead className="text-xs min-w-[80px]">EnRÇ</TableHead>
+                        <TableHead className="text-xs text-right min-w-[110px]">R² / Düz. R²</TableHead>
+                        <TableHead className="text-xs min-w-[80px]">Son Dönem</TableHead>
+                        <TableHead className="text-xs text-right min-w-[100px]">Beklenen Tük.</TableHead>
+                        <TableHead className="text-xs text-right min-w-[100px]">Gerç. Tük.</TableHead>
+                        <TableHead className="text-xs text-right min-w-[100px]">Sapma</TableHead>
+                        <TableHead className="text-xs text-right min-w-[70px]">EEI</TableHead>
+                        <TableHead className="text-xs text-right min-w-[70px]">SET</TableHead>
+                        <TableHead className="text-xs text-right min-w-[100px]">Küm. CUSUM</TableHead>
+                        <TableHead className="text-xs min-w-[130px]">İzleme Durumu</TableHead>
                         <TableHead className="text-xs text-right">Detay</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {enpiQ.isLoading ? (
-                        <LoadingRows cols={isAdmin ? 11 : 10} />
+                      {enpiQ.isFetching ? (
+                        <LoadingRows cols={isAdmin ? 15 : 14} />
                       ) : (
-                        enpiList.map((item) => (
+                        filteredEnpiList.map((item) => (
                           <TableRow key={item.seuItemId} className="border-border">
                             <TableCell className="text-xs font-medium">{item.seuName}</TableCell>
                             {isAdmin && (
                               <TableCell className="text-xs text-muted-foreground">{item.unitName ?? "—"}</TableCell>
                             )}
-                            <TableCell className="text-xs text-muted-foreground">
-                              {item.energyUseGroupName ?? "—"}
-                            </TableCell>
-                            <TableCell className="text-xs text-muted-foreground">
-                              {item.energySourceName ?? "—"}
-                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{item.energyUseGroupName ?? "—"}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{item.energySourceName ?? "—"}</TableCell>
                             <TableCell className="text-xs">
                               {item.baselineId ? (
-                                <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30 text-[10px]">
-                                  EnRÇ Var
-                                </Badge>
+                                <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30 text-[10px]">Var</Badge>
                               ) : (
-                                <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                                  EnRÇ Yok
-                                </Badge>
+                                <Badge variant="outline" className="text-[10px] text-muted-foreground">Yok</Badge>
                               )}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.r2Score !== null ? item.r2Score.toFixed(3) : "—"}
+                              {item.r2Score !== null || item.adjustedR2Score !== null
+                                ? `${item.r2Score !== null ? item.r2Score.toFixed(3) : "—"} / ${item.adjustedR2Score !== null ? item.adjustedR2Score.toFixed(3) : "—"}`
+                                : "—"}
                             </TableCell>
-                            <TableCell className="text-xs text-muted-foreground">
-                              {item.lastResultPeriod ?? "—"}
+                            <TableCell className="text-xs text-muted-foreground">{item.lastResultPeriod ?? "—"}</TableCell>
+                            <TableCell className="text-xs text-right tabular-nums">
+                              {item.latestExpectedConsumption !== null
+                                ? item.latestExpectedConsumption.toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                                : "—"}
+                            </TableCell>
+                            <TableCell className="text-xs text-right tabular-nums">
+                              {item.latestActualConsumption !== null
+                                ? item.latestActualConsumption.toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                                : "—"}
+                            </TableCell>
+                            <TableCell className="text-xs text-right tabular-nums">
+                              {item.latestVariance !== null ? (
+                                <span>
+                                  {item.latestVariance > 0 ? "▲ " : item.latestVariance < 0 ? "▼ " : ""}
+                                  {item.latestVariance.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
+                                  {item.latestVariancePercent !== null
+                                    ? ` (${item.latestVariancePercent > 0 ? "+" : ""}${item.latestVariancePercent.toFixed(1)}%)`
+                                    : ""}
+                                </span>
+                              ) : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
                               {item.latestEei !== null
-                                ? item.latestEei.toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                                ? item.latestEei.toLocaleString("tr-TR", { maximumFractionDigits: 3 })
+                                : "—"}
+                            </TableCell>
+                            <TableCell className="text-xs text-right tabular-nums">
+                              {item.latestSet !== null
+                                ? item.latestSet.toLocaleString("tr-TR", { maximumFractionDigits: 3 })
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">

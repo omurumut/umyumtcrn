@@ -532,6 +532,9 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
             eei: energyPerformanceResultsTable.eei,
             cusum: energyPerformanceResultsTable.cusum,
             status: energyPerformanceResultsTable.status,
+            setValue: energyPerformanceResultsTable.setValue,
+            expectedConsumption: energyPerformanceResultsTable.expectedConsumption,
+            actualConsumption: energyPerformanceResultsTable.actualConsumption,
           })
           .from(energyPerformanceResultsTable)
           .where(
@@ -566,9 +569,27 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
       const allItemResults = resultsByItem.get(seu.id) ?? [];
       const yearResults = allItemResults.filter((r) => r.year === year);
 
+      // Veri ilişkisi durumu
+      let dataRelationState: "complete" | "missing_unit" | "missing_energy_source" | "missing_energy_use_group" | "missing_baseline_link" | "missing_result_link";
+      if (seu.resolvedUnitId === null) {
+        dataRelationState = "missing_unit";
+      } else if (seu.resolvedEnergySourceId === null) {
+        dataRelationState = "missing_energy_source";
+      } else if (seu.energyUseGroupId === null) {
+        dataRelationState = "missing_energy_use_group";
+      } else if (baseline === null) {
+        dataRelationState = "missing_baseline_link";
+      } else if (yearResults.length === 0) {
+        dataRelationState = "missing_result_link";
+      } else {
+        dataRelationState = "complete";
+      }
+
       // İzleme durumu
-      let monitoringState: "not_monitored" | "baseline_without_results" | "monitored";
-      if (yearResults.length > 0) {
+      let monitoringState: "not_monitored" | "baseline_without_results" | "monitored" | "missing_relation";
+      if (dataRelationState === "missing_unit" || dataRelationState === "missing_energy_source" || dataRelationState === "missing_energy_use_group") {
+        monitoringState = "missing_relation";
+      } else if (yearResults.length > 0) {
         monitoringState = "monitored";
       } else if (baseline !== null) {
         monitoringState = "baseline_without_results";
@@ -581,6 +602,16 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
       const cumulativeCusum = lastResult?.cusum ?? null;
       const lastPeriod = lastResult !== null
         ? `${lastResult.year} ${MONTH_NAMES[lastResult.month] ?? lastResult.month}`
+        : null;
+
+      // Tüketim ve sapma alanları
+      const latestExpectedConsumption = lastResult?.expectedConsumption ?? null;
+      const latestActualConsumption = lastResult?.actualConsumption ?? null;
+      const latestVariance = (latestActualConsumption !== null && latestExpectedConsumption !== null)
+        ? Math.round((latestActualConsumption - latestExpectedConsumption) * 1000) / 1000
+        : null;
+      const latestVariancePercent = (latestExpectedConsumption !== null && latestExpectedConsumption !== 0 && latestVariance !== null)
+        ? Math.round((latestVariance / latestExpectedConsumption) * 10000) / 100
         : null;
 
       return {
@@ -600,11 +631,19 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
         r2Score: baseline?.rSquared ?? null,
         adjustedR2Score: baseline?.adjustedRSquared ?? null,
         resultCount: yearResults.length,
+        lastResultYear: lastResult?.year ?? null,
+        lastResultMonth: lastResult?.month ?? null,
         lastResultPeriod: lastPeriod,
         latestEei,
+        latestSet: lastResult?.setValue ?? null,
         cumulativeCusum,
+        latestExpectedConsumption,
+        latestActualConsumption,
+        latestVariance,
+        latestVariancePercent,
         existingStatus: lastResult?.status ?? null,
         monitoringState,
+        dataRelationState,
       };
     });
 

@@ -1,0 +1,223 @@
+Enerji Gözden Geçirme → “ÖEK & EnPG Performansı” sekmesini geliştir.
+
+Amaç:
+Kabul edilmiş tüm ÖEK’lerin EnPG, EnRÇ ve izleme sonuçlarını tek ekranda toplu ve denetlenebilir şekilde göstermek.
+
+Mevcut çalışan yapıyı bozma.
+Gereksiz refactor yapma.
+Authentication yapısına dokunma.
+Multi-tenant companyId ve unitId güvenliğini koru.
+Migration oluşturma veya çalıştırma.
+Veritabanı kayıtlarını değiştirme.
+
+İncelenecek dosyalar:
+- artifacts/api-server/src/routes/energy-review.ts
+- artifacts/api-server/src/routes/energy-performance.ts
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- artifacts/ems-dashboard/src/pages/EnergyPerformance.tsx
+- lib/db/src/schema/energy.ts
+
+ÖNCE TEŞHİS
+
+Mevcut enpi-summary endpoint’inin döndürdüğü alanları ve gerçek şema ilişkilerini doğrula:
+
+- ÖEK
+- birim
+- enerji kullanım grubu
+- enerji kaynağı
+- EnPG / EnRÇ modeli
+- enerji performance result kayıtları
+- EEI
+- SET
+- CUSUM
+- expectedConsumption
+- actualConsumption
+- status
+- dönem/yıl/ay
+
+Kesin alan adlarını gerçek şemadan kontrol et.
+Olmayan alanı uydurma.
+
+BACKEND
+
+Mevcut:
+GET /api/energy-review/enpi-summary
+
+endpoint’ini bozmadan genişlet.
+
+Her kabul edilmiş ÖEK için mümkün olan mevcut verilerden şu alanları döndür:
+
+- seuItemId
+- seuName
+- unitId
+- unitName
+- energyUseGroupName
+- energySourceName
+
+- baselineId
+- baselineStatus
+- baselinePeriod
+- regressionFormula
+- r2Score
+- adjustedR2Score
+
+- resultCount
+- lastResultYear
+- lastResultMonth
+- lastResultPeriod
+
+- latestEei
+- latestSet
+- cumulativeCusum
+
+- latestExpectedConsumption
+- latestActualConsumption
+- latestVariance
+- latestVariancePercent
+
+- existingStatus
+- monitoringState
+- dataRelationState
+
+Kurallar:
+
+1. monitoringState değerleri:
+- monitored
+- baseline_without_results
+- not_monitored
+- missing_relation
+
+2. dataRelationState:
+- complete
+- missing_unit
+- missing_energy_source
+- missing_energy_use_group
+- missing_baseline_link
+- missing_result_link
+
+3. Sonuç kaydı varsa en son yıl+ay kaydını kullan.
+4. CUSUM alanı zaten kümülatif değer ise son kaydı kullan; aylık CUSUM değerlerini toplama.
+5. latestVariance:
+   actualConsumption - expectedConsumption
+6. latestVariancePercent:
+   expectedConsumption sıfır veya null ise null
+   aksi halde:
+   (actual - expected) / expected × 100
+7. Sonuç olmayan ÖEK’i listeden düşürme.
+8. EnRÇ olmayan ÖEK’i listeden düşürme.
+9. Aynı ÖEK join nedeniyle tekrar etmesin.
+10. Tüm lookup sorgularında companyId güvenliği uygula.
+11. Standart kullanıcı için session.unitId zorunlu olsun.
+12. Firma yöneticisi yalnızca kendi şirketindeki birimleri görebilsin.
+
+FRONTEND
+
+Enerji Gözden Geçirme → ÖEK & EnPG Performansı sekmesini yeniden düzenle.
+
+ÜST ÖZET KARTLARI
+
+- Toplam ÖEK
+- Aktif EnPG / EnRÇ Modeli Bulunan
+- İzlenen ÖEK
+- EnRÇ Var / Sonuç Yok
+- İzlenmeyen ÖEK
+- Veri İlişkisi Eksik
+
+Kartlar mevcut enpi-summary verisinden hesaplansın.
+Aynı ÖEK’i iki kez sayma.
+
+TABLO
+
+Kolonlar:
+
+- ÖEK
+- Birim
+- Enerji Kullanım Grubu
+- Enerji Kaynağı
+- EnRÇ Durumu
+- R² / Düzeltilmiş R²
+- Son Dönem
+- Beklenen Tüketim
+- Gerçekleşen Tüketim
+- Sapma
+- Son EEI
+- Son SET
+- Kümülatif CUSUM
+- İzleme Durumu
+- Detay
+
+Gösterim kuralları:
+
+- Beklenen ve gerçekleşen tüketim aynı fiziksel kapsamın sonucuysa göster.
+- Birimi mevcut performans sonucu veya ilgili enerji kaynağından çöz.
+- Birim kesin değilse sayı gösterip yanlış birim etiketi verme.
+- Sapma pozitifse “fazla tüketim”, negatifse “tasarruf” anlamına gelebilir; ancak bunu otomatik iyi/kötü rengiyle yorumlama.
+- Yalnızca nötr artış/azalış göster.
+- EEI için:
+  - 1’den küçük / büyük durumunu renkli yorumlama.
+  - Sadece sayıyı göster.
+  - Yorum ileride kurallı değerlendirme modülünde yapılacak.
+- Veri olmayan hücrelerde “—” göster.
+- missing_relation durumunda görünür uyarı etiketi göster.
+- Satırı gizleme.
+
+DETAY
+
+Detay butonu mevcut Performans Göstergeleri sayfasındaki ilgili ÖEK’e yönlendirsin.
+Mevcut route/query yapısını kontrol et.
+Yanlış ÖEK açılmasına izin verme.
+
+FİLTRELER
+
+Sekme içinde ek filtreler:
+
+- İzleme Durumu
+- Birim, yalnızca firma yöneticisi
+- Enerji Kaynağı
+- Sadece eksik ilişkiler
+
+Mevcut üst yıl ve birim filtresini bozma.
+Aynı filtreyi iki farklı yerde gereksiz tekrar etme.
+
+EMPTY / LOADING / ERROR
+
+- Veri yoksa “Bu dönem için kabul edilmiş ÖEK bulunamadı” göster.
+- Sonuç olmayan ÖEK’leri empty state’e düşürme; tabloda göster.
+- Yükleme sırasında eski yılın verisini gösterme.
+- isFetching durumunda skeleton göster.
+- API hatasında anlaşılır mesaj göster.
+
+RESPONSIVE
+
+- Masaüstünde tam tablo
+- Mobilde yatay kaydırma
+- Kolonları kaybetme
+- Mevcut tasarım sistemini koru
+
+KONTROL SENARYOLARI
+
+1. EnRÇ ve sonuç bulunan ÖEK
+2. EnRÇ var, sonuç yok
+3. EnRÇ yok
+4. Birim ilişkisi fallback ile bulunan ÖEK
+5. Enerji kaynağı fallback ile bulunan ÖEK
+6. Veri ilişkisi eksik ÖEK
+7. Standart kullanıcı yalnızca kendi birimini görür
+8. Firma yöneticisi birim filtresi kullanır
+9. 2025 ve 2026 arasında sonuçlar doğru değişir
+10. CUSUM son değer olarak doğru görünür
+11. Beklenen-gerçekleşen-sapma hesabı doğrulanır
+
+TypeScript typecheck çalıştır.
+Frontend build çalıştır.
+Backend build çalıştır.
+Migration çalıştırma.
+
+İş sonunda raporla:
+- Genişletilen endpoint alanları
+- İzleme durumu kuralları
+- Veri ilişkisi eksikliği kuralları
+- Değişen dosyalar
+- Test edilen örnek ÖEK sonuçları
+- Typecheck ve build sonuçları
+- Veritabanına dokunulmadığının teyidi
