@@ -1,10 +1,16 @@
 import path from "path";
+import { fileURLToPath } from "url";
 import ExcelJS from "exceljs";
 import { db, weatherDegreeDaysTable, mgmStationMappingsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
-export const DATA_DIR = path.resolve(process.cwd(), "artifacts/api-server/data/mgm-import");
+// Resolve data dir relative to the built bundle (dist/index.mjs → dist/data/mgm-import),
+// matching how migrations are resolved in index.ts. Works in both dev (node ./dist/index.mjs)
+// and production (node artifacts/api-server/dist/index.mjs from workspace root).
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+export const DATA_DIR = path.resolve(__dirname, "data/mgm-import");
 export const DEFAULT_MAPPING_FILE = path.join(DATA_DIR, "mgm_station_mapping_checked.xlsx");
 export const DEFAULT_DEGREE_DAYS_FILE = path.join(DATA_DIR, "mgm_degree_days_last_10_years_final.xlsx");
 
