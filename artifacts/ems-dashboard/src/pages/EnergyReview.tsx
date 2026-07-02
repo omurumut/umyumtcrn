@@ -873,45 +873,45 @@ export default function EnergyReview() {
                               )}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.r2Score !== null || item.adjustedR2Score !== null
-                                ? `${item.r2Score !== null ? item.r2Score.toFixed(3) : "—"} / ${item.adjustedR2Score !== null ? item.adjustedR2Score.toFixed(3) : "—"}`
+                              {item.r2Score != null || item.adjustedR2Score != null
+                                ? `${item.r2Score != null ? Number(item.r2Score).toFixed(3) : "—"} / ${item.adjustedR2Score != null ? Number(item.adjustedR2Score).toFixed(3) : "—"}`
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground">{item.lastResultPeriod ?? "—"}</TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestExpectedConsumption !== null
-                                ? item.latestExpectedConsumption.toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                              {item.latestExpectedConsumption != null
+                                ? Number(item.latestExpectedConsumption).toLocaleString("tr-TR", { maximumFractionDigits: 2 })
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestActualConsumption !== null
-                                ? item.latestActualConsumption.toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                              {item.latestActualConsumption != null
+                                ? Number(item.latestActualConsumption).toLocaleString("tr-TR", { maximumFractionDigits: 2 })
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestVariance !== null ? (
+                              {item.latestVariance != null ? (
                                 <span>
-                                  {item.latestVariance > 0 ? "▲ " : item.latestVariance < 0 ? "▼ " : ""}
-                                  {item.latestVariance.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
-                                  {item.latestVariancePercent !== null
-                                    ? ` (${item.latestVariancePercent > 0 ? "+" : ""}${item.latestVariancePercent.toFixed(1)}%)`
+                                  {Number(item.latestVariance) > 0 ? "▲ " : Number(item.latestVariance) < 0 ? "▼ " : ""}
+                                  {Number(item.latestVariance).toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
+                                  {item.latestVariancePercent != null
+                                    ? ` (${Number(item.latestVariancePercent) > 0 ? "+" : ""}${Number(item.latestVariancePercent).toFixed(1)}%)`
                                     : ""}
                                 </span>
                               ) : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestEei !== null
-                                ? item.latestEei.toLocaleString("tr-TR", { maximumFractionDigits: 3 })
+                              {item.latestEei != null
+                                ? Number(item.latestEei).toLocaleString("tr-TR", { maximumFractionDigits: 3 })
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestSet !== null
-                                ? item.latestSet.toLocaleString("tr-TR", { maximumFractionDigits: 3 })
+                              {item.latestSet != null
+                                ? Number(item.latestSet).toLocaleString("tr-TR", { maximumFractionDigits: 3 })
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.cumulativeCusum !== null
-                                ? item.cumulativeCusum.toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                              {item.cumulativeCusum != null
+                                ? Number(item.cumulativeCusum).toLocaleString("tr-TR", { maximumFractionDigits: 2 })
                                 : "—"}
                             </TableCell>
                             <TableCell>
