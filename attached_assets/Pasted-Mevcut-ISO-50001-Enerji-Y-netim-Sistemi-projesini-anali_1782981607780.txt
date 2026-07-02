@@ -1,0 +1,140 @@
+Mevcut ISO 50001 Enerji Yönetim Sistemi projesini analiz et.
+
+Amaç:
+Yeni bir “Enerji Gözden Geçirme” modülü geliştirmeden önce mevcut veri yapısını, API’leri, frontend ekranlarını ve hesaplamaları eksiksiz şekilde tespit etmek.
+
+Bu aşamada hiçbir dosyada değişiklik yapma.
+Kod yazma.
+Migration oluşturma veya çalıştırma.
+Veritabanına müdahale etme.
+Refactor yapma.
+Sadece analiz ve raporlama yap.
+
+Mevcut teknik yapıyı koru:
+- React + Vite frontend
+- Node.js backend
+- PostgreSQL
+- Drizzle ORM
+- pnpm Workspace
+- REST API
+- Authentication
+- Context API
+- Multi-tenant şirket bazlı veri ayrımı
+
+Analiz edilmesi gereken alanlar:
+
+1. Ana sayfa
+- Firma yöneticisi ana sayfası
+- Standart kullanıcı ana sayfası
+- Kullanılan API endpoint’leri
+- Gösterilen kartlar, grafikler ve tablolar
+- Toplam enerji, TEP, CO₂, ÖEK, hedef, aksiyon ve VAP verilerinin hangi alanlardan geldiği
+
+2. Çok Birimli Özet
+- Tablo görünümü
+- Liste/kart görünümü
+- Kullanılan endpoint’ler
+- Birim bazlı enerji, TEP, CO₂, sayaç ve ÖEK hesaplamaları
+- Rol ve yetki kontrolleri
+
+3. ÖEK yapısı
+- ÖEK tabloları ve ilişkileri
+- Birim, alt birim, enerji kullanım grubu, enerji kaynağı ve sayaç ilişkileri
+- Kabul edilmiş ÖEK kayıtlarının nasıl tespit edildiği
+
+4. Performans Göstergeleri
+- Regresyon analiz kayıtları
+- EnPG kayıtları
+- EnRÇ kayıtları
+- EnPG izleme sonuçları
+- EEI, SET, CUSUM, beklenen tüketim, gerçekleşen tüketim ve tasarruf/fazla tüketim hesaplamaları
+- Bu verilerin hangi tablo ve endpoint’lerde bulunduğu
+
+5. Enerji kaynakları ve birimler
+- Enerji kaynaklarının tüketim birimleri
+- Elektrik, doğalgaz, kömür, motorin vb. kaynakların doğal birimlerinin nasıl saklandığı
+- TEP ve CO₂ dönüşümlerinin nerede ve nasıl hesaplandığı
+- Farklı enerji kaynaklarının toplam kWh olarak birleştirilip birleştirilmediği
+
+Önemli tasarım kararı:
+Yeni Enerji Gözden Geçirme modülünde farklı enerji kaynakları “toplam kWh” olarak gösterilmeyecek.
+
+Ortak toplam yalnızca:
+- TEP
+- ton CO₂
+
+olarak gösterilecek.
+
+Enerji kaynakları ayrıca kendi doğal birimleriyle gösterilecek:
+- Elektrik: kWh
+- Doğalgaz: Sm³
+- Motorin: litre
+- Kömür: ton
+- Diğer kaynaklar: sistemde tanımlı doğal birim
+
+6. Hedefler, aksiyonlar ve VAP
+- Enerji hedefleri tabloları
+- Eylem planları
+- VAP projeleri
+- ÖEK ve EnPG ile olan ilişkileri
+- Durum, sorumlu, termin ve gerçekleşme alanları
+
+7. Yetkilendirme
+- Firma yöneticisi hangi birimleri görebiliyor
+- Standart kullanıcı hangi birim verilerini görebiliyor
+- Backend tarafında companyId ve unitId filtreleri nasıl uygulanıyor
+- Yeni modül için kullanılabilecek mevcut yetkilendirme yardımcıları
+
+8. Mevcut tekrarlar
+Ana sayfa ve Çok Birimli Özet ekranlarında bulunan aşağıdaki alanları tespit et:
+- ÖEK dağılımı
+- HDD/CDD grafikleri
+- CO₂ trendi
+- Hedef detayları
+- Eylem planı detayları
+- VAP detayları
+- ÖEK değerlendirme özeti
+- Performans göstergesi özetleri
+
+Her alan için şu sınıflandırmayı yap:
+- Ana sayfada kalmalı
+- Enerji Gözden Geçirmeye taşınmalı
+- Çok Birimli Özette kalmalı
+- Tamamen kaldırılabilir
+
+9. Yeni modül için veri yeterliliği
+Aşağıdaki bölümlerin mevcut verilerle oluşturulup oluşturulamayacağını değerlendir:
+- Genel Performans
+- Enerji Kaynakları
+- ÖEK ve EnPG Performansı
+- Birim Karşılaştırma
+- Hedefler ve Aksiyonlar
+
+Her bölüm için:
+- Kullanılabilecek mevcut tablolar
+- Kullanılabilecek mevcut endpoint’ler
+- Eksik veri alanları
+- Yeni endpoint gerekip gerekmediği
+- Yeni tablo gerekip gerekmediği
+- Hesaplama mı, salt okunur özet mi olduğu
+
+Rapor formatı:
+
+1. İncelenen dosyalar
+2. Mevcut veri akışı
+3. Kullanılabilecek tablolar
+4. Kullanılabilecek endpoint’ler
+5. Eksik alanlar
+6. Yeni endpoint ihtiyacı
+7. Yeni tablo ihtiyacı
+8. Ana sayfadan taşınması önerilen alanlar
+9. Çok Birimli Özette kalması önerilen alanlar
+10. Rol ve veri güvenliği riskleri
+11. Enerji Gözden Geçirme MVP için önerilen teknik plan
+12. Değişiklik yapılması gerekecek tahmini dosyalar
+
+İş sonunda açıkça şunu yaz:
+- Herhangi bir dosya değiştirildi mi?
+- Migration oluşturuldu mu?
+- Veritabanına müdahale edildi mi?
+- Analiz sonucunda en kritik üç risk nedir?
