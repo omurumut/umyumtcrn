@@ -1,0 +1,80 @@
+Ana sayfadaki iki veri doğruluğu sorununu incele ve düzelt.
+
+Gözlenen sorunlar:
+
+1. CO₂ kartında yaklaşık 365.003,99 değeri “ton CO₂” etiketiyle gösteriliyor.
+Enerji Gözden Geçirme ekranında aynı veri yaklaşık 365 ton CO₂ görünüyor.
+Muhtemelen ana sayfa endpoint’i veya frontend değeri kg olarak alıyor fakat ton etiketiyle gösteriyor.
+
+2. 2025 ve 2026 yılları seçildiğinde aylık TEP trend grafikleri aynı görünüyor.
+Toplam yıllık TEP değerleri farklı olmasına rağmen aylık seri değişmiyor.
+Muhtemel nedenler:
+- year parametresi API çağrısına gönderilmiyor
+- query/cache key yıl bilgisini içermiyor
+- endpoint yıl filtresini uygulamıyor
+- frontend eski veriyi koruyor
+
+Önce kök nedeni teşhis et, sonra yalnızca gerekli düzeltmeleri yap.
+
+İncelenecek dosyalar:
+- artifacts/ems-dashboard/src/pages/Dashboard.tsx
+- dashboard KPI ve monthly trend hook/query dosyaları
+- artifacts/api-server/src/routes/dashboard.ts
+- ilgili OpenAPI/generated query dosyaları
+- gerekiyorsa YearContext kullanımı
+
+CO₂ DÜZELTME KURALLARI:
+
+- Veritabanında consumption.co2 alanının hangi birimde saklandığını doğrula.
+- Dashboard KPI endpoint’inin hangi birimde değer döndürdüğünü doğrula.
+- Energy Review endpoint’inin ton dönüşümünü nasıl yaptığını karşılaştır.
+- Aynı fiziksel değer tüm ekranlarda aynı birimde gösterilmeli.
+- Ana sayfa kartında etiket “ton CO₂” ise değer ton olmalı.
+- Frontend’de rastgele /1000 uygulama; dönüşümü tek ve açık katmanda yap.
+- Aynı endpoint’i kullanan başka ekranları bozma.
+- Değer örneği yaklaşık 365.003,99 kg ise kartta yaklaşık 365,00 ton gösterilmeli.
+
+TREND DÜZELTME KURALLARI:
+
+- GET /api/dashboard/monthly-trend çağrısında selectedYear kesin olarak gönderilmeli.
+- Backend sorgusu consumption.year = selectedYear filtresini uygulamalı.
+- Query/cache key selectedYear ve gerekli unitId/company kapsamını içermeli.
+- Yıl değiştiğinde eski seri yeni veri gelene kadar yanlış yıl verisi olarak gösterilmemeli.
+- 2025 ve 2026 için API cevaplarını ayrı ayrı test et.
+- Aylık toplamların yıllık TEP toplamıyla makul şekilde uyuştuğunu doğrula.
+- Veri yoksa önceki yılın grafiğini tekrar gösterme; empty state göster.
+
+YETKİ:
+
+- Firma yöneticisi için seçili birim veya tüm birimler kapsamını koru.
+- Standart kullanıcı için session unitId davranışını bozma.
+- companyId ayrımını koru.
+- Authentication yapısına dokunma.
+
+TEST:
+
+1. 2025 Dashboard KPI CO₂ değerini doğrula.
+2. 2026 Dashboard KPI CO₂ değerini doğrula.
+3. Aynı yıllar için Energy Review toplam CO₂ ile karşılaştır.
+4. 2025 monthly-trend API cevabını kaydet.
+5. 2026 monthly-trend API cevabını kaydet.
+6. İki seri gerçekten farklıysa UI’da farklı grafik çizildiğini doğrula.
+7. Aylık TEP toplamlarını yıllık KPI TEP ile karşılaştır.
+8. Birim kullanıcısı ve firma yöneticisi kapsamlarını ayrı doğrula.
+
+Gereksiz refactor yapma.
+Migration oluşturma veya çalıştırma.
+Veritabanı kayıtlarını değiştirme.
+Enerji Gözden Geçirme modülüne yeni özellik ekleme.
+Yıllık karşılaştırma grafiği ekleme.
+
+Typecheck, frontend build ve gerekiyorsa backend build çalıştır.
+
+İş sonunda raporla:
+- CO₂ hatasının kök nedeni
+- Doğru veri birimi ve uygulanan dönüşüm
+- Trend hatasının kök nedeni
+- 2025 ve 2026 API seri karşılaştırması
+- Değişen dosyalar
+- Typecheck ve build sonuçları
+- Veritabanına dokunulmadığının teyidi

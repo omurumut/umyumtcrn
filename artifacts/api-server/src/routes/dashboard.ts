@@ -78,7 +78,7 @@ router.get("/dashboard/kpi", requireAuth, async (req, res) => {
       year,
       totalKwh: Math.round(totalKwh),
       totalTep: Math.round(totalTep * 1000) / 1000,
-      totalCo2: Math.round(totalCo2 * 100) / 100,
+      totalCo2: Math.round((totalCo2 / 1000) * 100) / 100,
       kwhChange: Math.round(kwhChange * 10) / 10,
       tepChange: Math.round(tepChange * 10) / 10,
       co2Change: Math.round(co2Change * 10) / 10,

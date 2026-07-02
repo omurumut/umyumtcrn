@@ -129,7 +129,7 @@ export default function Dashboard() {
   const { data: kpi, isLoading: kpiLoading } = useGetDashboardKpi(params, {
     query: { queryKey: getGetDashboardKpiQueryKey(params) },
   });
-  const { data: trend, isLoading: trendLoading } = useGetMonthlyTrend(params, {
+  const { data: trend, isLoading: trendLoading, isFetching: trendFetching } = useGetMonthlyTrend(params, {
     query: { queryKey: getGetMonthlyTrendQueryKey(params) },
   });
 
@@ -255,7 +255,7 @@ export default function Dashboard() {
           <CardDescription>Son 12 ay — TEP bazında</CardDescription>
         </CardHeader>
         <CardContent>
-          {trendLoading ? (
+          {trendLoading || trendFetching ? (
             <Skeleton className="h-64 w-full" />
           ) : (
             <ResponsiveContainer width="100%" height={260}>
