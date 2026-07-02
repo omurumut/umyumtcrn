@@ -1,0 +1,128 @@
+Firma yöneticisi ve standart kullanıcı ana sayfasını sadeleştir.
+
+Amaç:
+Enerji performansına ilişkin ayrıntılı analizler artık “Enerji Gözden Geçirme” modülünde bulunduğu için ana sayfadaki tekrarları kaldırmak ve ana sayfayı hızlı yönetim özeti haline getirmek.
+
+Önce mevcut Dashboard.tsx dosyasını ve kullandığı endpoint’leri incele.
+Mevcut çalışan yapıyı bozma.
+Gereksiz refactor yapma.
+Backend ve veritabanına dokunma.
+Migration oluşturma veya çalıştırma.
+Sadece gerekli frontend dosyalarında değişiklik yap.
+
+İncelenecek temel dosyalar:
+- artifacts/ems-dashboard/src/pages/Dashboard.tsx
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- artifacts/ems-dashboard/src/App.tsx
+- gerekli ise kullanılan dashboard bileşenleri
+
+ANA SAYFADA KALACAKLAR:
+
+1. Temel KPI kartları
+- Toplam TEP
+- Toplam CO₂
+- Sayaç sayısı
+- ÖEK sayısı
+- Aktif hedef sayısı
+- Açık aksiyon sayısı
+- Gecikmiş aksiyon sayısı
+- Aktif VAP sayısı veya yıllık tasarruf özeti
+
+Önemli:
+- Farklı enerji kaynaklarını “Toplam kWh” olarak gösterme.
+- Mevcut ana sayfada toplam kWh kartı varsa kaldır veya TEP kartı ile değiştir.
+- Ortak toplam enerji göstergesi yalnızca TEP olsun.
+- CO₂ ton cinsinden gösterilsin.
+
+2. Aylık temel enerji trendi
+- Ana sayfada yalnızca tek bir temel trend grafiği kalsın.
+- Grafik mümkünse aylık TEP üzerinden gösterilsin.
+- Farklı enerji kaynaklarının doğal birimlerini tek kWh grafiğinde toplama.
+
+3. Kısa yönetim uyarıları
+- Açık aksiyon
+- Gecikmiş aksiyon
+- Hedef dışı veya dikkat gerektiren durum varsa kısa sayı/kart
+
+ANA SAYFADAN KALDIRILACAK BÖLÜMLER:
+
+- ÖEK Değerlendirme Özeti
+- Ayrıntılı Hedef Durumu listesi
+- Ayrıntılı Eylem Planı Durumu bölümü
+- Ayrıntılı VAP Portföyü bölümü
+- HDD/CDD karşılaştırma grafiği
+- CO₂ trend grafiği
+- ÖEK dağılım grafiği veya tablosu, eğer Enerji Gözden Geçirme sayfasında aynı bilgi gösteriliyorsa
+- EnPG, EnRÇ, EEI, SET veya CUSUM ayrıntıları
+
+Bu alanların backend endpoint’lerini silme.
+Sadece ana sayfadaki render ve kullanılmayan frontend çağrılarını temizle.
+Başka modüllerin kullandığı API veya bileşenleri kaldırma.
+
+YENİ KART:
+
+Ana sayfaya “Enerji Gözden Geçirme” başlıklı bir yönlendirme kartı ekle.
+
+Kartta mümkünse mevcut:
+GET /api/energy-review/overview
+
+endpoint’ini kullan.
+
+Kartta şu bilgiler gösterilsin:
+- Seçili yıl
+- ÖEK sayısı
+- Aktif EnPG / EnRÇ Modeli
+- İzlenen ÖEK
+- İzlenmeyen ÖEK
+- Açık aksiyon
+- Gecikmiş aksiyon
+
+Buton:
+“Enerji Gözden Geçirmeye Git”
+
+Buton şu route’a yönlendirsin:
+ /enerji-gozden-gecirme
+
+Veri bulunamazsa kart kaybolmasın.
+“Bu dönem için enerji gözden geçirme verisi bulunamadı” mesajı gösterilsin.
+
+YETKİ:
+
+- Firma yöneticisi kendi şirketinin firma geneli verisini görsün.
+- Standart kullanıcı yalnızca kendi biriminin özetini görsün.
+- Frontend’den farklı unitId göndererek yetki aşımı oluşturma.
+- Mevcut UnitContext ve YearContext yapısını kullan.
+- Authentication yapısını değiştirme.
+
+TASARIM:
+
+- Mevcut kart, spacing, typography ve responsive tasarımı koru.
+- Ana sayfa daha kısa ve daha az kalabalık olsun.
+- Mobil ve masaüstü görünümünü bozma.
+- Boş kalan büyük alanlar oluşturma.
+- Yeni bir tasarım sistemi geliştirme.
+
+TEMİZLİK:
+
+- Kaldırılan bölümlere ait kullanılmayan import, state, query ve yardımcı fonksiyonları temizle.
+- Ancak başka sayfalarda kullanılan ortak bileşenleri veya endpoint’leri silme.
+- Dashboard.tsx dışında gereksiz dosya değiştirme.
+
+KONTROL:
+
+- Firma yöneticisi ana sayfasını doğrula.
+- Standart kullanıcı ana sayfasını doğrula.
+- Toplam kWh ifadesinin ana sayfada kalmadığını kontrol et.
+- Enerji Gözden Geçirme kartının doğru route’a gittiğini kontrol et.
+- TypeScript typecheck çalıştır.
+- Frontend build çalıştır.
+- Backend değişmediği için backend build gerekmez; ancak ortak tip etkilenmişse kontrol et.
+
+İş sonunda raporla:
+1. Kaldırılan ana sayfa bölümleri
+2. Ana sayfada kalan bölümler
+3. Eklenen Enerji Gözden Geçirme kartı
+4. Kaldırılan kullanılmayan import ve API çağrıları
+5. Değişen dosyalar
+6. Typecheck ve build sonuçları
+7. Backend ve veritabanına dokunulmadığının teyidi
