@@ -8,23 +8,19 @@ import {
   seuAssessmentsTable,
   seuAssessmentItemsTable,
   energyUseGroupsTable,
-  energyPerformanceIndicatorsTable,
   energyBaselinesTable,
   energyPerformanceResultsTable,
   energyTargetsTable,
   energyActionPlansTable,
   vapProjectsTable,
 } from "@workspace/db";
-import { eq, and, inArray, desc, SQL, sql } from "drizzle-orm";
+import { eq, and, inArray, desc, asc, SQL, sql } from "drizzle-orm";
 import { requireAuth, requireAdmin } from "../middlewares/auth.js";
 
 const router = Router();
 
-// ── Yardımcı: yıl bazlı tüketim koşulları ────────────────────────────────────
-function buildConsumptionConds(
-  year: number,
-  meterIds: number[],
-): SQL {
+// ── Yardımcı: yıl + sayaç bazlı tüketim koşulu ───────────────────────────────
+function buildConsumptionCond(year: number, meterIds: number[]): SQL {
   if (meterIds.length === 0) return eq(consumptionTable.year, -1);
   return and(
     eq(consumptionTable.year, year),
@@ -32,18 +28,39 @@ function buildConsumptionConds(
   ) as SQL;
 }
 
-// ── Yardımcı: birim için sayaç id'lerini al ───────────────────────────────────
+// ── Yardımcı: sayaç id'lerini al ─────────────────────────────────────────────
 async function getMeterIds(unitId: number | null, companyId: number): Promise<number[]> {
   const conds: SQL[] = [eq(metersTable.companyId, companyId)];
   if (unitId !== null) conds.push(eq(metersTable.unitId, unitId));
-  const rows = await db
-    .select({ id: metersTable.id })
-    .from(metersTable)
-    .where(and(...conds));
+  const rows = await db.select({ id: metersTable.id }).from(metersTable).where(and(...conds));
   return rows.map((r) => r.id);
 }
 
-// ── Yardımcı: kabul edilmiş ÖEK itemleri ─────────────────────────────────────
+// ── Yardımcı: Aktif EnRÇ/EnPG sayısı ─────────────────────────────────────────
+// "Aktif EnPG" = energy_baselines tablosunda status='active' olan kayıtlar.
+// energy_performance_indicators tablosu mevcut iş akışında kullanılmamaktadır.
+async function countActiveBaselines(unitId: number | null, companyId: number): Promise<number> {
+  const conds: SQL[] = [
+    eq(energyBaselinesTable.companyId, companyId),
+    eq(energyBaselinesTable.status, "active"),
+  ];
+  if (unitId !== null) {
+    // Doğrudan unitId üzerinden filtrele
+    // unitId null olan baseline'lar için SEU item → assessment → unit zinciri gerekir;
+    // ancak mevcut veri yapısında baselines.unitId her zaman dolu geliyor.
+    conds.push(eq(energyBaselinesTable.unitId, unitId));
+  }
+  const rows = await db
+    .select({ id: energyBaselinesTable.id })
+    .from(energyBaselinesTable)
+    .where(and(...conds));
+  return rows.length;
+}
+
+// ── Yardımcı: kabul edilmiş ÖEK kalemleri (çözülmüş birim ve enerji kaynağı ile) ──
+// Fallback sırası:
+//   unitId:          seuAssessmentItem.unitId → seuAssessment.unitId → energyUseGroup.unitId
+//   energySourceId:  seuAssessmentItem.energySourceId → energyUseGroup.energySourceId
 async function getAcceptedSeuItems(unitId: number | null, companyId: number) {
   const assessmentConds: SQL[] = [
     eq(seuAssessmentsTable.companyId, companyId),
@@ -51,53 +68,81 @@ async function getAcceptedSeuItems(unitId: number | null, companyId: number) {
   ];
   if (unitId !== null) assessmentConds.push(eq(seuAssessmentsTable.unitId, unitId));
 
-  const assessments = await db
-    .select({ id: seuAssessmentsTable.id })
-    .from(seuAssessmentsTable)
-    .where(and(...assessmentConds));
-
-  if (assessments.length === 0) return [];
-  const assessmentIds = assessments.map((a) => a.id);
-
-  const items = await db
+  const rows = await db
     .select({
       id: seuAssessmentItemsTable.id,
       name: seuAssessmentItemsTable.name,
       energyTep: seuAssessmentItemsTable.energyTep,
-      unitId: seuAssessmentItemsTable.unitId,
-      energySourceId: seuAssessmentItemsTable.energySourceId,
+      // Item seviyesi (nullable)
+      itemUnitId: seuAssessmentItemsTable.unitId,
+      itemEnergySourceId: seuAssessmentItemsTable.energySourceId,
       energyUseGroupId: seuAssessmentItemsTable.energyUseGroupId,
-      userDecision: seuAssessmentItemsTable.userDecision,
-      assessmentId: seuAssessmentItemsTable.assessmentId,
+      // Assessment seviyesi fallback
+      assessmentUnitId: seuAssessmentsTable.unitId,
+      // EUG seviyesi fallback
+      eugUnitId: energyUseGroupsTable.unitId,
+      eugEnergySourceId: energyUseGroupsTable.energySourceId,
+      // Adlar (join'den)
+      unitName: unitsTable.name,
+      energySourceName: energySourcesTable.name,
+      energyUseGroupName: energyUseGroupsTable.name,
     })
     .from(seuAssessmentItemsTable)
+    .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+    .leftJoin(energyUseGroupsTable, eq(seuAssessmentItemsTable.energyUseGroupId, energyUseGroupsTable.id))
+    // unitId: item → assessment → energyUseGroup fallback
+    .leftJoin(
+      unitsTable,
+      eq(
+        unitsTable.id,
+        // Drizzle sql koşulu: ilk non-null değeri kullan
+        sql`COALESCE(${seuAssessmentItemsTable.unitId}, ${seuAssessmentsTable.unitId}, ${energyUseGroupsTable.unitId})`,
+      ),
+    )
+    // energySourceId: item → energyUseGroup fallback
+    .leftJoin(
+      energySourcesTable,
+      eq(
+        energySourcesTable.id,
+        sql`COALESCE(${seuAssessmentItemsTable.energySourceId}, ${energyUseGroupsTable.energySourceId})`,
+      ),
+    )
     .where(
       and(
-        inArray(seuAssessmentItemsTable.assessmentId, assessmentIds),
+        ...assessmentConds,
         eq(seuAssessmentItemsTable.userDecision, "accepted_as_seu"),
       ),
-    );
-  return items;
+    )
+    .orderBy(asc(seuAssessmentItemsTable.id));
+
+  // Çözülmüş değerleri hesapla
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    energyTep: r.energyTep,
+    energyUseGroupId: r.energyUseGroupId,
+    // Çözülmüş birim: item → assessment → EUG
+    resolvedUnitId: r.itemUnitId ?? r.assessmentUnitId ?? r.eugUnitId ?? null,
+    unitName: r.unitName ?? null,
+    // Çözülmüş enerji kaynağı: item → EUG
+    resolvedEnergySourceId: r.itemEnergySourceId ?? r.eugEnergySourceId ?? null,
+    energySourceName: r.energySourceName ?? null,
+    energyUseGroupName: r.energyUseGroupName ?? null,
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/energy-review/overview
-// Parametreler: year, unitId (admin için)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/overview", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
 
-    const year = req.query.year
-      ? parseInt(req.query.year as string)
-      : new Date().getFullYear();
+    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
 
-    // Birim yetkilendirmesi: standart kullanıcı → session unitId
     const effectiveUnitId: number | null =
       role === "admin" || role === "superadmin"
-        ? req.query.unitId
-          ? parseInt(req.query.unitId as string)
-          : null
+        ? req.query.unitId ? parseInt(req.query.unitId as string) : null
         : sessionUnitId;
 
     const meterIds = await getMeterIds(effectiveUnitId, sessionCompanyId);
@@ -112,10 +157,10 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
           co2: sql<number>`coalesce(sum(${consumptionTable.co2}), 0)`.as("co2"),
         })
         .from(consumptionTable)
-        .where(buildConsumptionConds(year, meterIds));
+        .where(buildConsumptionCond(year, meterIds));
       if (consRows[0]) {
         totalTep = consRows[0].tep ?? 0;
-        totalCo2Ton = (consRows[0].co2 ?? 0) / 1000; // kg → ton
+        totalCo2Ton = (consRows[0].co2 ?? 0) / 1000;
       }
     }
 
@@ -124,36 +169,22 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
     const seuCount = seuItems.length;
     const seuItemIds = seuItems.map((s) => s.id);
 
-    // Aktif EnPG sayısı
-    const enpiConds: SQL[] = [
-      eq(energyPerformanceIndicatorsTable.companyId, sessionCompanyId),
-      eq(energyPerformanceIndicatorsTable.isActive, true),
-    ];
-    if (effectiveUnitId !== null)
-      enpiConds.push(eq(energyPerformanceIndicatorsTable.unitId, effectiveUnitId));
+    // Aktif EnPG sayısı = aktif EnRÇ (baseline status='active') sayısı
+    const activeEnpiCount = await countActiveBaselines(effectiveUnitId, sessionCompanyId);
 
-    const enpiRows = await db
-      .select({ id: energyPerformanceIndicatorsTable.id })
-      .from(energyPerformanceIndicatorsTable)
-      .where(and(...enpiConds));
-    const activeEnpiCount = enpiRows.length;
-
-    // İzlenen / İzlenmeyen ÖEK
+    // İzlenen ÖEK: o yıl için EnPG sonucu olan ÖEK sayısı
     let monitoredSeuCount = 0;
     if (seuItemIds.length > 0) {
-      const monitoredRows = await db
+      const monitored = await db
         .selectDistinct({ seuId: energyPerformanceResultsTable.seuAssessmentItemId })
         .from(energyPerformanceResultsTable)
         .where(
           and(
-            inArray(
-              energyPerformanceResultsTable.seuAssessmentItemId,
-              seuItemIds,
-            ),
+            inArray(energyPerformanceResultsTable.seuAssessmentItemId, seuItemIds),
             eq(energyPerformanceResultsTable.year, year),
           ),
         );
-      monitoredSeuCount = monitoredRows.length;
+      monitoredSeuCount = monitored.length;
     }
     const unmonitoredSeuCount = Math.max(0, seuCount - monitoredSeuCount);
 
@@ -162,30 +193,27 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
       eq(energyTargetsTable.companyId, sessionCompanyId),
       eq(energyTargetsTable.status, "active"),
     ];
-    if (effectiveUnitId !== null)
-      targetConds.push(eq(energyTargetsTable.unitId, effectiveUnitId));
+    if (effectiveUnitId !== null) targetConds.push(eq(energyTargetsTable.unitId, effectiveUnitId));
+
     const targetRows = await db
       .select({ id: energyTargetsTable.id, baselineYear: energyTargetsTable.baselineYear, targetYear: energyTargetsTable.targetYear })
       .from(energyTargetsTable)
       .where(and(...targetConds));
+
     const activeTargets = targetRows.filter(
       (t) => (t.baselineYear ?? 0) <= year && year <= (t.targetYear ?? 9999),
     );
     const targetsCount = activeTargets.length;
     const activeTargetIds = activeTargets.map((t) => t.id);
 
-    // Açık & Gecikmiş aksiyon sayısı
+    // Açık & Gecikmiş aksiyon
     let openActionsCount = 0;
     let overdueActionsCount = 0;
     if (activeTargetIds.length > 0) {
       const actionRows = await db
-        .select({
-          status: energyActionPlansTable.status,
-          dueDate: energyActionPlansTable.dueDate,
-        })
+        .select({ status: energyActionPlansTable.status, dueDate: energyActionPlansTable.dueDate })
         .from(energyActionPlansTable)
         .where(inArray(energyActionPlansTable.targetId, activeTargetIds));
-
       const today = new Date().toISOString().slice(0, 10);
       for (const a of actionRows) {
         if (a.status !== "completed" && a.status !== "cancelled") {
@@ -238,31 +266,23 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/energy-review/source-breakdown
-// Parametreler: year, unitId (admin için)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
 
-    const year = req.query.year
-      ? parseInt(req.query.year as string)
-      : new Date().getFullYear();
-
+    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const effectiveUnitId: number | null =
       role === "admin" || role === "superadmin"
-        ? req.query.unitId
-          ? parseInt(req.query.unitId as string)
-          : null
+        ? req.query.unitId ? parseInt(req.query.unitId as string) : null
         : sessionUnitId;
 
     const meterIds = await getMeterIds(effectiveUnitId, sessionCompanyId);
-
     if (meterIds.length === 0) {
       res.json([]);
       return;
     }
 
-    // Tüketim + kaynak bilgisi → GROUP BY enerji kaynağı
     const rows = await db
       .select({
         energySourceId: metersTable.energySourceId,
@@ -272,7 +292,7 @@ router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
       })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-      .where(buildConsumptionConds(year, meterIds))
+      .where(buildConsumptionCond(year, meterIds))
       .groupBy(metersTable.energySourceId);
 
     if (rows.length === 0) {
@@ -280,19 +300,13 @@ router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
       return;
     }
 
-    // Kaynak bilgilerini çek
-    const sourceIds = rows
-      .map((r) => r.energySourceId)
-      .filter((id): id is number => id !== null);
-
-    const sources =
-      sourceIds.length > 0
-        ? await db
-            .select({ id: energySourcesTable.id, name: energySourcesTable.name, unit: energySourcesTable.unit })
-            .from(energySourcesTable)
-            .where(inArray(energySourcesTable.id, sourceIds))
-        : [];
-
+    const sourceIds = rows.map((r) => r.energySourceId).filter((id): id is number => id !== null);
+    const sources = sourceIds.length > 0
+      ? await db
+          .select({ id: energySourcesTable.id, name: energySourcesTable.name, unit: energySourcesTable.unit })
+          .from(energySourcesTable)
+          .where(inArray(energySourcesTable.id, sourceIds))
+      : [];
     const sourceMap = new Map(sources.map((s) => [s.id, s]));
 
     const totalTep = rows.reduce((acc, r) => acc + (r.tep ?? 0), 0);
@@ -302,8 +316,7 @@ router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
       .map((r) => {
         const source = sourceMap.get(r.energySourceId!);
         const tep = r.tep ?? 0;
-        const tepSharePercent =
-          totalTep > 0 ? Math.round((tep / totalTep) * 10000) / 100 : 0;
+        const tepSharePercent = totalTep > 0 ? Math.round((tep / totalTep) * 10000) / 100 : 0;
         return {
           energySourceId: r.energySourceId,
           energySourceName: source?.name ?? "Bilinmeyen Kaynak",
@@ -325,24 +338,18 @@ router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/energy-review/enpi-summary
-// Parametreler: year, unitId (admin için)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
 
-    const year = req.query.year
-      ? parseInt(req.query.year as string)
-      : new Date().getFullYear();
-
+    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const effectiveUnitId: number | null =
       role === "admin" || role === "superadmin"
-        ? req.query.unitId
-          ? parseInt(req.query.unitId as string)
-          : null
+        ? req.query.unitId ? parseInt(req.query.unitId as string) : null
         : sessionUnitId;
 
-    // Kabul edilmiş ÖEK kalemleri
+    // Kabul edilmiş ÖEK kalemleri (çözülmüş birim + enerji kaynağı ile)
     const seuItems = await getAcceptedSeuItems(effectiveUnitId, sessionCompanyId);
     if (seuItems.length === 0) {
       res.json([]);
@@ -351,109 +358,73 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
 
     const seuItemIds = seuItems.map((s) => s.id);
 
-    // SEU item için yardımcı lookup haritaları
-    const unitIds = [...new Set(seuItems.map((s) => s.unitId).filter((id): id is number => id !== null))];
-    const esIds = [...new Set(seuItems.map((s) => s.energySourceId).filter((id): id is number => id !== null))];
-    const eugIds = [...new Set(seuItems.map((s) => s.energyUseGroupId).filter((id): id is number => id !== null))];
-
-    const [unitRows, esRows, eugRows] = await Promise.all([
-      unitIds.length > 0
-        ? db.select({ id: unitsTable.id, name: unitsTable.name }).from(unitsTable).where(inArray(unitsTable.id, unitIds))
-        : Promise.resolve([]),
-      esIds.length > 0
-        ? db.select({ id: energySourcesTable.id, name: energySourcesTable.name }).from(energySourcesTable).where(inArray(energySourcesTable.id, esIds))
-        : Promise.resolve([]),
-      eugIds.length > 0
-        ? db.select({ id: energyUseGroupsTable.id, name: energyUseGroupsTable.name }).from(energyUseGroupsTable).where(inArray(energyUseGroupsTable.id, eugIds))
-        : Promise.resolve([]),
-    ]);
-
-    const unitMap = new Map(unitRows.map((r) => [r.id, r.name]));
-    const esMap = new Map(esRows.map((r) => [r.id, r.name]));
-    const eugMap = new Map(eugRows.map((r) => [r.id, r.name]));
-
-    // EnPG → ÖEK bağlantısı
-    const enpiRows = await db
+    // Her ÖEK için aktif baseline (EnRÇ): status='active' olanı al
+    // Birden fazla baseline varsa status=active olanı, yoksa son kaydı kullan
+    const allBaselines = await db
       .select({
-        id: energyPerformanceIndicatorsTable.id,
-        seuAssessmentItemId: energyPerformanceIndicatorsTable.seuAssessmentItemId,
-        name: energyPerformanceIndicatorsTable.name,
-        isActive: energyPerformanceIndicatorsTable.isActive,
+        id: energyBaselinesTable.id,
+        seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
+        unitId: energyBaselinesTable.unitId,
+        periodStart: energyBaselinesTable.periodStart,
+        periodEnd: energyBaselinesTable.periodEnd,
+        baselineYear: energyBaselinesTable.baselineYear,
+        rSquared: energyBaselinesTable.rSquared,
+        adjustedRSquared: energyBaselinesTable.adjustedRSquared,
+        formulaText: energyBaselinesTable.formulaText,
+        status: energyBaselinesTable.status,
+        isValid: energyBaselinesTable.isValid,
       })
-      .from(energyPerformanceIndicatorsTable)
+      .from(energyBaselinesTable)
       .where(
         and(
-          eq(energyPerformanceIndicatorsTable.companyId, sessionCompanyId),
-          inArray(energyPerformanceIndicatorsTable.seuAssessmentItemId, seuItemIds),
+          eq(energyBaselinesTable.companyId, sessionCompanyId),
+          inArray(energyBaselinesTable.seuAssessmentItemId, seuItemIds),
         ),
-      );
-    const enpiMap = new Map(enpiRows.map((r) => [r.seuAssessmentItemId, r]));
-    const enpiIds = enpiRows.map((r) => r.id);
+      )
+      .orderBy(asc(energyBaselinesTable.id));
 
-    // EnRÇ (baseline) → ÖEK veya EnPG bağlantısı
-    const baselineRows =
-      seuItemIds.length > 0
-        ? await db
-            .select({
-              id: energyBaselinesTable.id,
-              seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
-              enpiId: energyBaselinesTable.enpiId,
-              periodStart: energyBaselinesTable.periodStart,
-              periodEnd: energyBaselinesTable.periodEnd,
-              baselineYear: energyBaselinesTable.baselineYear,
-              rSquared: energyBaselinesTable.rSquared,
-              adjustedRSquared: energyBaselinesTable.adjustedRSquared,
-              formulaText: energyBaselinesTable.formulaText,
-              status: energyBaselinesTable.status,
-              isValid: energyBaselinesTable.isValid,
-            })
-            .from(energyBaselinesTable)
-            .where(
-              and(
-                eq(energyBaselinesTable.companyId, sessionCompanyId),
-                inArray(energyBaselinesTable.seuAssessmentItemId, seuItemIds),
-              ),
-            )
-        : [];
-
-    // Her ÖEK için en son (geçerli) baseline seç
-    const baselineMap = new Map<number, typeof baselineRows[0]>();
-    for (const b of baselineRows) {
+    // Her ÖEK için önce status='active' olan baseline'ı, yoksa son olanı seç
+    const baselineMap = new Map<number, typeof allBaselines[0]>();
+    for (const b of allBaselines) {
       if (b.seuAssessmentItemId === null) continue;
       const existing = baselineMap.get(b.seuAssessmentItemId);
-      if (!existing || (b.isValid && !existing.isValid)) {
+      if (!existing) {
+        baselineMap.set(b.seuAssessmentItemId, b);
+      } else if (b.status === "active" && existing.status !== "active") {
+        // Aktif olanı tercih et
         baselineMap.set(b.seuAssessmentItemId, b);
       }
     }
 
-    // EnPG sonuçları
-    const resultConds: SQL[] = [
-      eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
-      inArray(energyPerformanceResultsTable.seuAssessmentItemId, seuItemIds),
-    ];
-    const allResultRows =
-      seuItemIds.length > 0
-        ? await db
-            .select({
-              id: energyPerformanceResultsTable.id,
-              seuAssessmentItemId: energyPerformanceResultsTable.seuAssessmentItemId,
-              year: energyPerformanceResultsTable.year,
-              month: energyPerformanceResultsTable.month,
-              eei: energyPerformanceResultsTable.eei,
-              cusum: energyPerformanceResultsTable.cusum,
-              status: energyPerformanceResultsTable.status,
-            })
-            .from(energyPerformanceResultsTable)
-            .where(and(...resultConds))
-            .orderBy(
-              energyPerformanceResultsTable.year,
-              energyPerformanceResultsTable.month,
-            )
-        : [];
+    // EnPG sonuçları: tüm yıllar için (izleme durumu tespiti)
+    const allResults = seuItemIds.length > 0
+      ? await db
+          .select({
+            id: energyPerformanceResultsTable.id,
+            seuAssessmentItemId: energyPerformanceResultsTable.seuAssessmentItemId,
+            year: energyPerformanceResultsTable.year,
+            month: energyPerformanceResultsTable.month,
+            eei: energyPerformanceResultsTable.eei,
+            cusum: energyPerformanceResultsTable.cusum,
+            status: energyPerformanceResultsTable.status,
+          })
+          .from(energyPerformanceResultsTable)
+          .where(
+            and(
+              eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+              inArray(energyPerformanceResultsTable.seuAssessmentItemId, seuItemIds),
+            ),
+          )
+          .orderBy(
+            energyPerformanceResultsTable.seuAssessmentItemId,
+            energyPerformanceResultsTable.year,
+            energyPerformanceResultsTable.month,
+          )
+      : [];
 
     // ÖEK başına sonuçları grupla
-    const resultsByItem = new Map<number, typeof allResultRows>();
-    for (const r of allResultRows) {
+    const resultsByItem = new Map<number, typeof allResults>();
+    for (const r of allResults) {
       if (r.seuAssessmentItemId === null) continue;
       const arr = resultsByItem.get(r.seuAssessmentItemId) ?? [];
       arr.push(r);
@@ -466,11 +437,11 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
     };
 
     const summary = seuItems.map((seu) => {
-      const enpi = enpiMap.get(seu.id) ?? null;
       const baseline = baselineMap.get(seu.id) ?? null;
-      const results = resultsByItem.get(seu.id) ?? [];
-      const yearResults = results.filter((r) => r.year === year);
+      const allItemResults = resultsByItem.get(seu.id) ?? [];
+      const yearResults = allItemResults.filter((r) => r.year === year);
 
+      // İzleme durumu
       let monitoringState: "not_monitored" | "baseline_without_results" | "monitored";
       if (yearResults.length > 0) {
         monitoringState = "monitored";
@@ -482,30 +453,24 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
 
       const lastResult = yearResults.length > 0 ? yearResults[yearResults.length - 1] : null;
       const latestEei = lastResult?.eei ?? null;
-
-      // Kümülatif CUSUM: yıl içindeki son cusum değeri
       const cumulativeCusum = lastResult?.cusum ?? null;
-
-      const lastPeriod =
-        lastResult !== null
-          ? `${lastResult.year} ${MONTH_NAMES[lastResult.month] ?? lastResult.month}`
-          : null;
+      const lastPeriod = lastResult !== null
+        ? `${lastResult.year} ${MONTH_NAMES[lastResult.month] ?? lastResult.month}`
+        : null;
 
       return {
         seuItemId: seu.id,
         seuName: seu.name,
-        unitId: seu.unitId ?? null,
-        unitName: seu.unitId ? (unitMap.get(seu.unitId) ?? null) : null,
-        energyUseGroupName: seu.energyUseGroupId ? (eugMap.get(seu.energyUseGroupId) ?? null) : null,
-        energySourceName: seu.energySourceId ? (esMap.get(seu.energySourceId) ?? null) : null,
-        enpiId: enpi?.id ?? null,
-        enpiName: enpi?.name ?? null,
-        enpiIsActive: enpi?.isActive ?? null,
+        unitId: seu.resolvedUnitId,
+        unitName: seu.unitName,
+        energyUseGroupName: seu.energyUseGroupName,
+        energySourceName: seu.energySourceName,
+        // EnPG = aktif baseline tabanlı (energy_performance_indicators tablosu kullanılmıyor)
         baselineId: baseline?.id ?? null,
-        baselinePeriod:
-          baseline !== null
-            ? `${baseline.periodStart} – ${baseline.periodEnd}`
-            : null,
+        baselineStatus: baseline?.status ?? null,
+        baselinePeriod: baseline !== null
+          ? `${baseline.periodStart} – ${baseline.periodEnd}`
+          : null,
         regressionFormula: baseline?.formulaText ?? null,
         r2Score: baseline?.rSquared ?? null,
         adjustedR2Score: baseline?.adjustedRSquared ?? null,
@@ -526,27 +491,18 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/energy-review/unit-comparison
-// Sadece admin/superadmin erişebilir
+// GET /api/energy-review/unit-comparison   (sadece admin/superadmin)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId } = req.user!;
+    const { companyId: sessionCompanyId } = req.user!;
 
-    const year = req.query.year
-      ? parseInt(req.query.year as string)
-      : new Date().getFullYear();
+    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
 
-    // Firmaya ait birimler
     const units = await db
       .select({ id: unitsTable.id, name: unitsTable.name })
       .from(unitsTable)
-      .where(
-        and(
-          eq(unitsTable.companyId, sessionCompanyId),
-          eq(unitsTable.active, true),
-        ),
-      );
+      .where(and(eq(unitsTable.companyId, sessionCompanyId), eq(unitsTable.active, true)));
 
     if (units.length === 0) {
       res.json([]);
@@ -559,7 +515,6 @@ router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (r
       units.map(async (unit) => {
         const meterIds = await getMeterIds(unit.id, sessionCompanyId);
 
-        // TEP & CO₂
         let totalTep = 0;
         let totalCo2Ton = 0;
         if (meterIds.length > 0) {
@@ -569,30 +524,19 @@ router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (r
               co2: sql<number>`coalesce(sum(${consumptionTable.co2}), 0)`.as("co2"),
             })
             .from(consumptionTable)
-            .where(buildConsumptionConds(year, meterIds));
+            .where(buildConsumptionCond(year, meterIds));
           if (consRows[0]) {
             totalTep = consRows[0].tep ?? 0;
             totalCo2Ton = (consRows[0].co2 ?? 0) / 1000;
           }
         }
 
-        // Kabul edilmiş ÖEK
         const seuItems = await getAcceptedSeuItems(unit.id, sessionCompanyId);
         const seuCount = seuItems.length;
         const seuItemIds = seuItems.map((s) => s.id);
 
-        // Aktif EnPG
-        const enpiRows = await db
-          .select({ id: energyPerformanceIndicatorsTable.id })
-          .from(energyPerformanceIndicatorsTable)
-          .where(
-            and(
-              eq(energyPerformanceIndicatorsTable.companyId, sessionCompanyId),
-              eq(energyPerformanceIndicatorsTable.unitId, unit.id),
-              eq(energyPerformanceIndicatorsTable.isActive, true),
-            ),
-          );
-        const activeEnpiCount = enpiRows.length;
+        // Aktif EnPG = aktif baseline sayısı
+        const activeEnpiCount = await countActiveBaselines(unit.id, sessionCompanyId);
 
         // İzlenen ÖEK
         let monitoredSeuCount = 0;
@@ -609,7 +553,6 @@ router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (r
           monitoredSeuCount = monitored.length;
         }
 
-        // Hedefler
         const targetRows = await db
           .select({ id: energyTargetsTable.id, baselineYear: energyTargetsTable.baselineYear, targetYear: energyTargetsTable.targetYear })
           .from(energyTargetsTable)
@@ -625,7 +568,6 @@ router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (r
         );
         const activeTargetIds = activeTargets.map((t) => t.id);
 
-        // Aksiyon planları
         let openActionsCount = 0;
         let overdueActionsCount = 0;
         if (activeTargetIds.length > 0) {
@@ -656,9 +598,7 @@ router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (r
       }),
     );
 
-    // Toplam TEP azalana göre sırala
     result.sort((a, b) => b.totalTep - a.totalTep);
-
     res.json(result);
   } catch (err) {
     req.log.error(err);

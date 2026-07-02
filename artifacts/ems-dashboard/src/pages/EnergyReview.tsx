@@ -72,10 +72,8 @@ interface EnpiSummaryItem {
   unitName: string | null;
   energyUseGroupName: string | null;
   energySourceName: string | null;
-  enpiId: number | null;
-  enpiName: string | null;
-  enpiIsActive: boolean | null;
   baselineId: number | null;
+  baselineStatus: string | null;
   baselinePeriod: string | null;
   regressionFormula: string | null;
   r2Score: number | null;

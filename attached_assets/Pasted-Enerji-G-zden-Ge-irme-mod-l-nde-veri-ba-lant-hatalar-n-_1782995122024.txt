@@ -1,0 +1,133 @@
+Enerji Gözden Geçirme modülünde veri bağlantı hatalarını incele ve düzelt.
+
+Gözlenen sorunlar:
+
+1. Performans Göstergeleri modülünde 1 adet aktif EnPG tanımlı olmasına rağmen:
+   - Enerji Gözden Geçirme / Genel Performans ekranında Aktif EnPG = 0
+   - Birim Karşılaştırma ekranında Aktif EnPG = 0
+
+2. ÖEK & EnPG Performansı tablosunda:
+   - ÖEK adı geliyor
+   - Enerji kullanım grubu geliyor
+   - Birim alanı “—” görünüyor
+   - Enerji kaynağı alanı “—” görünüyor
+
+Bu aşamada tahminle kod değiştirme.
+Önce gerçek veritabanı kayıtlarını ve mevcut Performans Göstergeleri modülünün kullandığı sorguları karşılaştır.
+
+İncelenecek dosyalar:
+- artifacts/api-server/src/routes/energy-review.ts
+- artifacts/api-server/src/routes/energy-performance.ts
+- artifacts/ems-dashboard/src/pages/EnergyPerformance.tsx
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- lib/db/src/schema/energy.ts
+
+YAPILACAK TEŞHİS:
+
+1. Veritabanında mevcut şirket için energy_performance_indicators kayıtlarını listele:
+   - id
+   - companyId
+   - unitId
+   - seuAssessmentItemId
+   - name
+   - isActive
+   - varsa status
+   - oluşturulma tarihi
+
+2. Performans Göstergeleri ekranında görülen aktif EnPG’nin hangi kayıt olduğunu tespit et.
+
+3. Şunları açıkça doğrula:
+   - isActive değeri true mu, false mu, null mı?
+   - unitId mevcut mu?
+   - seuAssessmentItemId mevcut mu?
+   - EnPG doğrudan birime mi, ÖEK’e mi bağlı?
+   - Mevcut EnPG liste endpoint’i “aktif” kaydı hangi koşulla belirliyor?
+
+4. energy-review.ts içindeki activeEnpiCount sorgusunun neden bu kaydı saymadığını kesin olarak açıkla.
+
+DÜZELTME KURALLARI:
+
+A. Aktif EnPG sayısı
+- Enerji Gözden Geçirme modülü, Performans Göstergeleri modülündeki gerçek EnPG kayıt mantığını kullanmalı.
+- Aynı kavram için iki farklı aktiflik kuralı oluşturma.
+- Firma genelinde şirketin aktif EnPG’lerini say.
+- Birim filtresinde:
+  - EnPG’nin doğrudan unitId değeri varsa onu kullan.
+  - unitId boş fakat seuAssessmentItemId varsa ÖEK kaydı üzerinden birimi çöz.
+  - ÖEK kaydında unitId boşsa energyUseGroupId üzerinden enerji kullanım grubunun unitId değerini çöz.
+- Aynı EnPG’yi join nedeniyle birden fazla sayma; distinct id kullan.
+- Pasif EnPG’leri sayma.
+- Mevcut eski kayıtlarda isActive null olabiliyorsa önce bunun nedenini doğrula.
+- isActive null kayıtlarını otomatik olarak aktif kabul etme veya veritabanını topluca güncelleme.
+- Aktiflik için uygulamanın mevcut EnPG modülündeki gerçek kuralını esas al.
+
+B. ÖEK tablosundaki Birim ve Enerji Kaynağı
+Her kabul edilmiş ÖEK için ilişki çözüm sırası:
+
+Birim:
+1. seuAssessmentItem.unitId
+2. energyUseGroup.unitId
+3. ilişkili sayaç veya mevcut güvenilir ilişki
+4. bulunamazsa null
+
+Enerji kaynağı:
+1. seuAssessmentItem.energySourceId
+2. energyUseGroup.energySourceId
+3. ilişkili sayaç veya mevcut güvenilir ilişki
+4. bulunamazsa null
+
+- Veri bulunmadığında yanlış tahmin üretme.
+- Şirket filtresini tüm lookup sorgularına uygula.
+- Başka şirketten birim, enerji kaynağı veya enerji kullanım grubu eşleşmesine izin verme.
+
+C. EnPG özet tablosu
+- EnPG adı için mevcut `enpiName` alanını frontend tabloda göster.
+- ÖEK’e EnPG bağlıysa EnPG adı görünmeli.
+- EnRÇ bulunması tek başına “Aktif EnPG var” anlamına gelmemeli.
+- EnPG var fakat EnRÇ yoksa:
+  - EnPG adı görünmeli
+  - EnRÇ durumu “EnRÇ Yok” olmalı
+- EnRÇ var fakat EnPG ilişkisi yoksa bunu “İlişki eksik” olarak göster; sessizce aktif EnPG sayma.
+
+D. Overview ve unit-comparison
+Aktif EnPG hesaplamasını ortak bir backend yardımcı fonksiyonuna al.
+Aynı hesaplamayı iki endpoint içinde farklı biçimde tekrar etme.
+
+YETKİ:
+- companyId her sorguda session değerinden alınmalı.
+- Standart kullanıcı için session.unitId zorunlu uygulanmalı.
+- Query ile gönderilen başka unitId değerine güvenilmemeli.
+- Firma yöneticisi yalnızca kendi şirketindeki birimleri görebilmeli.
+
+TEST:
+
+1. Mevcut test şirketinde tanımlı aktif EnPG sayısını veritabanından doğrula.
+2. GET /api/energy-review/overview?year=2026 sonucunu doğrula.
+3. GET /api/energy-review/unit-comparison?year=2026 sonucunu doğrula.
+4. GET /api/energy-review/enpi-summary?year=2026 sonucunu doğrula.
+5. Genel Performans ekranında Aktif EnPG = gerçek kayıt sayısı olmalı.
+6. İlgili birimin Birim Karşılaştırma satırında Aktif EnPG = gerçek kayıt sayısı olmalı.
+7. ÖEK & EnPG tablosunda mümkün olan kayıtlarda:
+   - birim
+   - enerji kaynağı
+   - EnPG adı
+   doğru görünmeli.
+8. Standart kullanıcının başka birimin EnPG verisine erişemediğini doğrula.
+
+Migration oluşturma veya çalıştırma.
+Veritabanı kayıtlarını değiştirme.
+Authentication yapısını değiştirme.
+Gereksiz refactor yapma.
+Ana sayfaya dokunma.
+
+Typecheck ve frontend/backend build çalıştır.
+
+İş sonunda raporla:
+- Kök neden
+- Veritabanındaki gerçek EnPG kaydı
+- Eski sorgunun neden 0 döndürdüğü
+- Yeni aktif EnPG hesaplama kuralı
+- Birim ve enerji kaynağının hangi fallback ilişkisiyle bulunduğu
+- Değişen dosyalar
+- Endpoint test sonuçları
+- Typecheck ve build sonuçları
