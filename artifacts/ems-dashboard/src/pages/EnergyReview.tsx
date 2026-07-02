@@ -335,11 +335,11 @@ export default function EnergyReview() {
               tooltip="Kabul edilmiş Önemli Enerji Kullanımı sayısı"
             />
             <KpiCard
-              title="Aktif EnPG"
+              title="Aktif EnPG / EnRÇ Modeli"
               value={overviewQ.isLoading ? "—" : ov?.activeEnpiCount ?? 0}
               icon={TrendingUp}
               accent="teal"
-              tooltip="Aktif Enerji Performans Göstergesi sayısı"
+              tooltip="Aktif Enerji Performans Göstergesi / Enerji Referans Çizgisi Modeli sayısı"
             />
           </div>
 
@@ -675,7 +675,7 @@ export default function EnergyReview() {
                           <TableHead className="text-xs text-right">TEP</TableHead>
                           <TableHead className="text-xs text-right">ton CO₂</TableHead>
                           <TableHead className="text-xs text-right">ÖEK</TableHead>
-                          <TableHead className="text-xs text-right">Aktif EnPG</TableHead>
+                          <TableHead className="text-xs text-right">Aktif EnPG / EnRÇ Modeli</TableHead>
                           <TableHead className="text-xs text-right">İzlenen ÖEK</TableHead>
                           <TableHead className="text-xs text-right">İzlenmeyen ÖEK</TableHead>
                           <TableHead className="text-xs text-right">Açık Aksiyon</TableHead>
