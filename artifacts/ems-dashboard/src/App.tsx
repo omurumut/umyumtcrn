@@ -26,6 +26,7 @@ import EnergyUseGroups from "@/pages/EnergyUseGroups";
 import Variables from "@/pages/Variables";
 import EnergyPerformance from "@/pages/EnergyPerformance";
 import VapProjects from "@/pages/VapProjects";
+import EnergyReview from "@/pages/EnergyReview";
 
 const logoutRef = { fn: () => {} };
 
@@ -82,6 +83,7 @@ function Router() {
       </Route>
       <Route path="/degiskenler" component={Variables} />
       <Route path="/performans-gostergeleri" component={EnergyPerformance} />
+      <Route path="/enerji-gozden-gecirme" component={EnergyReview} />
       <Route component={NotFound} />
     </Switch>
   );

@@ -1,0 +1,284 @@
+Mevcut analiz raporuna dayanarak “Enerji Gözden Geçirme” modülünün salt okunur MVP sürümünü geliştir.
+
+ÖNEMLİ:
+Bu modül ISO 50001:2018 Madde 6.3 kapsamındaki Enerji Gözden Geçirme modülüdür.
+Yönetimin Gözden Geçirmesi modülü değildir.
+Bu iki kavramı kodda, başlıklarda ve açıklamalarda karıştırma.
+
+Mevcut çalışan yapıyı bozma.
+Gereksiz refactor yapma.
+Önce ilgili dosyaları ve gerçek şema alanlarını yeniden kontrol et.
+Sadece gerekli dosyalarda değişiklik yap.
+Mevcut authentication yapısını değiştirme.
+Multi-tenant companyId veri ayrımını ve unitId yetkilendirmesini eksiksiz koru.
+Migration oluşturma veya çalıştırma.
+Veritabanı şemasını değiştirme.
+Mevcut ana sayfa veya Çok Birimli Özet alanlarını bu aşamada kaldırma.
+
+TEKNİK YAPI:
+- React + Vite
+- Node.js + Express
+- PostgreSQL
+- Drizzle ORM
+- pnpm Workspace
+- REST API
+
+MODÜL ADI:
+Enerji Gözden Geçirme
+
+MENÜ KONUMU:
+ISO 50001 bölümü altında, Önemli Enerji Kullanımları ile Performans Göstergeleri modüllerine yakın uygun bir konuma ekle.
+
+YETKİ:
+1. Firma yöneticisi:
+   - Kendi şirketinin firma geneli sonuçlarını görür.
+   - Kendi şirketindeki birimleri filtreleyebilir.
+   - Kendi şirketindeki birimleri karşılaştırabilir.
+2. Standart kullanıcı:
+   - Yalnızca bağlı olduğu birimi görür.
+   - Birim filtresini değiştiremez.
+   - Birim Karşılaştırma sekmesini göremez.
+3. Superadmin için şirketler arası karşılaştırma geliştirme.
+4. Tüm backend sorgularında session companyId zorunlu olsun.
+5. Standart kullanıcının gönderdiği farklı unitId parametresine güvenme; backend session unitId değerini uygulasın.
+
+TEMEL ENERJİ BİRİMİ KURALI:
+Farklı enerji kaynaklarını toplam kWh olarak gösterme.
+
+Ortak toplam göstergeler yalnızca:
+- Toplam TEP
+- Toplam ton CO₂
+
+Enerji kaynaklarını kendi doğal birimleriyle ayrı göster:
+- Elektrik: kWh
+- Doğalgaz: sistemde tanımlı m³ veya Sm³
+- Motorin: litre
+- Kömür: ton
+- Diğer kaynaklar: energy source kaydındaki gerçek unitOfMeasure
+
+consumption tablosundaki kwh alanının adı yanıltıcı olsa bile şimdilik şemayı değiştirme.
+Bu alanı kaynak bazlı ham tüketim değeri olarak ele al ve UI etiketini energySources.unitOfMeasure üzerinden üret.
+Farklı doğal birimleri toplama.
+
+BACKEND:
+
+Yeni route dosyası oluştur:
+artifacts/api-server/src/routes/energy-review.ts
+
+Mevcut route kayıt yapısını inceleyerek bu route'u güvenli biçimde kaydet.
+
+Aşağıdaki endpoint'leri oluştur:
+
+1. GET /api/energy-review/overview
+Parametreler:
+- year
+- unitId, yalnızca yetkili kullanıcı için
+- energySourceId, opsiyonel
+
+Döndürülecek temel bilgiler:
+- totalTep
+- totalCo2Ton
+- seuCount
+- activeEnpiCount
+- monitoredSeuCount
+- unmonitoredSeuCount
+- targetsCount
+- openActionsCount
+- overdueActionsCount
+- activeVapCount
+
+Kesin veri bulunmayan alanları tahmin etme.
+Alan hesaplanamıyorsa null veya 0 döndürme kararını verinin anlamına göre açıkça uygula.
+
+Toplam kWh döndürme.
+
+2. GET /api/energy-review/source-breakdown
+Parametreler:
+- year
+- unitId, yetkiye bağlı
+
+Her enerji kaynağı için:
+- energySourceId
+- energySourceName
+- unitOfMeasure
+- rawConsumption
+- tep
+- co2Ton
+- tepSharePercent
+
+GROUP BY enerji kaynağı yap.
+Farklı kaynakların rawConsumption değerlerini birbirine ekleyen genel toplam üretme.
+TEP payı toplam TEP üzerinden hesaplanmalı.
+Sıfıra bölme kontrolü yap.
+
+3. GET /api/energy-review/enpi-summary
+Parametreler:
+- year
+- unitId, yetkiye bağlı
+
+Her kabul edilmiş ÖEK için mümkün olan mevcut ilişkiler üzerinden:
+- seuItemId
+- seuName
+- unitId
+- unitName
+- energyUseGroupName
+- energySourceName
+- baselineId
+- baselinePeriod
+- regressionFormula
+- r2Score
+- adjustedR2Score mevcutsa
+- resultCount
+- lastResultPeriod
+- latestEei
+- cumulativeCusum
+- existingStatus
+- monitoringState
+
+Kurallar:
+- Yeni bir performans sınıflandırma algoritması uydurma.
+- Veritabanındaki mevcut ve açık anlamlı status alanı varsa onu kullan.
+- Sonuç yoksa monitoringState = "not_monitored"
+- EnRÇ var fakat sonuç yoksa monitoringState = "baseline_without_results"
+- Sonuç varsa monitoringState = "monitored"
+- İlişki bulunamayan kaydı sessizce düşürme; eksik ilişki durumunu göster.
+
+4. GET /api/energy-review/unit-comparison
+Sadece firma yöneticisi erişebilsin.
+
+Her birim için:
+- unitId
+- unitName
+- totalTep
+- totalCo2Ton
+- seuCount
+- activeEnpiCount
+- monitoredSeuCount
+- unmonitoredSeuCount
+- openActionsCount
+- overdueActionsCount
+
+Birimleri toplam ham kWh ile karşılaştırma.
+Varsayılan sıralama totalTep azalan olabilir.
+
+FRONTEND:
+
+Yeni sayfa oluştur:
+artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+
+Mevcut tasarım sistemi, kartlar, tablolar, filtreler, loading state, empty state ve hata gösterim bileşenlerini yeniden kullan.
+Yeni ve uyumsuz tasarım sistemi oluşturma.
+
+Sayfa üst kısmı:
+- Başlık: Enerji Gözden Geçirme
+- Açıklama: Enerji kullanımları, ÖEK'ler, EnPG'ler, EnRÇ sonuçları, hedefler ve aksiyonların bütüncül değerlendirmesi
+- Yıl filtresi
+- Firma yöneticisi için birim filtresi
+- Standart kullanıcı için sabit birim bilgisi
+
+Sekmeler:
+
+1. Genel Performans
+Kartlar:
+- Toplam TEP
+- Toplam CO₂
+- ÖEK sayısı
+- Aktif EnPG
+- İzlenen ÖEK
+- İzlenmeyen ÖEK
+- Açık aksiyon
+- Gecikmiş aksiyon
+
+Toplam kWh kartı gösterme.
+
+2. Enerji Kaynakları
+Tablo veya responsive kartlar:
+- Enerji kaynağı
+- Tüketim
+- Doğal birim
+- TEP
+- TEP payı
+- ton CO₂
+
+Ayrıca TEP payına göre kaynak dağılım grafiği kullanılabilir.
+Grafikte farklı doğal birimleri doğrudan karşılaştırma; yalnızca TEP payını kullan.
+
+3. ÖEK ve EnPG Performansı
+Tablo:
+- ÖEK
+- Birim
+- Enerji kullanım grubu
+- Enerji kaynağı
+- EnRÇ durumu
+- Regresyon uygunluk bilgisi
+- Son izleme dönemi
+- Son EEI
+- Kümülatif CUSUM
+- İzleme durumu
+- Detay
+
+Detay butonu mevcut Performans Göstergeleri modülündeki ilgili ÖEK'e yönlendirsin.
+Mevcut route yapısını kontrol ederek doğru query veya state bilgisini kullan.
+
+4. Birim Karşılaştırma
+Sadece firma yöneticisi görsün.
+
+Tablo:
+- Birim
+- TEP
+- ton CO₂
+- ÖEK
+- Aktif EnPG
+- İzlenen ÖEK
+- İzlenmeyen ÖEK
+- Açık aksiyon
+- Gecikmiş aksiyon
+- Detay
+
+Toplam kWh gösterme.
+Birimleri doğal tüketim miktarları üzerinden doğrudan kıyaslama.
+
+5. Hedefler ve Aksiyonlar
+Mevcut endpoint ve bileşenlerden yararlanarak salt okunur özet göster:
+- Aktif hedef sayısı
+- Hedeflerin gerçekleşme durumu
+- Açık aksiyonlar
+- Gecikmiş aksiyonlar
+- Aktif VAP sayısı
+- Beklenen yıllık tasarruf
+
+Bu sekmede kayıt ekleme veya düzenleme yapma.
+İlgili mevcut modüllere yönlendirme butonları ekle.
+
+BOŞ VERİ VE HATA DURUMLARI:
+- Veri bulunamadığında grafik veya tabloyu sahte 0 verilerle doldurma.
+- “Bu dönem için veri bulunamadı” şeklinde açık empty state göster.
+- EnPG sonucu olmayan ÖEK'i listeden gizleme.
+- API hatalarında kullanıcıya anlaşılır hata mesajı göster.
+- Loading durumlarında mevcut skeleton yaklaşımını kullan.
+
+ANA SAYFA:
+Bu aşamada hiçbir kartı, tabloyu veya grafiği ana sayfadan kaldırma.
+Enerji Gözden Geçirme modülü doğrulandıktan sonra tekrar eden alanlar ayrıca taşınacak.
+
+KALİTE KONTROL:
+- TypeScript typecheck çalıştır.
+- Frontend build çalıştır.
+- Backend build çalıştır.
+- Yetki kontrolünü admin ve standart kullanıcı senaryolarıyla doğrula.
+- Standart kullanıcının başka unitId göndererek veri görmediğini doğrula.
+- Şirketler arası veri sızıntısı olmadığını kontrol et.
+- Toplam kWh ifadesinin yeni sayfada hiçbir yerde bulunmadığını kontrol et.
+- Farklı doğal birimlerin toplanmadığını kontrol et.
+
+Migration veya database push çalıştırma.
+
+İş sonunda raporla:
+1. Değişen ve yeni oluşturulan dosyalar
+2. Eklenen endpoint'ler
+3. Her endpoint'in yetkilendirme davranışı
+4. Kullanılan mevcut tablolar
+5. Hesaplanamayan veya eksik kalan alanlar
+6. Typecheck ve build sonuçları
+7. Yapılmayan işler
+8. Ana sayfadan henüz hiçbir alan kaldırılmadığının teyidi
