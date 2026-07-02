@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1587,6 +1588,7 @@ export default function EnergyPerformance() {
                 const totalExpected = monitorResults.reduce((s, r) => s + (r.expectedConsumption ?? 0), 0);
                 const totalDiff = totalActual - totalExpected;
                 const finalCusum = monitorResults[monitorResults.length - 1]?.cusum ?? 0;
+                // Beklenen tüketimi sıfır veya negatif olan aylar ortalama EEI'ye dahil edilmez
                 const eeiRows = monitorResults.filter(r => r.eei != null);
                 const avgEei = eeiRows.length > 0
                   ? eeiRows.reduce((s, r) => s + r.eei!, 0) / eeiRows.length
@@ -1661,9 +1663,23 @@ export default function EnergyPerformance() {
                               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
                               <XAxis dataKey="ay" tick={{ fontSize: 11, fill: "#9ca3af" }} />
                               <YAxis domain={[0.7, 1.3]} tick={{ fontSize: 11, fill: "#9ca3af" }} />
-                              <Tooltip contentStyle={{ background: "#1f2937", border: "1px solid rgba(255,255,255,0.1)", fontSize: 12 }} />
+                              <Tooltip
+                                content={({ active, payload, label }) => {
+                                  if (!active) return null;
+                                  const eeiVal = payload?.find((p: any) => p.dataKey === "eei")?.value;
+                                  return (
+                                    <div style={{ background: "#1f2937", border: "1px solid rgba(255,255,255,0.1)", fontSize: 12, padding: "8px 12px", borderRadius: 4 }}>
+                                      <p style={{ marginBottom: 4, color: "#9ca3af" }}>{label}</p>
+                                      {eeiVal != null
+                                        ? <p style={{ color: "#a78bfa" }}>EEI: {eeiVal}</p>
+                                        : <p style={{ color: "#f59e0b" }}>EEI hesaplanmadı — beklenen tüketim ≤ 0</p>
+                                      }
+                                    </div>
+                                  );
+                                }}
+                              />
                               <ReferenceLine y={1} stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1.5} />
-                              <Line type="monotone" dataKey="eei" name="EEI" stroke="#a78bfa" strokeWidth={2} dot={{ r: 3 }} />
+                              <Line type="monotone" dataKey="eei" name="EEI" stroke="#a78bfa" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
                             </ComposedChart>
                           </ResponsiveContainer>
                         </CardContent>
@@ -1695,39 +1711,88 @@ export default function EnergyPerformance() {
                             </thead>
                             <tbody>
                               {monitorResults.map((r) => {
-                                const isNegativeExpected = r.status === "negative_expected";
-                                const isImprovement = !isNegativeExpected && (r.difference ?? 0) < 0;
-                                const rowColor = isNegativeExpected ? "bg-amber-500/5" : isImprovement ? "bg-teal-500/5" : (r.difference ?? 0) > 0 ? "bg-destructive/5" : "";
+                                // status alanı JSON veya eski düz string formatında olabilir
+                                let statusCode = r.status ?? "";
+                                let statusBreakdown: {
+                                  intercept: number;
+                                  terms: {
+                                    name: string;
+                                    coeff: number;
+                                    value: number;
+                                    contribution: number;
+                                  }[];
+                                  total: number;
+                                } | null = null;
+
+                                try {
+                                  const parsed = JSON.parse(r.status ?? "");
+                                  if (parsed?.code) {
+                                    statusCode = parsed.code;
+                                    statusBreakdown = parsed;
+                                  }
+                                } catch {
+                                  // Eski düz string durum değerleri
+                                }
+
+                                const nonPositiveExpected =
+                                  statusCode === "expected_non_positive" ||
+                                  statusCode === "negative_expected";
+
+                                const isImprovement =
+                                  !nonPositiveExpected && (r.difference ?? 0) < 0;
+
+                                const rowColor = nonPositiveExpected
+                                  ? "bg-amber-500/5"
+                                  : isImprovement
+                                    ? "bg-teal-500/5"
+                                    : (r.difference ?? 0) > 0
+                                      ? "bg-destructive/5"
+                                      : "";
                                 const MONTHS_FULL = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
                                 return (
                                   <tr key={r.id} className={`border-b border-border/30 ${rowColor}`}>
                                     <td className="p-2.5 pl-4 font-medium">{MONTHS_FULL[(r.month ?? 1) - 1]} {monitorYear}</td>
                                     <td className="p-2.5 text-right tabular-nums">{r.actualConsumption?.toFixed(4) ?? "—"}</td>
-                                    <td className="p-2.5 text-right tabular-nums text-muted-foreground">{r.expectedConsumption?.toFixed(4) ?? "—"}</td>
-                                    <td className={`p-2.5 text-right tabular-nums font-medium ${isImprovement ? "text-teal-400" : "text-destructive"}`}>
+                                    <td className={`p-2.5 text-right tabular-nums ${nonPositiveExpected ? "text-amber-400" : "text-muted-foreground"}`}>
+                                      {r.expectedConsumption?.toFixed(4) ?? "—"}
+                                    </td>
+                                    <td className={`p-2.5 text-right tabular-nums font-medium ${nonPositiveExpected ? "text-muted-foreground" : isImprovement ? "text-teal-400" : "text-destructive"}`}>
                                       {r.difference != null ? (r.difference >= 0 ? "+" : "") + r.difference.toFixed(4) : "—"}
                                     </td>
-                                    <td className={`p-2.5 text-right tabular-nums font-medium ${(r.cusum ?? 0) < 0 ? "text-teal-400" : "text-destructive"}`}>
+                                    <td className={`p-2.5 text-right tabular-nums font-medium ${nonPositiveExpected ? "text-muted-foreground" : (r.cusum ?? 0) < 0 ? "text-teal-400" : "text-destructive"}`}>
                                       {r.cusum != null ? (r.cusum >= 0 ? "+" : "") + r.cusum.toFixed(4) : "—"}
                                     </td>
-                                    <td className={`p-2.5 text-right tabular-nums font-medium ${r.eei == null ? "text-muted-foreground" : r.eei < 1 ? "text-teal-400" : "text-destructive"}`}>
+                                    <td className={`p-2.5 text-right tabular-nums font-medium ${
+                                      r.eei == null
+                                        ? "text-muted-foreground"
+                                        : r.eei < 1
+                                          ? "text-teal-400"
+                                          : "text-destructive"
+                                    }`}>
                                       {r.eei?.toFixed(4) ?? "—"}
                                     </td>
                                     <td className="p-2.5 text-right tabular-nums text-muted-foreground">
                                       {r.setValue?.toFixed(4) ?? "—"}
                                     </td>
                                     <td className="p-2.5 pr-4 text-center">
-                                      {isNegativeExpected
+                                      {nonPositiveExpected
                                         ? (
                                           <UITooltipProvider>
                                             <UITooltip>
                                               <UITooltipTrigger asChild>
-                                                <span className="inline-flex items-center gap-1 text-amber-400 cursor-help">
+                                                <span className="inline-flex items-center gap-1 text-amber-400 cursor-help underline decoration-dotted underline-offset-2">
                                                   <AlertTriangle className="h-3 w-3" />Beklenen ≤ 0
                                                 </span>
                                               </UITooltipTrigger>
-                                              <UITooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
-                                                Regresyon formülü bu ay için sıfır veya negatif beklenen tüketim üretmiştir. Bu durum özellikle düşük HDD/CDD değerli aylarda görülebilir. EEI ve SET bu ay için hesaplanmaz; ay ortalama EEI hesabına dahil edilmez.
+                                              <UITooltipContent side="top" className="max-w-sm text-xs leading-relaxed">
+                                                <p className="font-semibold text-amber-400 mb-1.5">
+                                                  Beklenen Tüketim ≤ 0
+                                                </p>
+                                                <p className="text-muted-foreground">
+                                                  Regresyon formülü bu ay için sıfır veya negatif beklenen tüketim üretmiştir.
+                                                  Bu durum özellikle düşük veya sıfır HDD/CDD değerli aylarda görülebilir.
+                                                  EEI ve SET bu ay için hesaplanmaz; ay ortalama EEI hesabına dahil edilmez.
+                                                </p>
                                               </UITooltipContent>
                                             </UITooltip>
                                           </UITooltipProvider>

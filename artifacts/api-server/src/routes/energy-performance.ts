@@ -1058,25 +1058,39 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
       }
 
       const difference = actual - expected;
-
-      // EEI ve SET yalnızca expected > 0 ise hesaplanır
       const primaryVarValue = xVals.length > 0 ? xVals[0] : null;
-      let eei: number | null = null;
-      let setValue: number | null = null;
-      let status: string;
 
-      if (expected > 0) {
-        eei = actual / expected;
-        setValue = primaryVarValue && primaryVarValue > 0 ? actual / primaryVarValue : null;
-        status = difference < 0 ? "improvement" : "deterioration";
+      if (expected <= 0) {
+        // Negatif/sıfır beklenti: EEI ve SET hesaplanamaz
+        // Kırılım detayı JSON olarak status alanına yazılır
+        const breakdownTerms = bvars.map((bv, i) => ({
+          name: bv.variableName ?? bv.variableCode ?? `var_${i + 1}`,
+          coeff: bv.coefficient ?? 0,
+          value: xVals[i],
+          contribution: (bv.coefficient ?? 0) * xVals[i],
+        }));
+        const statusDetail = JSON.stringify({
+          code: "expected_non_positive",
+          intercept,
+          terms: breakdownTerms,
+          total: expected,
+        });
+        toInsert.push({
+          month: m,
+          actualConsumption: actual,
+          expectedConsumption: expected,
+          difference,
+          eei: null,
+          setValue: null,
+          primaryVarValue,
+          status: statusDetail,
+        });
       } else {
-        // Beklenen tüketim ≤ 0: fiziksel anlam yok, EEI/SET hesaplanmaz
-        eei = null;
-        setValue = null;
-        status = "negative_expected";
+        const eei = actual / expected;
+        const setValue = primaryVarValue && primaryVarValue > 0 ? actual / primaryVarValue : null;
+        const status = difference < 0 ? "improvement" : "deterioration";
+        toInsert.push({ month: m, actualConsumption: actual, expectedConsumption: expected, difference, eei, setValue, primaryVarValue, status });
       }
-
-      toInsert.push({ month: m, actualConsumption: actual, expectedConsumption: expected, difference, eei, setValue, primaryVarValue, status });
     }
 
     // CUSUM hesapla (sıralı ay bazında kümülatif FARK)
