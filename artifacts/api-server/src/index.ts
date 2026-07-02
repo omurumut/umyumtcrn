@@ -4,7 +4,8 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { runMigrations } from "@workspace/db";
 import { seedAdminUser } from "./routes/auth.js";
-import { seedStationsIfEmpty, seedDegreeDataIfEmpty, startMgmDailyScheduler, seedOfficialWeatherData } from "./services/mgm-sync.js";
+import { seedStationsIfEmpty, seedDegreeDataIfEmpty, startMgmDailyScheduler } from "./services/mgm-sync.js";
+import { bootstrapMgmReferenceData } from "./services/mgm-bootstrap.js";
 
 const rawPort = process.env["PORT"];
 
@@ -25,8 +26,17 @@ const migrationsFolder = path.join(__dirname, "drizzle");
 
 logger.info("Running database migrations...");
 runMigrations(migrationsFolder)
-  .then(() => {
+  .then(async () => {
     logger.info("Migrations complete");
+
+    // MGM resmi referans veri bootstrap — app.listen'dan ÖNCE çalışır.
+    // Başarısız olursa API yine de başlar, lookup'lar "bootstrap_failed" durumunu raporlar.
+    try {
+      await bootstrapMgmReferenceData();
+    } catch (err) {
+      logger.error({ err }, "[MGM Bootstrap] Beklenmeyen hata — API yine de başlatılıyor");
+    }
+
     app.listen(port, (err) => {
       if (err) {
         logger.error({ err }, "Error listening on port");
@@ -34,10 +44,9 @@ runMigrations(migrationsFolder)
       }
       logger.info({ port }, "Server listening");
       seedAdminUser();
-      // MGM Gün Derece Havuzu: ilk çalışmada seed et, sonra günlük güncelle
+      // MGM Open-Meteo havuzu: ilk çalışmada seed et, sonra günlük güncelle
       seedStationsIfEmpty()
         .then(() => seedDegreeDataIfEmpty())
-        .then(() => seedOfficialWeatherData())
         .then(() => startMgmDailyScheduler())
         .catch(err => logger.error({ err }, "MGM seed/scheduler hatası"));
     });

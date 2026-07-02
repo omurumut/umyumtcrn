@@ -570,56 +570,11 @@ export async function lookupOfficialWeatherDegreeDay(
   return rows.length > 0 ? rows[0] : null;
 }
 
-// ── Resmi MGM aylık veri seed (Van 2024 demo/test) ─────────────────
+// ── Resmi MGM aylık veri seed (artık kullanılmıyor) ─────────────────
+// Tam MGM veri yüklemesi bootstrapMgmReferenceData() tarafından yapılıyor.
+// Bu fonksiyon yalnızca geriye dönük uyumluluk için bırakılmıştır.
 export async function seedOfficialWeatherData(): Promise<void> {
-  const officialData = [
-    { province: "Van", district: null as string | null, stationKey: "van", stationName: "VAN", year: 2024, month: 1, hdd: 528, cdd: 0 },
-    { province: "Van", district: null as string | null, stationKey: "van", stationName: "VAN", year: 2024, month: 2, hdd: 498, cdd: 0 },
-  ];
-
-  let seeded = 0;
-  for (const d of officialData) {
-    const existing = await db
-      .select({ id: weatherDegreeDaysTable.id })
-      .from(weatherDegreeDaysTable)
-      .where(and(
-        eq(weatherDegreeDaysTable.stationKey as any, d.stationKey),
-        eq(weatherDegreeDaysTable.year as any, d.year),
-        eq(weatherDegreeDaysTable.month as any, d.month),
-        eq(weatherDegreeDaysTable.isOfficial, true),
-      ))
-      .limit(1);
-
-    if (existing.length > 0) continue;
-
-    const date = `${d.year}-${String(d.month).padStart(2, "0")}`;
-    await db.insert(weatherDegreeDaysTable).values({
-      companyId: null,
-      province: d.province,
-      district: d.district,
-      stationKey: d.stationKey as any,
-      stationCode: null,
-      stationName: d.stationName,
-      date,
-      year: d.year,
-      month: d.month,
-      periodType: "monthly",
-      baseTemperatureHeating: 18,
-      baseTemperatureCooling: 22,
-      hdd: d.hdd,
-      cdd: d.cdd,
-      avgTemperature: null,
-      source: "MGM",
-      isOfficial: true,
-      dataMethod: "official_monthly",
-      stationNote: null,
-      importedAt: new Date(),
-    } as any);
-    seeded++;
-  }
-  if (seeded > 0) {
-    console.log(`[MGM] Resmi aylık veri seed tamamlandı: ${seeded} kayıt (Van 2024 Ocak/Şubat).`);
-  }
+  // no-op: resmi veri bootstrapMgmReferenceData() tarafından app.listen'dan önce yüklenir
 }
 
 // ── Daily scheduler ────────────────────────────────────────────────

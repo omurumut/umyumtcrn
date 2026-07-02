@@ -6,6 +6,7 @@ import { syncCurrentMonthData, lookupOfficialWeatherDegreeDay, lookupOfficialByS
 import { MGM_STATIONS, findStationByCity, parseIlIlce, findNearestStation, haversineDistance } from "../services/mgm-stations-data.js";
 import { syncOfficialDegreeDays } from "../services/mgm-official-sync.js";
 import { importStationMapping, importDegreeDays, DEFAULT_MAPPING_FILE, DEFAULT_DEGREE_DAYS_FILE } from "../services/mgm-excel-import.js";
+import { getMgmBootstrapStatus } from "../services/mgm-bootstrap.js";
 
 const router = Router();
 
@@ -93,6 +94,7 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
           note: "MGM merkezi bulundu ancak seçilen dönem için resmi HDD/CDD verisi bulunamadı.",
           fallbackStation: ilFallback ? { stationKey: ilFallback.stationKey, stationName: ilFallback.stationName } : null,
           dataMethod: "no_official_data",
+          bootstrapStatus: getMgmBootstrapStatus(),
         });
         return;
       }
@@ -175,6 +177,7 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
         usedProvinceFallback: false,
         fallbackStation: null,
         dataMethod: "no_official_data",
+        bootstrapStatus: getMgmBootstrapStatus(),
       });
       return;
     }
@@ -214,6 +217,7 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
         note: "MGM merkezi bulundu ancak seçilen dönem için resmi HDD/CDD verisi bulunamadı.",
         fallbackStation: null,
         dataMethod: "no_official_data",
+        bootstrapStatus: getMgmBootstrapStatus(),
       });
       return;
     }
@@ -272,6 +276,7 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
       note: "Sayaç lokasyonu için MGM merkezi bulunamadı.",
       fallbackStation: null,
       dataMethod: "station_not_found",
+      bootstrapStatus: getMgmBootstrapStatus(),
     });
   } catch (err) {
     req.log.error(err);
@@ -352,6 +357,7 @@ router.get("/mgm/lookup-by-location", requireAuth, async (req, res) => {
         usedNearest, nearestKm,
         note: `Bu istasyon ("${targetStation.name}") ve dönem (${yr}/${mo}) için resmi MGM HDD/CDD verisi bulunamadı.`,
         dataMethod: "no_official_data",
+        bootstrapStatus: getMgmBootstrapStatus(),
       });
       return;
     }

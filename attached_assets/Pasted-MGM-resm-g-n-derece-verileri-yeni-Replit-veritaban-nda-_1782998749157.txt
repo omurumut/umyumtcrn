@@ -1,0 +1,64 @@
+MGM resmî gün-derece verileri yeni Replit veritabanında otomatik yüklenmiyor. Kök neden analizi yapılmıştır:
+
+* `.replit` dosyasındaki “Start application” workflow’u `pnpm run replit:start` çalıştırıyor.
+* Root `package.json` içindeki `replit:start` yalnızca API dev server’ı başlatıyor.
+* `scripts/start.sh` içindeki `pnpm --filter @workspace/scripts run import:mgm` komutu gerçek Replit workflow’unda hiç çalışmıyor.
+* API başlangıcındaki `seedOfficialWeatherData()` yalnızca Van 2024 Ocak ve Şubat için 2 test kaydı ekliyor; tam MGM Excel arşivini yüklemiyor.
+* Sonuç olarak `mgm_station_mappings` ve `weather_degree_days` tabloları yeni veritabanında boş/eksik kalıyor ve uygulama “Bu lokasyon için MGM gün-derece verisi bulunamadı” hatası veriyor.
+
+Kalıcı ve mimari olarak güvenli şekilde düzelt:
+
+1. Veritabanı migration’ları tamamlandıktan sonra ve API istek kabul etmeye başlamadan önce MGM referans bootstrap işlemini çalıştır.
+2. `scripts/src/import-mgm.ts` içindeki import mantığını tekrar kullanılabilir bir servis/fonksiyon haline getir. Bu dosya doğrudan `process.exit()` kullandığı için API içinden import edilmemeli.
+3. Ortak bir `bootstrapMgmReferenceData()` fonksiyonu oluştur.
+4. Fonksiyon:
+
+   * Gerekli tabloların ve indexlerin mevcut olduğunu doğrulasın.
+   * `mgm_station_mappings` tablosu boşsa mapping Excel’ini yüklesin.
+   * `weather_degree_days` tablosunda yeterli sayıda resmî kayıt yoksa tam MGM Excel verisini yüklesin.
+   * Sadece “en az bir kayıt var” kontrolü yapmasın. Minimum beklenen kayıt sayılarını doğrulasın.
+   * Yarım kalmış import varsa yeniden devam edebilsin veya güvenli upsert yapsın.
+   * Tüm resmî kayıtları `is_official=true`, `period_type='monthly'` olarak kaydetsin.
+   * Hataları sessizce yutmasın.
+5. API başlangıç sırası şu olsun:
+
+   * migrations
+   * MGM bootstrap doğrulama/import
+   * app.listen
+   * scheduler
+6. MGM import başarısız olursa API tamamen çökmesin; fakat logda açık ve görünür bir kritik hata üretsin. MGM lookup endpoint’i de “veri yok” ile “bootstrap başarısız” durumunu ayırabilsin.
+7. Mevcut Open-Meteo/sentetik `mgm_degree_data` tablosu resmî MGM verisinin yerine kullanılmasın. Resmî HDD/CDD lookup önce `mgm_station_mappings` ve `weather_degree_days` tablolarını kullansın.
+8. `seedOfficialWeatherData()` içindeki yalnızca Van 2024 Ocak/Şubat test seed’ini kaldır veya yalnızca test ortamına sınırla.
+9. Import tamamlandıktan sonra şu kontrolleri çalıştır ve sonuçlarını raporla:
+
+```sql
+SELECT COUNT(*) FROM mgm_station_mappings;
+
+SELECT COUNT(*)
+FROM weather_degree_days
+WHERE is_official = true
+  AND period_type = 'monthly';
+
+SELECT MIN(year), MAX(year), COUNT(DISTINCT station_key)
+FROM weather_degree_days
+WHERE is_official = true;
+
+SELECT station_key, year, month, hdd, cdd
+FROM weather_degree_days
+WHERE station_key = 'van'
+  AND year = 2024
+ORDER BY month;
+```
+
+10. Beklenen:
+
+* Mapping tablosu yaklaşık 254 kayıt içermeli.
+* Resmî aylık veri yaklaşık 30.000 kayıt içermeli.
+* Van 2024 Ocak HDD = 528.
+* Van 2024 Şubat HDD = 498.
+
+11. Uygulamada Van/Merkez ve mevcut sayaç lokasyonuyla HDD/CDD lookup isteğini test et.
+12. Typecheck ve build çalıştır.
+13. Değişen dosyaları, kayıt sayılarını, test edilen lokasyonu ve API sonucunu raporla.
+
+Sadece manuel Shell komutu çalıştırıp bırakma. Yeni ve boş bir Replit PostgreSQL veritabanında uygulama ilk açıldığında otomatik ve idempotent çalışacak kalıcı çözümü uygula.
