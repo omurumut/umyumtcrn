@@ -236,6 +236,70 @@ interface UnitComparisonItem {
   overdueActionsCount: number;
 }
 
+// ── Dönemsel Gözden Geçirme Kaydı ────────────────────────────────────────────
+type ReviewPeriodType = "annual" | "semi_annual" | "custom";
+type ReviewScopeType = "company" | "unit";
+type ReviewStatus = "draft" | "completed" | "revised";
+
+interface EnergyReviewRecordItem {
+  id: number;
+  companyId: number;
+  unitId: number | null;
+  unitName: string | null;
+  reviewName: string;
+  reviewYear: number;
+  periodType: ReviewPeriodType;
+  periodStart: string;
+  periodEnd: string;
+  scopeType: ReviewScopeType;
+  status: ReviewStatus;
+  preparedByUserId: number;
+  preparedByName: string | null;
+  completedByUserId: number | null;
+  completedAt: string | null;
+  revisionNo: number;
+  previousRevisionId: number | null;
+  generalNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ReviewRecordForm {
+  reviewName: string;
+  reviewYear: string;
+  periodType: ReviewPeriodType;
+  periodStart: string;
+  periodEnd: string;
+  scopeType: ReviewScopeType;
+  unitId: string;
+  generalNotes: string;
+}
+
+const REVIEW_PERIOD_LABELS: Record<string, string> = {
+  annual: "Yıllık",
+  semi_annual: "Altı Aylık",
+  custom: "Özel",
+};
+
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  draft: "Taslak",
+  completed: "Tamamlandı",
+  revised: "Revize Edildi",
+};
+
+function emptyReviewForm(currentYear: number, defaultUnitId: number | null): ReviewRecordForm {
+  return {
+    reviewName: "",
+    reviewYear: String(currentYear),
+    periodType: "annual",
+    periodStart: `${currentYear}-01-01`,
+    periodEnd: `${currentYear}-12-31`,
+    scopeType: defaultUnitId !== null ? "unit" : "company",
+    unitId: defaultUnitId !== null ? String(defaultUnitId) : "",
+    generalNotes: "",
+  };
+}
+
 // ── Renk paleti ──────────────────────────────────────────────────────────────
 const PIE_COLORS = ["#14b8a6", "#6366f1", "#f59e0b", "#ef4444", "#8b5cf6", "#10b981", "#f97316", "#06b6d4"];
 
@@ -429,6 +493,15 @@ export default function EnergyReview() {
     { query: { queryKey: getListUnitsQueryKey() } },
   );
 
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  // Dönemsel Gözden Geçirme Kaydı sekmesi
+  const [reviewFormOpen, setReviewFormOpen] = useState(false);
+  const [reviewEditingId, setReviewEditingId] = useState<number | null>(null);
+  const [reviewForm, setReviewForm] = useState<ReviewRecordForm>(() => emptyReviewForm(year, user?.unitId ?? null));
+  const [reviewDetailId, setReviewDetailId] = useState<number | null>(null);
+
   // Efektif birim: admin → local state; standart kullanıcı → context
   const effectiveUnitId: number | null = isAdmin ? selectedUnitId : (user?.unitId ?? null);
 
@@ -475,11 +548,117 @@ export default function EnergyReview() {
     queryFn: () => apiFetch(`${API_BASE}/energy-review/targets-actions-summary?${buildParams()}`, token),
   });
 
+  const reviewRecordsQ = useQuery<EnergyReviewRecordItem[]>({
+    queryKey: ["energy-review-records", effectiveUnitId],
+    queryFn: () => {
+      const p = new URLSearchParams();
+      if (isAdmin && effectiveUnitId !== null) p.set("unitId", String(effectiveUnitId));
+      return apiFetch(`${API_BASE}/energy-review-records?${p.toString()}`, token);
+    },
+  });
+
+  const createReviewMut = useMutation({
+    mutationFn: (d: ReviewRecordForm) => apiMutate<EnergyReviewRecordItem>(token, "POST", `${API_BASE}/energy-review-records`, {
+      reviewName: d.reviewName,
+      reviewYear: parseInt(d.reviewYear),
+      periodType: d.periodType,
+      periodStart: d.periodStart,
+      periodEnd: d.periodEnd,
+      scopeType: d.scopeType,
+      unitId: d.scopeType === "unit" ? (d.unitId ? parseInt(d.unitId) : undefined) : undefined,
+      generalNotes: d.generalNotes || undefined,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["energy-review-records"] });
+      toast({ title: "Gözden geçirme kaydı oluşturuldu" });
+      setReviewFormOpen(false);
+    },
+    onError: (err: Error) => toast({ title: "Hata", description: err.message, variant: "destructive" }),
+  });
+
+  const updateReviewMut = useMutation({
+    mutationFn: ({ id, d }: { id: number; d: ReviewRecordForm }) => apiMutate<EnergyReviewRecordItem>(token, "PATCH", `${API_BASE}/energy-review-records/${id}`, {
+      reviewName: d.reviewName,
+      reviewYear: parseInt(d.reviewYear),
+      periodType: d.periodType,
+      periodStart: d.periodStart,
+      periodEnd: d.periodEnd,
+      scopeType: d.scopeType,
+      unitId: d.scopeType === "unit" ? (d.unitId ? parseInt(d.unitId) : undefined) : undefined,
+      generalNotes: d.generalNotes || undefined,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["energy-review-records"] });
+      toast({ title: "Taslak güncellendi" });
+      setReviewFormOpen(false);
+      setReviewEditingId(null);
+    },
+    onError: (err: Error) => toast({ title: "Hata", description: err.message, variant: "destructive" }),
+  });
+
+  const completeReviewMut = useMutation({
+    mutationFn: (id: number) => apiMutate<EnergyReviewRecordItem>(token, "POST", `${API_BASE}/energy-review-records/${id}/complete`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["energy-review-records"] });
+      toast({ title: "Kayıt tamamlandı ve kilitlendi" });
+    },
+    onError: (err: Error) => toast({ title: "Hata", description: err.message, variant: "destructive" }),
+  });
+
+  const reviseReviewMut = useMutation({
+    mutationFn: (id: number) => apiMutate<{ revisedRecord: EnergyReviewRecordItem; newRecord: EnergyReviewRecordItem }>(token, "POST", `${API_BASE}/energy-review-records/${id}/revise`),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["energy-review-records"] });
+      toast({ title: "Yeni revizyon oluşturuldu" });
+      setReviewDetailId(data.newRecord.id);
+    },
+    onError: (err: Error) => toast({ title: "Hata", description: err.message, variant: "destructive" }),
+  });
+
   const ov = overviewQ.data;
   const sources = sourceQ.data ?? [];
   const enpiList = enpiQ.data ?? [];
   const unitList = unitCompQ.data ?? [];
   const taList = taSummaryQ.data ?? [];
+  const reviewRecords = reviewRecordsQ.data ?? [];
+  const reviewDetailRecord = reviewRecords.find((r) => r.id === reviewDetailId) ?? null;
+
+  function openCreateReview() {
+    setReviewEditingId(null);
+    setReviewForm(emptyReviewForm(year, isAdmin ? null : (user?.unitId ?? null)));
+    setReviewFormOpen(true);
+  }
+
+  function openEditReview(rec: EnergyReviewRecordItem) {
+    setReviewEditingId(rec.id);
+    setReviewForm({
+      reviewName: rec.reviewName,
+      reviewYear: String(rec.reviewYear),
+      periodType: rec.periodType,
+      periodStart: rec.periodStart,
+      periodEnd: rec.periodEnd,
+      scopeType: rec.scopeType,
+      unitId: rec.unitId !== null ? String(rec.unitId) : "",
+      generalNotes: rec.generalNotes ?? "",
+    });
+    setReviewFormOpen(true);
+  }
+
+  function submitReviewForm() {
+    if (!reviewForm.reviewName.trim()) {
+      toast({ title: "Gözden geçirme adı zorunludur", variant: "destructive" });
+      return;
+    }
+    if (reviewForm.scopeType === "unit" && !reviewForm.unitId) {
+      toast({ title: "Birim kapsamlı kayıt için birim seçilmelidir", variant: "destructive" });
+      return;
+    }
+    if (reviewEditingId !== null) {
+      updateReviewMut.mutate({ id: reviewEditingId, d: reviewForm });
+    } else {
+      createReviewMut.mutate(reviewForm);
+    }
+  }
 
   const filteredTaList = taList.filter((t) => {
     if (taFilterStatus !== "all" && t.status !== taFilterStatus) return false;
@@ -563,6 +742,7 @@ export default function EnergyReview() {
           <TabsTrigger value="enpi">ÖEK & EnPG Performansı</TabsTrigger>
           {isAdmin && <TabsTrigger value="units">Birim Karşılaştırma</TabsTrigger>}
           <TabsTrigger value="actions">Hedefler & Aksiyonlar</TabsTrigger>
+          <TabsTrigger value="records">Dönemsel Gözden Geçirme Kaydı</TabsTrigger>
         </TabsList>
 
         {/* ══════════════════════════════════════════════════════════════ */}
@@ -1560,7 +1740,277 @@ export default function EnergyReview() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* ══════════════════════════════════════════════════════════════ */}
+        {/* Tab 6: Dönemsel Gözden Geçirme Kaydı                           */}
+        {/* ══════════════════════════════════════════════════════════════ */}
+        <TabsContent value="records" className="mt-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              Dönemsel enerji gözden geçirme kayıtlarının oluşturulması, taslak düzenlenmesi, tamamlanması ve revize edilmesi.
+            </p>
+            <Button size="sm" className="gap-2" onClick={openCreateReview}>
+              <Plus className="h-4 w-4" />
+              Yeni Gözden Geçirme
+            </Button>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Gözden Geçirme Kayıtları</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Kayıt Adı</TableHead>
+                    <TableHead>Yıl</TableHead>
+                    <TableHead>Dönem</TableHead>
+                    <TableHead>Kapsam</TableHead>
+                    <TableHead>Birim</TableHead>
+                    <TableHead>Durum</TableHead>
+                    <TableHead>Revizyon</TableHead>
+                    <TableHead>Hazırlayan</TableHead>
+                    <TableHead>Tamamlanma</TableHead>
+                    <TableHead className="text-right">İşlemler</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {reviewRecordsQ.isLoading && <LoadingRows cols={10} />}
+                  {!reviewRecordsQ.isLoading && reviewRecords.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={10} className="text-center text-sm text-muted-foreground py-8">
+                        Henüz gözden geçirme kaydı yok.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {reviewRecords.map((rec) => (
+                    <TableRow key={rec.id} className="cursor-pointer" onClick={() => setReviewDetailId(rec.id)}>
+                      <TableCell className="font-medium">{rec.reviewName}</TableCell>
+                      <TableCell>{rec.reviewYear}</TableCell>
+                      <TableCell>{REVIEW_PERIOD_LABELS[rec.periodType] ?? rec.periodType}</TableCell>
+                      <TableCell>{rec.scopeType === "company" ? "Şirket" : "Birim"}</TableCell>
+                      <TableCell>{rec.unitName ?? "—"}</TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={
+                            rec.status === "completed"
+                              ? "border-emerald-500/40 text-emerald-600 bg-emerald-500/10"
+                              : rec.status === "revised"
+                                ? "border-muted-foreground/30 text-muted-foreground bg-muted/30"
+                                : "border-amber-500/40 text-amber-600 bg-amber-500/10"
+                          }
+                        >
+                          {REVIEW_STATUS_LABELS[rec.status] ?? rec.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{rec.revisionNo}</TableCell>
+                      <TableCell>{rec.preparedByName ?? "—"}</TableCell>
+                      <TableCell>{rec.completedAt ? new Date(rec.completedAt).toLocaleDateString("tr-TR") : "—"}</TableCell>
+                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-end gap-1">
+                          {rec.status === "draft" && (
+                            <Button variant="ghost" size="icon" className="h-7 w-7" title="Düzenle" onClick={() => openEditReview(rec)}>
+                              <FileEdit className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                          {rec.status === "completed" && (
+                            <Lock className="h-3.5 w-3.5 text-muted-foreground self-center mr-1" />
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      {/* Oluştur / Düzenle formu */}
+      <Dialog open={reviewFormOpen} onOpenChange={setReviewFormOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{reviewEditingId !== null ? "Taslağı Düzenle" : "Yeni Gözden Geçirme Kaydı"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label>Kayıt Adı</Label>
+              <Input
+                value={reviewForm.reviewName}
+                onChange={(e) => setReviewForm((f) => ({ ...f, reviewName: e.target.value }))}
+                placeholder="Örn: 2026 Yıllık Enerji Gözden Geçirmesi"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Yıl</Label>
+                <Input
+                  type="number"
+                  value={reviewForm.reviewYear}
+                  onChange={(e) => setReviewForm((f) => ({ ...f, reviewYear: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Dönem Tipi</Label>
+                <Select
+                  value={reviewForm.periodType}
+                  onValueChange={(v) => setReviewForm((f) => ({ ...f, periodType: v as ReviewPeriodType }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="annual">Yıllık</SelectItem>
+                    <SelectItem value="semi_annual">Altı Aylık</SelectItem>
+                    <SelectItem value="custom">Özel</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Başlangıç Tarihi</Label>
+                <Input
+                  type="date"
+                  value={reviewForm.periodStart}
+                  onChange={(e) => setReviewForm((f) => ({ ...f, periodStart: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Bitiş Tarihi</Label>
+                <Input
+                  type="date"
+                  value={reviewForm.periodEnd}
+                  onChange={(e) => setReviewForm((f) => ({ ...f, periodEnd: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Kapsam</Label>
+                <Select
+                  value={reviewForm.scopeType}
+                  onValueChange={(v) => setReviewForm((f) => ({ ...f, scopeType: v as ReviewScopeType }))}
+                  disabled={!isAdmin}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {isAdmin && <SelectItem value="company">Şirket Geneli</SelectItem>}
+                    <SelectItem value="unit">Birim Bazlı</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {reviewForm.scopeType === "unit" && (
+                <div className="space-y-1">
+                  <Label>Birim</Label>
+                  <Select
+                    value={reviewForm.unitId}
+                    onValueChange={(v) => setReviewForm((f) => ({ ...f, unitId: v }))}
+                    disabled={!isAdmin}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Birim seçin" /></SelectTrigger>
+                    <SelectContent>
+                      {(units ?? []).map((u: any) => (
+                        <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+            <div className="space-y-1">
+              <Label>Genel Notlar</Label>
+              <Textarea
+                value={reviewForm.generalNotes}
+                onChange={(e) => setReviewForm((f) => ({ ...f, generalNotes: e.target.value }))}
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReviewFormOpen(false)}>İptal</Button>
+            <Button
+              onClick={submitReviewForm}
+              disabled={createReviewMut.isPending || updateReviewMut.isPending}
+            >
+              {reviewEditingId !== null ? "Kaydet" : "Oluştur"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Detay */}
+      <Dialog open={reviewDetailId !== null} onOpenChange={(o) => { if (!o) setReviewDetailId(null); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Gözden Geçirme Kaydı Detayı</DialogTitle>
+          </DialogHeader>
+          {reviewDetailRecord && (
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-base">{reviewDetailRecord.reviewName}</span>
+                <Badge
+                  variant="outline"
+                  className={
+                    reviewDetailRecord.status === "completed"
+                      ? "border-emerald-500/40 text-emerald-600 bg-emerald-500/10"
+                      : reviewDetailRecord.status === "revised"
+                        ? "border-muted-foreground/30 text-muted-foreground bg-muted/30"
+                        : "border-amber-500/40 text-amber-600 bg-amber-500/10"
+                  }
+                >
+                  {REVIEW_STATUS_LABELS[reviewDetailRecord.status] ?? reviewDetailRecord.status}
+                </Badge>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-muted-foreground">
+                <div>Yıl: <span className="text-foreground">{reviewDetailRecord.reviewYear}</span></div>
+                <div>Dönem: <span className="text-foreground">{REVIEW_PERIOD_LABELS[reviewDetailRecord.periodType]}</span></div>
+                <div>Başlangıç: <span className="text-foreground">{reviewDetailRecord.periodStart}</span></div>
+                <div>Bitiş: <span className="text-foreground">{reviewDetailRecord.periodEnd}</span></div>
+                <div>Kapsam: <span className="text-foreground">{reviewDetailRecord.scopeType === "company" ? "Şirket" : "Birim"}</span></div>
+                <div>Birim: <span className="text-foreground">{reviewDetailRecord.unitName ?? "—"}</span></div>
+                <div>Revizyon No: <span className="text-foreground">{reviewDetailRecord.revisionNo}</span></div>
+                <div>Hazırlayan: <span className="text-foreground">{reviewDetailRecord.preparedByName ?? "—"}</span></div>
+                <div>Tamamlanma: <span className="text-foreground">{reviewDetailRecord.completedAt ? new Date(reviewDetailRecord.completedAt).toLocaleDateString("tr-TR") : "—"}</span></div>
+              </div>
+              {reviewDetailRecord.generalNotes && (
+                <div>
+                  <div className="text-muted-foreground mb-1">Genel Notlar</div>
+                  <div className="rounded-md bg-muted/30 p-2 whitespace-pre-wrap">{reviewDetailRecord.generalNotes}</div>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            {reviewDetailRecord?.status === "draft" && (
+              <>
+                <Button variant="outline" onClick={() => { openEditReview(reviewDetailRecord); setReviewDetailId(null); }}>
+                  <FileEdit className="h-3.5 w-3.5 mr-1.5" />
+                  Düzenle
+                </Button>
+                <Button
+                  onClick={() => completeReviewMut.mutate(reviewDetailRecord.id)}
+                  disabled={completeReviewMut.isPending}
+                >
+                  <Lock className="h-3.5 w-3.5 mr-1.5" />
+                  Tamamla ve Kilitle
+                </Button>
+              </>
+            )}
+            {reviewDetailRecord?.status === "completed" && (
+              <Button
+                variant="outline"
+                onClick={() => reviseReviewMut.mutate(reviewDetailRecord.id)}
+                disabled={reviseReviewMut.isPending}
+              >
+                <History className="h-3.5 w-3.5 mr-1.5" />
+                Revize Et
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
