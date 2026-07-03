@@ -29,14 +29,6 @@ runMigrations(migrationsFolder)
   .then(async () => {
     logger.info("Migrations complete");
 
-    // MGM resmi referans veri bootstrap — app.listen'dan ÖNCE çalışır.
-    // Başarısız olursa API yine de başlar, lookup'lar "bootstrap_failed" durumunu raporlar.
-    try {
-      await bootstrapMgmReferenceData();
-    } catch (err) {
-      logger.error({ err }, "[MGM Bootstrap] Beklenmeyen hata — API yine de başlatılıyor");
-    }
-
     app.listen(port, (err) => {
       if (err) {
         logger.error({ err }, "Error listening on port");
@@ -44,8 +36,12 @@ runMigrations(migrationsFolder)
       }
       logger.info({ port }, "Server listening");
       seedAdminUser();
-      // MGM Open-Meteo havuzu: ilk çalışmada seed et, sonra günlük güncelle
-      seedStationsIfEmpty()
+
+      // MGM resmi referans veri bootstrap — app.listen'dan SONRA çalışır (arka planda).
+      // Başarısız olursa API yine de çalışır, lookup'lar "bootstrap_failed" durumunu raporlar.
+      bootstrapMgmReferenceData()
+        .catch(err => logger.error({ err }, "[MGM Bootstrap] Beklenmeyen hata"))
+        .then(() => seedStationsIfEmpty())
         .then(() => seedDegreeDataIfEmpty())
         .then(() => startMgmDailyScheduler())
         .catch(err => logger.error({ err }, "MGM seed/scheduler hatası"));
