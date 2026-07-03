@@ -5,6 +5,7 @@ import {
   metersTable,
   energySourcesTable,
   unitsTable,
+  subUnitsTable,
   seuAssessmentsTable,
   seuAssessmentItemsTable,
   energyUseGroupsTable,
@@ -16,6 +17,7 @@ import {
 } from "@workspace/db";
 import { eq, and, inArray, desc, asc, SQL, sql } from "drizzle-orm";
 import { requireAuth, requireAdmin } from "../middlewares/auth.js";
+import { calcProgress } from "./targets.js";
 
 const router = Router();
 
@@ -820,6 +822,343 @@ router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (r
     );
 
     result.sort((a, b) => b.totalTep - a.totalTep);
+    res.json(result);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/energy-review/targets-actions-summary   (salt okunur / read-only)
+//
+// Hedefler → Eylem Planları → VAP Projeleri ve ilgili ÖEK/EnPG izleme
+// durumunu tek ekranda toplayan denetim (audit) görünümü. Bu endpoint
+// hiçbir veri yazmaz; sadece mevcut tabloları okur ve birleştirir.
+//
+// Gerçek ilişki zinciri (şemadan doğrulanmıştır):
+//   energyTargetsTable (1) → energyActionPlansTable (N, targetId FK)
+//   energyActionPlansTable (1) → vapProjectsTable (0..1, actionPlanId FK, unique)
+//   energyTargetsTable.seuAssessmentId → seuAssessmentsTable (opsiyonel, N:1 değil;
+//     bir hedef en fazla bir ÖEK değerlendirmesine bağlanabilir — değerlendirme
+//     kaleme (item) değil bütüne bağlıdır). Kalem bazlı EnPG izleme durumu bu
+//     assessmentId üzerinden seuAssessmentItemsTable.assessmentId ile bulunur.
+//   NOT: energyTargetsTable içinde doğrudan bir "seuAssessmentItemId" veya VAP'a
+//   doğrudan bağlanan bir alan YOKTUR — bu ilişkiler üretilmemiştir (uydurulmamıştır).
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/energy-review/targets-actions-summary", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+
+    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const statusParam = req.query.status as string | undefined;
+    const today = new Date().toISOString().slice(0, 10);
+
+    // ── Yetki/filtre koşulları (targets.ts GET /targets ile BİREBİR AYNI kalıp) ──
+    const conditions: SQL[] = [];
+    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
+      conditions.push(eq(energyTargetsTable.unitId, sessionUnitId));
+    } else if (role === "admin") {
+      conditions.push(eq(energyTargetsTable.companyId, sessionCompanyId));
+      const unitIdParam = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
+      if (unitIdParam !== undefined && !isNaN(unitIdParam)) {
+        conditions.push(eq(energyTargetsTable.unitId, unitIdParam));
+      }
+    } else {
+      // superadmin (veya birimsiz non-admin): sorgu paramlarıyla opsiyonel filtre
+      const unitIdParam = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
+      if (unitIdParam !== undefined && !isNaN(unitIdParam)) {
+        conditions.push(eq(energyTargetsTable.unitId, unitIdParam));
+      }
+      const companyIdParam = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
+      if (companyIdParam !== undefined && !isNaN(companyIdParam)) {
+        conditions.push(eq(energyTargetsTable.companyId, companyIdParam));
+      }
+    }
+    if (statusParam) conditions.push(eq(energyTargetsTable.status, statusParam));
+
+    // ── Hedefler ──────────────────────────────────────────────────────────
+    const targets = await db
+      .select({
+        id: energyTargetsTable.id,
+        unitId: energyTargetsTable.unitId,
+        subUnitId: energyTargetsTable.subUnitId,
+        energySourceId: energyTargetsTable.energySourceId,
+        seuAssessmentId: energyTargetsTable.seuAssessmentId,
+        name: energyTargetsTable.name,
+        objectiveText: energyTargetsTable.objectiveText,
+        targetText: energyTargetsTable.targetText,
+        targetType: energyTargetsTable.targetType,
+        baselineYear: energyTargetsTable.baselineYear,
+        baselineValue: energyTargetsTable.baselineValue,
+        targetYear: energyTargetsTable.targetYear,
+        targetValue: energyTargetsTable.targetValue,
+        actualValue: energyTargetsTable.actualValue,
+        unitLabel: energyTargetsTable.unitLabel,
+        targetReductionPercent: energyTargetsTable.targetReductionPercent,
+        status: energyTargetsTable.status,
+        notes: energyTargetsTable.notes,
+        createdAt: energyTargetsTable.createdAt,
+        unitName: unitsTable.name,
+        subUnitName: subUnitsTable.name,
+        energySourceName: energySourcesTable.name,
+        seuAssessmentYear: seuAssessmentsTable.year,
+      })
+      .from(energyTargetsTable)
+      .leftJoin(unitsTable, eq(energyTargetsTable.unitId, unitsTable.id))
+      .leftJoin(subUnitsTable, eq(energyTargetsTable.subUnitId, subUnitsTable.id))
+      .leftJoin(energySourcesTable, eq(energyTargetsTable.energySourceId, energySourcesTable.id))
+      .leftJoin(seuAssessmentsTable, eq(energyTargetsTable.seuAssessmentId, seuAssessmentsTable.id))
+      .where(and(...conditions))
+      .orderBy(desc(energyTargetsTable.createdAt));
+
+    if (targets.length === 0) {
+      res.json([]);
+      return;
+    }
+    const targetIds = targets.map((t) => t.id);
+
+    // ── Eylem planları ────────────────────────────────────────────────────
+    const actions = await db
+      .select()
+      .from(energyActionPlansTable)
+      .where(inArray(energyActionPlansTable.targetId, targetIds))
+      .orderBy(asc(energyActionPlansTable.createdAt));
+
+    const actionIds = actions.map((a) => a.id);
+
+    // ── VAP projeleri (aksiyon planı başına en fazla 1 kayıt) ────────────
+    const vaps = actionIds.length > 0
+      ? await db
+          .select()
+          .from(vapProjectsTable)
+          .where(inArray(vapProjectsTable.actionPlanId, actionIds))
+      : [];
+    const vapByActionId = new Map(vaps.map((v) => [v.actionPlanId, v]));
+
+    const actionsByTarget = new Map<number, typeof actions>();
+    for (const a of actions) {
+      const arr = actionsByTarget.get(a.targetId) ?? [];
+      arr.push(a);
+      actionsByTarget.set(a.targetId, arr);
+    }
+
+    // ── İlgili ÖEK/EnPG izleme özeti: hedefin bağlı olduğu seuAssessmentId
+    //    üzerinden kabul edilmiş kalemler + aktif baseline + yıl sonuçları ──
+    const assessmentIds = Array.from(
+      new Set(targets.map((t) => t.seuAssessmentId).filter((id): id is number => id != null)),
+    );
+
+    const seuSummaryByAssessment = new Map<number, {
+      itemCount: number;
+      monitoredCount: number;
+      baselineWithoutResultsCount: number;
+      notMonitoredCount: number;
+    }>();
+
+    if (assessmentIds.length > 0) {
+      const items = await db
+        .select({
+          id: seuAssessmentItemsTable.id,
+          assessmentId: seuAssessmentItemsTable.assessmentId,
+        })
+        .from(seuAssessmentItemsTable)
+        .where(
+          and(
+            inArray(seuAssessmentItemsTable.assessmentId, assessmentIds),
+            eq(seuAssessmentItemsTable.userDecision, "accepted_as_seu"),
+          ),
+        );
+
+      const itemIds = items.map((i) => i.id);
+
+      const baselines = itemIds.length > 0
+        ? await db
+            .select({
+              id: energyBaselinesTable.id,
+              seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
+              status: energyBaselinesTable.status,
+            })
+            .from(energyBaselinesTable)
+            .where(
+              and(
+                eq(energyBaselinesTable.companyId, sessionCompanyId),
+                inArray(energyBaselinesTable.seuAssessmentItemId, itemIds),
+              ),
+            )
+        : [];
+
+      const baselineByItem = new Map<number, typeof baselines[0]>();
+      for (const b of baselines) {
+        if (b.seuAssessmentItemId === null) continue;
+        const existing = baselineByItem.get(b.seuAssessmentItemId);
+        if (!existing) baselineByItem.set(b.seuAssessmentItemId, b);
+        else if (b.status === "active" && existing.status !== "active") baselineByItem.set(b.seuAssessmentItemId, b);
+      }
+      const activeBaselineIds = Array.from(baselineByItem.values()).map((b) => b.id);
+
+      const results = itemIds.length > 0 && activeBaselineIds.length > 0
+        ? await db
+            .selectDistinct({ seuAssessmentItemId: energyPerformanceResultsTable.seuAssessmentItemId })
+            .from(energyPerformanceResultsTable)
+            .where(
+              and(
+                eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+                inArray(energyPerformanceResultsTable.seuAssessmentItemId, itemIds),
+                inArray(energyPerformanceResultsTable.baselineId, activeBaselineIds),
+                eq(energyPerformanceResultsTable.year, year),
+              ),
+            )
+        : [];
+      const monitoredItemIds = new Set(results.map((r) => r.seuAssessmentItemId));
+
+      for (const assessmentId of assessmentIds) {
+        const assessmentItems = items.filter((i) => i.assessmentId === assessmentId);
+        let monitoredCount = 0;
+        let baselineWithoutResultsCount = 0;
+        let notMonitoredCount = 0;
+        for (const it of assessmentItems) {
+          if (monitoredItemIds.has(it.id)) monitoredCount++;
+          else if (baselineByItem.has(it.id)) baselineWithoutResultsCount++;
+          else notMonitoredCount++;
+        }
+        seuSummaryByAssessment.set(assessmentId, {
+          itemCount: assessmentItems.length,
+          monitoredCount,
+          baselineWithoutResultsCount,
+          notMonitoredCount,
+        });
+      }
+    }
+
+    // ── Hedef başına ilerleme (targets.ts calcProgress ile AYNI kural) ───
+    const result = await Promise.all(
+      targets.map(async (t) => {
+        const progress = await calcProgress(t.unitId, t.baselineYear, t.targetYear);
+        const lastReductionPercent = progress.yearlyProgress.length > 0
+          ? progress.yearlyProgress[progress.yearlyProgress.length - 1].reductionPercent
+          : null;
+
+        // Başarı durumu kuralı (Targets.tsx frontend mantığıyla birebir aynı):
+        //   achieved: son reductionPercent >= targetReductionPercent
+        //   on_track: 0 < son reductionPercent < targetReductionPercent
+        //   at_risk:  son reductionPercent <= 0
+        //   no_data:  hiç tüketim/baz veri yok (reductionPercent hesaplanamadı)
+        let achievementStatus: "achieved" | "on_track" | "at_risk" | "no_data";
+        if (lastReductionPercent === null) {
+          achievementStatus = "no_data";
+        } else if (lastReductionPercent >= t.targetReductionPercent) {
+          achievementStatus = "achieved";
+        } else if (lastReductionPercent > 0) {
+          achievementStatus = "on_track";
+        } else {
+          achievementStatus = "at_risk";
+        }
+
+        const targetActions = (actionsByTarget.get(t.id) ?? []).map((a) => {
+          const overdue = a.status !== "completed" && a.status !== "cancelled" && !!a.dueDate && a.dueDate < today;
+          const vap = vapByActionId.get(a.id) ?? null;
+          return {
+            id: a.id,
+            title: a.title,
+            description: a.description,
+            responsibleName: a.responsibleName,
+            priority: a.priority,
+            status: a.status,
+            startDate: a.startDate,
+            dueDate: a.dueDate,
+            completionDate: a.completionDate,
+            progressPercent: a.progressPercent,
+            expectedSavingValue: a.expectedSavingValue,
+            expectedSavingUnit: a.expectedSavingUnit,
+            expectedCostSaving: a.expectedCostSaving,
+            investmentCost: a.investmentCost,
+            paybackMonths: a.paybackMonths,
+            isVap: a.isVap,
+            overdue,
+            notes: a.notes,
+            vap: vap
+              ? {
+                  id: vap.id,
+                  projectCode: vap.projectCode,
+                  projectTitle: vap.projectTitle,
+                  projectType: vap.projectType,
+                  annualEnergySavingValue: vap.annualEnergySavingValue,
+                  annualEnergySavingUnit: vap.annualEnergySavingUnit,
+                  annualCostSaving: vap.annualCostSaving,
+                  investmentCost: vap.investmentCost,
+                  paybackMonths: vap.paybackMonths,
+                  co2ReductionTon: vap.co2ReductionTon,
+                  incentiveStatus: vap.incentiveStatus,
+                }
+              : null,
+          };
+        });
+
+        const openActionsCount = targetActions.filter((a) => a.status !== "completed" && a.status !== "cancelled").length;
+        const overdueActionsCount = targetActions.filter((a) => a.overdue).length;
+        const completedActionsCount = targetActions.filter((a) => a.status === "completed").length;
+        const vapCount = targetActions.filter((a) => a.vap !== null).length;
+
+        // Veri ilişkisi bütünlüğü durumu (denetim amaçlı, salt bilgilendirme):
+        let relationState: "complete" | "company_wide" | "missing_consumption_data" | "no_actions";
+        if (t.unitId === null) {
+          relationState = "company_wide";
+        } else if (progress.baselineKwh === null) {
+          relationState = "missing_consumption_data";
+        } else if (targetActions.length === 0) {
+          relationState = "no_actions";
+        } else {
+          relationState = "complete";
+        }
+
+        const relatedSeu = t.seuAssessmentId != null
+          ? {
+              seuAssessmentId: t.seuAssessmentId,
+              seuAssessmentYear: t.seuAssessmentYear,
+              ...(seuSummaryByAssessment.get(t.seuAssessmentId) ?? {
+                itemCount: 0, monitoredCount: 0, baselineWithoutResultsCount: 0, notMonitoredCount: 0,
+              }),
+            }
+          : null;
+
+        return {
+          id: t.id,
+          name: t.name,
+          unitId: t.unitId,
+          unitName: t.unitName,
+          subUnitId: t.subUnitId,
+          subUnitName: t.subUnitName,
+          energySourceId: t.energySourceId,
+          energySourceName: t.energySourceName,
+          objectiveText: t.objectiveText,
+          targetText: t.targetText,
+          targetType: t.targetType,
+          baselineYear: t.baselineYear,
+          baselineValue: t.baselineValue,
+          targetYear: t.targetYear,
+          targetValue: t.targetValue,
+          actualValue: t.actualValue,
+          unitLabel: t.unitLabel,
+          targetReductionPercent: t.targetReductionPercent,
+          status: t.status,
+          notes: t.notes,
+          baselineKwh: progress.baselineKwh,
+          yearlyProgress: progress.yearlyProgress,
+          currentReductionPercent: lastReductionPercent,
+          achievementStatus,
+          relationState,
+          relatedSeu,
+          actions: targetActions,
+          actionsCount: targetActions.length,
+          openActionsCount,
+          overdueActionsCount,
+          completedActionsCount,
+          vapCount,
+        };
+      }),
+    );
+
     res.json(result);
   } catch (err) {
     req.log.error(err);

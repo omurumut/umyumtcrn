@@ -1,0 +1,290 @@
+Enerji Gözden Geçirme → “Hedefler & Aksiyonlar” sekmesini geliştir.
+
+Amaç:
+Enerji hedefleri, ilgili ÖEK/EnPG performansı, eylem planları ve VAP projelerini tek ekranda toplu ve denetlenebilir şekilde göstermek.
+
+Bu sekme salt okunur olacak.
+Yeni hedef, aksiyon veya VAP kaydı oluşturma.
+Mevcut çalışan modüllerin CRUD akışını değiştirme.
+Gereksiz refactor yapma.
+Authentication yapısına dokunma.
+Multi-tenant companyId ve unitId güvenliğini koru.
+Migration oluşturma veya çalıştırma.
+Veritabanı kayıtlarını değiştirme.
+
+İncelenecek dosyalar:
+- artifacts/api-server/src/routes/energy-review.ts
+- artifacts/api-server/src/routes/targets.ts
+- artifacts/api-server/src/routes/energy-action-plans.ts
+- artifacts/api-server/src/routes/vap-projects.ts
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- artifacts/ems-dashboard/src/pages/Targets.tsx veya hedef ekranı
+- artifacts/ems-dashboard/src/pages/VapProjects.tsx
+- lib/db/src/schema/energy.ts
+
+ÖNCE TEŞHİS
+
+Gerçek şema ve ilişkileri doğrula:
+
+1. Enerji hedefleri
+- id
+- companyId
+- unitId
+- title/name
+- baselineYear
+- targetYear
+- targetValue veya reductionTarget
+- actualValue veya progress
+- status
+- startDate
+- endDate
+- responsibleUserId
+- varsa seuAssessmentItemId
+- varsa energyPerformanceIndicatorId / baselineId
+- varsa action plan ilişkisi
+
+2. Eylem planları
+- id
+- targetId
+- seuAssessmentItemId
+- vapProjectId
+- title
+- responsible
+- dueDate
+- status
+- expectedSaving
+- actualSaving
+- completionPercent
+
+3. VAP projeleri
+- id
+- targetId veya actionPlanId
+- title
+- status
+- investmentCost
+- annualCostSaving
+- expectedEnergySaving
+- actualEnergySaving
+- co2ReductionTon
+- paybackPeriod
+
+Olmayan alanı uydurma.
+İlişki yoksa açıkça raporla.
+
+BACKEND
+
+Yeni endpoint ekle:
+
+GET /api/energy-review/targets-actions-summary
+
+Parametreler:
+- year
+- unitId, mevcut yetki kurallarına göre
+
+Her hedef için mümkün olan mevcut verilerden şu yapıyı döndür:
+
+- targetId
+- targetName
+- unitId
+- unitName
+- targetYear
+- status
+- responsibleName
+- dueDate
+
+- targetValue
+- actualValue
+- achievementPercent
+
+- seuItemId
+- seuName
+- enpiOrBaselineId
+- enpiOrBaselineName
+- latestAnnualEei
+- performanceMonitoringState
+
+- actionPlanCount
+- openActionCount
+- overdueActionCount
+- completedActionCount
+
+- vapProjectCount
+- activeVapCount
+- completedVapCount
+
+- expectedSaving
+- actualSaving
+- savingUnit
+
+- relationState
+
+relationState değerleri:
+- complete
+- missing_seu_link
+- missing_enpi_link
+- missing_action_plan
+- missing_responsible
+- missing_due_date
+
+Kurallar:
+
+1. Hedef yalnızca targetYear üzerinden değil, hedefin seçili yılı kapsayıp kapsamadığına göre değerlendirilmelidir.
+2. achievementPercent mevcut hedef modülündeki gerçek hesapla aynı olmalı.
+3. Hedef azaltım hedefiyse yön ters olabilir; mevcut hedef modülünün mantığını aynen kullan.
+4. Aynı hedef için aksiyon ve VAP sayıları join nedeniyle çoğalmamalı; distinct id kullan.
+5. Açık aksiyon:
+   tamamlanmamış ve iptal edilmemiş kayıtlar.
+6. Gecikmiş aksiyon:
+   dueDate < bugün ve tamamlanmamış.
+7. Seçili yılın geçmiş olması, gecikme hesabını bozmasın; uygulamanın mevcut aksiyon durum mantığını kullan.
+8. ÖEK/EnPG bağlantısı yoksa hedefi listeden düşürme.
+9. companyId tüm sorgularda session’dan alınmalı.
+10. Standart kullanıcı için session.unitId zorunlu uygulanmalı.
+11. Firma yöneticisi yalnızca kendi şirketindeki birimleri görebilmeli.
+
+FRONTEND
+
+Enerji Gözden Geçirme → Hedefler & Aksiyonlar sekmesini yeniden düzenle.
+
+ÜST ÖZET KARTLARI
+
+- Aktif Hedef
+- Hedefe Ulaşan
+- İzleme Bekleyen
+- Açık Aksiyon
+- Gecikmiş Aksiyon
+- Aktif VAP
+- Hedef–ÖEK/EnPG İlişkisi Eksik
+
+Kartlar endpoint verisinden hesaplanmalı.
+Aynı kayıt iki kez sayılmamalı.
+
+HEDEF TABLOSU
+
+Kolonlar:
+
+- Hedef
+- Birim
+- İlgili ÖEK
+- İlgili EnPG / EnRÇ
+- Hedef Değer
+- Gerçekleşen
+- Gerçekleşme %
+- Performans Durumu
+- Açık Aksiyon
+- Gecikmiş Aksiyon
+- Aktif VAP
+- Sorumlu
+- Termin
+- İlişki Durumu
+- Detay
+
+Gösterim kuralları:
+
+- Yüzde gerçekleşme mevcut hedef modülündeki değerle aynı olmalı.
+- Hedefe ulaşıldı/ulaşılmadı yorumu mevcut hedef modülünün kurallarına göre yapılmalı.
+- EnPG sonucu yoksa “İzleme sonucu yok” göster.
+- ÖEK bağlantısı yoksa görünür uyarı etiketi göster.
+- Aksiyon yoksa “Aksiyon tanımlı değil” göster; satırı gizleme.
+- Sorumlu veya termin yoksa relationState üzerinden açıkça göster.
+- Veri olmayan hücrelerde “—” kullan.
+
+AKSİYON DETAYI
+
+Her hedef satırı genişletilebilir olsun veya detay butonu ile alt panel açılsın.
+
+Alt panelde ilgili eylem planlarını göster:
+
+- Eylem adı
+- Durum
+- Sorumlu
+- Başlangıç tarihi
+- Termin tarihi
+- Tamamlanma %
+- Beklenen tasarruf
+- Gerçekleşen tasarruf
+- İlgili VAP
+- Gecikme durumu
+
+Bu panel salt okunur olsun.
+
+VAP ÖZETİ
+
+Hedefe bağlı VAP varsa göster:
+
+- Proje adı
+- Durum
+- Yatırım
+- Yıllık mali tasarruf
+- Enerji tasarrufu
+- CO₂ azaltımı
+- Geri ödeme süresi
+
+İlişki yoksa sahte bağlantı kurma.
+
+YÖNLENDİRME BUTONLARI
+
+- “Enerji Hedeflerine Git”
+- “Eylem Planlarına Git”
+- “VAP Projelerine Git”
+
+Mevcut doğru route’lara yönlendirsin.
+
+FİLTRELER
+
+- Hedef Durumu
+- Birim, yalnızca firma yöneticisi
+- İlişki Durumu
+- Sadece gecikmiş aksiyonu olanlar
+- Sadece ÖEK/EnPG ilişkisi eksik olanlar
+
+Mevcut üst yıl ve birim filtresini bozma.
+Aynı filtreyi gereksiz tekrar etme.
+
+ÖNEMLİ YORUM KURALI
+
+Tüketim artışı veya EEI değeri tek başına hedef başarısızlığı olarak yorumlanmamalı.
+Hedef durumu yalnızca hedef modülündeki tanımlı hedef ve gerçekleşme mantığına göre belirlenmeli.
+
+EMPTY / LOADING / ERROR
+
+- Veri yoksa “Bu dönem için enerji hedefi bulunamadı” göster.
+- Eski yıl verisini yükleme sırasında ekranda tutma.
+- isFetching durumunda skeleton göster.
+- API hatasında anlaşılır mesaj göster.
+
+RESPONSIVE
+
+- Masaüstünde tablo
+- Mobilde yatay kaydırma
+- Genişletilen aksiyon paneli mobilde kart görünümüne geçebilir
+- Mevcut tasarım sistemini koru
+
+DOĞRULAMA SENARYOLARI
+
+1. Hedefe ulaşmış hedef
+2. İzleme verisi olmayan hedef
+3. ÖEK bağlantısı olmayan hedef
+4. EnPG/EnRÇ bağlantısı olmayan hedef
+5. Açık aksiyonu olan hedef
+6. Gecikmiş aksiyonu olan hedef
+7. VAP bağlı hedef
+8. Sorumlu veya termin eksik hedef
+9. Standart kullanıcı yalnızca kendi birimini görür
+10. Firma yöneticisi birim filtresi kullanır
+11. Hedef gerçekleşme yüzdesi mevcut hedef modülüyle aynı çıkar
+
+TypeScript typecheck çalıştır.
+Frontend build çalıştır.
+Backend build çalıştır.
+Migration çalıştırma.
+
+İş sonunda raporla:
+- Gerçek hedef–aksiyon–VAP ilişkileri
+- Eklenen endpoint
+- Hedef gerçekleşme hesaplama kuralı
+- relationState kuralları
+- Değişen dosyalar
+- Test edilen örnek hedefler
+- Typecheck ve build sonuçları
+- Veritabanına dokunulmadığının teyidi

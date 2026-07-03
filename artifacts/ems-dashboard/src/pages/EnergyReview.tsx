@@ -4,6 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import {
@@ -18,7 +19,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   AlertCircle, AlertTriangle, CheckCircle2, Clock, TrendingUp, BarChart2,
-  Zap, Target, Activity, Info, ExternalLink,
+  Zap, Target, Activity, Info, ExternalLink, ListChecks,
 } from "lucide-react";
 import { Link } from "wouter";
 import { useAuth } from "@/context/AuthContext";
@@ -123,6 +124,84 @@ interface EnpiSummaryItem {
   dataRelationState: "complete" | "missing_unit" | "missing_energy_source" | "missing_energy_use_group" | "missing_baseline_link" | "missing_result_link";
 }
 
+interface TargetActionVap {
+  id: number;
+  projectCode: string | null;
+  projectTitle: string;
+  projectType: string | null;
+  annualEnergySavingValue: number | null;
+  annualEnergySavingUnit: string | null;
+  annualCostSaving: number | null;
+  investmentCost: number | null;
+  paybackMonths: number | null;
+  co2ReductionTon: number | null;
+  incentiveStatus: string | null;
+}
+
+interface TargetActionItem {
+  id: number;
+  title: string;
+  description: string | null;
+  responsibleName: string | null;
+  priority: string | null;
+  status: string | null;
+  startDate: string | null;
+  dueDate: string | null;
+  completionDate: string | null;
+  progressPercent: number | null;
+  expectedSavingValue: number | null;
+  expectedSavingUnit: string | null;
+  expectedCostSaving: number | null;
+  investmentCost: number | null;
+  paybackMonths: number | null;
+  isVap: boolean;
+  overdue: boolean;
+  notes: string | null;
+  vap: TargetActionVap | null;
+}
+
+interface TargetsActionsSummaryItem {
+  id: number;
+  name: string;
+  unitId: number | null;
+  unitName: string | null;
+  subUnitId: number | null;
+  subUnitName: string | null;
+  energySourceId: number | null;
+  energySourceName: string | null;
+  objectiveText: string | null;
+  targetText: string | null;
+  targetType: string | null;
+  baselineYear: number;
+  baselineValue: number | null;
+  targetYear: number;
+  targetValue: number | null;
+  actualValue: number | null;
+  unitLabel: string | null;
+  targetReductionPercent: number;
+  status: string | null;
+  notes: string | null;
+  baselineKwh: number | null;
+  yearlyProgress: { year: number; actualKwh: number | null; reductionPercent: number | null }[];
+  currentReductionPercent: number | null;
+  achievementStatus: "achieved" | "on_track" | "at_risk" | "no_data";
+  relationState: "complete" | "company_wide" | "missing_consumption_data" | "no_actions";
+  relatedSeu: {
+    seuAssessmentId: number;
+    seuAssessmentYear: number | null;
+    itemCount: number;
+    monitoredCount: number;
+    baselineWithoutResultsCount: number;
+    notMonitoredCount: number;
+  } | null;
+  actions: TargetActionItem[];
+  actionsCount: number;
+  openActionsCount: number;
+  overdueActionsCount: number;
+  completedActionsCount: number;
+  vapCount: number;
+}
+
 interface UnitComparisonItem {
   unitId: number;
   unitName: string;
@@ -186,6 +265,65 @@ function KpiCard({
       </CardContent>
     </Card>
   );
+}
+
+// ── Hedefler & Aksiyonlar sekmesi: etiket tabloları ve rozet bileşenleri ─────
+const TA_ACTION_STATUS_LABELS: Record<string, string> = {
+  planned: "Planlandı",
+  in_progress: "Devam Ediyor",
+  completed: "Tamamlandı",
+  delayed: "Gecikti",
+  cancelled: "İptal",
+};
+
+const TA_PRIORITY_LABELS: Record<string, string> = {
+  low: "Düşük",
+  medium: "Orta",
+  high: "Yüksek",
+};
+
+const TA_TARGET_STATUS_LABELS: Record<string, string> = {
+  draft: "Taslak",
+  active: "Devam Ediyor",
+  completed: "Tamamlandı",
+  cancelled: "İptal",
+};
+
+function fmtNum(n: number | null | undefined, dec = 1) {
+  if (n == null) return "—";
+  return n.toLocaleString("tr-TR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+function AchievementBadge({ state }: { state: TargetsActionsSummaryItem["achievementStatus"] }) {
+  if (state === "achieved")
+    return <Badge className="bg-green-500/20 text-green-400 border-0 text-[10px]">Hedefe Ulaşıldı</Badge>;
+  if (state === "on_track")
+    return <Badge className="bg-blue-500/20 text-blue-400 border-0 text-[10px]">İlerliyor</Badge>;
+  if (state === "at_risk")
+    return <Badge className="bg-red-500/20 text-red-400 border-0 text-[10px]">Risk Altında</Badge>;
+  return <Badge className="bg-muted/30 text-muted-foreground border-0 text-[10px]">Veri Yok</Badge>;
+}
+
+function RelationBadge({ state }: { state: TargetsActionsSummaryItem["relationState"] }) {
+  if (state === "complete")
+    return <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30 text-[10px]">Tam</Badge>;
+  if (state === "company_wide")
+    return <Badge className="bg-indigo-500/20 text-indigo-400 border-0 text-[10px]">Şirket Geneli</Badge>;
+  if (state === "missing_consumption_data")
+    return <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30 text-[10px]">Tüketim Verisi Eksik</Badge>;
+  return <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30 text-[10px]">Aksiyon Yok</Badge>;
+}
+
+function TargetActionStatusBadge({ status }: { status: string | null }) {
+  const colorMap: Record<string, string> = {
+    planned: "bg-muted/30 text-muted-foreground",
+    in_progress: "bg-blue-500/20 text-blue-400",
+    completed: "bg-green-500/20 text-green-400",
+    delayed: "bg-orange-500/20 text-orange-400",
+    cancelled: "bg-red-500/20 text-red-400",
+  };
+  const cls = (status && colorMap[status]) ?? "bg-muted/30 text-muted-foreground";
+  return <Badge className={`${cls} border-0 text-[10px]`}>{(status && TA_ACTION_STATUS_LABELS[status]) ?? status ?? "—"}</Badge>;
 }
 
 function MonitoringBadge({ state }: { state: EnpiSummaryItem["monitoringState"] }) {
@@ -259,6 +397,12 @@ export default function EnergyReview() {
   const [enpiFilterSource, setEnpiFilterSource] = useState("all");
   const [enpiFilterOnlyMissing, setEnpiFilterOnlyMissing] = useState(false);
 
+  // Hedefler & Aksiyonlar sekmesi filtreleri
+  const [taFilterStatus, setTaFilterStatus] = useState("all");
+  const [taFilterAchievement, setTaFilterAchievement] = useState("all");
+  const [taFilterOnlyOverdue, setTaFilterOnlyOverdue] = useState(false);
+  const [expandedTargetId, setExpandedTargetId] = useState<number | null>(null);
+
   const { data: units } = useListUnits(
     {} as any,
     { query: { queryKey: getListUnitsQueryKey() } },
@@ -305,10 +449,34 @@ export default function EnergyReview() {
     enabled: isAdmin,
   });
 
+  const taSummaryQ = useQuery<TargetsActionsSummaryItem[]>({
+    queryKey: ["energy-review-targets-actions", year, effectiveUnitId],
+    queryFn: () => apiFetch(`${API_BASE}/energy-review/targets-actions-summary?${buildParams()}`, token),
+  });
+
   const ov = overviewQ.data;
   const sources = sourceQ.data ?? [];
   const enpiList = enpiQ.data ?? [];
   const unitList = unitCompQ.data ?? [];
+  const taList = taSummaryQ.data ?? [];
+
+  const filteredTaList = taList.filter((t) => {
+    if (taFilterStatus !== "all" && t.status !== taFilterStatus) return false;
+    if (taFilterAchievement !== "all" && t.achievementStatus !== taFilterAchievement) return false;
+    if (taFilterOnlyOverdue && t.overdueActionsCount === 0) return false;
+    return true;
+  });
+
+  const taKpis = {
+    total: taList.length,
+    achieved: taList.filter((t) => t.achievementStatus === "achieved").length,
+    onTrack: taList.filter((t) => t.achievementStatus === "on_track").length,
+    atRisk: taList.filter((t) => t.achievementStatus === "at_risk").length,
+    noData: taList.filter((t) => t.achievementStatus === "no_data").length,
+    openActions: taList.reduce((s, t) => s + t.openActionsCount, 0),
+    overdueActions: taList.reduce((s, t) => s + t.overdueActionsCount, 0),
+    vapCount: taList.reduce((s, t) => s + t.vapCount, 0),
+  };
 
   // ÖEK filtreli liste
   const filteredEnpiList = enpiList.filter((item) => {
@@ -1056,77 +1224,304 @@ export default function EnergyReview() {
         {/* Tab 5: Hedefler & Aksiyonlar                                  */}
         {/* ══════════════════════════════════════════════════════════════ */}
         <TabsContent value="actions" className="mt-4 space-y-4">
-          {overviewQ.isLoading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <Card key={i} className="bg-card border-border">
-                  <CardContent className="pt-5 pb-4">
-                    <div className="h-8 rounded bg-muted/30 animate-pulse" />
-                  </CardContent>
-                </Card>
-              ))}
+          {taSummaryQ.isError && (
+            <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              Veriler yüklenemedi: {(taSummaryQ.error as Error)?.message}
             </div>
-          ) : !ov ? (
-            <EmptyState message="Veri yüklenemedi." />
-          ) : (
-            <>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <KpiCard
-                  title="Aktif Hedef"
-                  value={ov.targetsCount}
-                  icon={Target}
-                  accent="teal"
-                  tooltip={`${year} yılını kapsayan aktif hedefler`}
-                />
-                <KpiCard
-                  title="Açık Aksiyon"
-                  value={ov.openActionsCount}
-                  icon={Clock}
-                  accent="muted"
-                />
-                <KpiCard
-                  title="Gecikmiş Aksiyon"
-                  value={ov.overdueActionsCount}
-                  icon={AlertCircle}
-                  accent={ov.overdueActionsCount > 0 ? "red" : "muted"}
-                />
-                <KpiCard
-                  title="Aktif VAP Projesi"
-                  value={ov.activeVapCount}
-                  icon={Zap}
-                  accent="indigo"
-                />
-              </div>
-
-              {ov.targetsCount === 0 && ov.openActionsCount === 0 && ov.activeVapCount === 0 && (
-                <EmptyState message={`${year} yılı için aktif hedef veya aksiyon bulunamadı.`} />
-              )}
-
-              <div className="flex flex-wrap gap-3 pt-2">
-                <Link href="/hedefler">
-                  <Button variant="outline" size="sm" className="gap-2 text-xs">
-                    <Target className="h-3.5 w-3.5" />
-                    Enerji Hedefleri Modülüne Git
-                  </Button>
-                </Link>
-                <Link href="/vap-projeler">
-                  <Button variant="outline" size="sm" className="gap-2 text-xs">
-                    <Zap className="h-3.5 w-3.5" />
-                    VAP Projeleri Modülüne Git
-                  </Button>
-                </Link>
-              </div>
-
-              <Card className="bg-muted/20 border-border">
-                <CardContent className="pt-4 pb-4">
-                  <p className="text-xs text-muted-foreground flex items-start gap-2">
-                    <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                    Bu sekme salt okunurdur. Hedef ekleme, düzenleme ve aksiyon yönetimi için ilgili modüllere gidin.
-                  </p>
-                </CardContent>
-              </Card>
-            </>
           )}
+
+          {/* KPI grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <KpiCard
+              title="Toplam Hedef"
+              value={taSummaryQ.isLoading ? "—" : taKpis.total}
+              icon={Target}
+              accent="teal"
+              tooltip="Kapsam içindeki tüm enerji hedefleri (durumdan bağımsız)"
+            />
+            <KpiCard
+              title="Hedefe Ulaşıldı"
+              value={taSummaryQ.isLoading ? "—" : taKpis.achieved}
+              icon={CheckCircle2}
+              accent="teal"
+            />
+            <KpiCard
+              title="İlerliyor"
+              value={taSummaryQ.isLoading ? "—" : taKpis.onTrack}
+              icon={TrendingUp}
+              accent="indigo"
+            />
+            <KpiCard
+              title="Risk Altında / Veri Yok"
+              value={taSummaryQ.isLoading ? "—" : taKpis.atRisk + taKpis.noData}
+              icon={AlertTriangle}
+              accent={(taKpis.atRisk + taKpis.noData) > 0 ? "amber" : "muted"}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <KpiCard
+              title="Açık Aksiyon"
+              value={taSummaryQ.isLoading ? "—" : taKpis.openActions}
+              icon={Clock}
+              accent="muted"
+            />
+            <KpiCard
+              title="Gecikmiş Aksiyon"
+              value={taSummaryQ.isLoading ? "—" : taKpis.overdueActions}
+              icon={AlertCircle}
+              accent={taKpis.overdueActions > 0 ? "red" : "muted"}
+            />
+            <KpiCard
+              title="İlişkili VAP Projesi"
+              value={taSummaryQ.isLoading ? "—" : taKpis.vapCount}
+              icon={Zap}
+              accent="indigo"
+            />
+          </div>
+
+          {!taSummaryQ.isLoading && taList.length === 0 && !taSummaryQ.isError && (
+            <EmptyState message="Kapsam içinde enerji hedefi bulunamadı." />
+          )}
+
+          {/* Filtreler */}
+          {(taList.length > 0 || taSummaryQ.isLoading) && (
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Label className="text-xs text-muted-foreground whitespace-nowrap">Hedef Durumu</Label>
+                <Select value={taFilterStatus} onValueChange={setTaFilterStatus}>
+                  <SelectTrigger className="w-40 h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Tümü</SelectItem>
+                    {Object.entries(TA_TARGET_STATUS_LABELS).map(([v, l]) => (
+                      <SelectItem key={v} value={v}>{l}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <Label className="text-xs text-muted-foreground whitespace-nowrap">Başarı Durumu</Label>
+                <Select value={taFilterAchievement} onValueChange={setTaFilterAchievement}>
+                  <SelectTrigger className="w-44 h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Tümü</SelectItem>
+                    <SelectItem value="achieved">Hedefe Ulaşıldı</SelectItem>
+                    <SelectItem value="on_track">İlerliyor</SelectItem>
+                    <SelectItem value="at_risk">Risk Altında</SelectItem>
+                    <SelectItem value="no_data">Veri Yok</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <Checkbox
+                  checked={taFilterOnlyOverdue}
+                  onCheckedChange={(v) => setTaFilterOnlyOverdue(!!v)}
+                />
+                Sadece gecikmiş aksiyonu olanlar
+              </label>
+            </div>
+          )}
+
+          {/* Hedef tablosu */}
+          {(taList.length > 0 || taSummaryQ.isLoading) && (
+            <Card className="bg-card border-border">
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-border hover:bg-transparent">
+                        <TableHead className="text-xs min-w-[180px]">Hedef</TableHead>
+                        {isAdmin && <TableHead className="text-xs">Birim / Kaynak</TableHead>}
+                        <TableHead className="text-xs">Dönem</TableHead>
+                        <TableHead className="text-xs text-right">Hedef %</TableHead>
+                        <TableHead className="text-xs text-right">Gerçekleşen %</TableHead>
+                        <TableHead className="text-xs">Başarı</TableHead>
+                        <TableHead className="text-xs">Hedef Durumu</TableHead>
+                        <TableHead className="text-xs">Veri İlişkisi</TableHead>
+                        <TableHead className="text-xs text-right">Aksiyon</TableHead>
+                        <TableHead className="text-xs text-right">Gecikmiş</TableHead>
+                        <TableHead className="text-xs text-right">VAP</TableHead>
+                        <TableHead className="text-xs text-right">Detay</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {taSummaryQ.isFetching ? (
+                        <LoadingRows cols={isAdmin ? 12 : 11} />
+                      ) : (
+                        filteredTaList.map((t) => (
+                          <>
+                            <TableRow key={t.id} className="border-border">
+                              <TableCell className="text-xs font-medium max-w-[220px] truncate" title={t.name}>{t.name}</TableCell>
+                              {isAdmin && (
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {t.unitName ?? "Tüm Birimler"}
+                                  {t.subUnitName ? ` / ${t.subUnitName}` : ""}
+                                  {t.energySourceName ? <><br />{t.energySourceName}</> : ""}
+                                </TableCell>
+                              )}
+                              <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                                {t.baselineYear} → {t.targetYear}
+                              </TableCell>
+                              <TableCell className="text-xs text-right tabular-nums">{fmtNum(t.targetReductionPercent)}%</TableCell>
+                              <TableCell className="text-xs text-right tabular-nums">
+                                {t.currentReductionPercent != null ? `${fmtNum(t.currentReductionPercent)}%` : "—"}
+                              </TableCell>
+                              <TableCell><AchievementBadge state={t.achievementStatus} /></TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className="text-[10px]">
+                                  {(t.status && TA_TARGET_STATUS_LABELS[t.status]) ?? t.status ?? "—"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell><RelationBadge state={t.relationState} /></TableCell>
+                              <TableCell className="text-xs text-right tabular-nums">{t.actionsCount}</TableCell>
+                              <TableCell className="text-xs text-right tabular-nums">
+                                {t.overdueActionsCount > 0 ? (
+                                  <span className="text-red-400 font-medium">{t.overdueActionsCount}</span>
+                                ) : "0"}
+                              </TableCell>
+                              <TableCell className="text-xs text-right tabular-nums">{t.vapCount}</TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 text-xs gap-1 text-teal-400 hover:text-teal-300"
+                                  onClick={() => setExpandedTargetId(expandedTargetId === t.id ? null : t.id)}
+                                >
+                                  {expandedTargetId === t.id ? "Kapat" : "İncele"}
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                            {expandedTargetId === t.id && (
+                              <TableRow key={`${t.id}-detail`} className="border-border hover:bg-transparent">
+                                <TableCell colSpan={isAdmin ? 12 : 11} className="bg-muted/10 p-4">
+                                  <div className="space-y-4">
+                                    {/* Hedef metni */}
+                                    {(t.objectiveText || t.targetText) && (
+                                      <div className="grid sm:grid-cols-2 gap-3 text-xs">
+                                        {t.objectiveText && (
+                                          <div>
+                                            <p className="text-muted-foreground mb-1">Amaç</p>
+                                            <p>{t.objectiveText}</p>
+                                          </div>
+                                        )}
+                                        {t.targetText && (
+                                          <div>
+                                            <p className="text-muted-foreground mb-1">Hedef</p>
+                                            <p>{t.targetText}</p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {/* İlişkili ÖEK/EnPG */}
+                                    <div>
+                                      <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                        <BarChart2 className="h-3.5 w-3.5" /> İlişkili ÖEK / EnPG İzleme Durumu
+                                      </p>
+                                      {t.relatedSeu ? (
+                                        <div className="flex flex-wrap gap-2 text-[11px]">
+                                          <Badge variant="outline">{t.relatedSeu.itemCount} kalem</Badge>
+                                          <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30">{t.relatedSeu.monitoredCount} izleniyor</Badge>
+                                          <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30">{t.relatedSeu.baselineWithoutResultsCount} EnRÇ var / sonuç yok</Badge>
+                                          <Badge className="bg-muted/30 text-muted-foreground">{t.relatedSeu.notMonitoredCount} izlenmiyor</Badge>
+                                        </div>
+                                      ) : (
+                                        <p className="text-xs text-muted-foreground">Bu hedef bir ÖEK değerlendirmesine bağlı değil.</p>
+                                      )}
+                                    </div>
+
+                                    {/* Aksiyon planları */}
+                                    <div>
+                                      <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                        <ListChecks className="h-3.5 w-3.5" /> Aksiyon Planları ({t.actionsCount})
+                                      </p>
+                                      {t.actions.length === 0 ? (
+                                        <p className="text-xs text-muted-foreground">Bu hedefe bağlı aksiyon planı bulunmuyor.</p>
+                                      ) : (
+                                        <div className="space-y-2">
+                                          {t.actions.map((a) => (
+                                            <div key={a.id} className="rounded-md border border-border bg-card p-3 text-xs space-y-2">
+                                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <p className="font-medium">{a.title}</p>
+                                                <div className="flex items-center gap-1.5">
+                                                  {a.overdue && (
+                                                    <Badge className="bg-red-500/20 text-red-400 border-0 text-[10px]">Gecikmiş</Badge>
+                                                  )}
+                                                  <TargetActionStatusBadge status={a.status} />
+                                                  {a.priority && (
+                                                    <Badge variant="outline" className="text-[10px]">{TA_PRIORITY_LABELS[a.priority] ?? a.priority}</Badge>
+                                                  )}
+                                                </div>
+                                              </div>
+                                              {a.description && <p className="text-muted-foreground">{a.description}</p>}
+                                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-muted-foreground">
+                                                <span>Sorumlu: <span className="text-foreground">{a.responsibleName ?? "—"}</span></span>
+                                                <span>Termin: <span className="text-foreground">{a.dueDate ?? "—"}</span></span>
+                                                <span>İlerleme: <span className="text-foreground">{a.progressPercent != null ? `%${a.progressPercent}` : "—"}</span></span>
+                                                <span>Beklenen Tasarruf: <span className="text-foreground">{a.expectedSavingValue != null ? `${fmtNum(a.expectedSavingValue, 0)} ${a.expectedSavingUnit ?? ""}` : "—"}</span></span>
+                                              </div>
+                                              {a.vap && (
+                                                <div className="mt-2 pt-2 border-t border-border/50 flex flex-wrap items-center gap-3 text-[11px]">
+                                                  <Badge className="bg-indigo-500/20 text-indigo-400 border-0 text-[10px]">
+                                                    VAP: {a.vap.projectCode ?? a.vap.projectTitle}
+                                                  </Badge>
+                                                  <span className="text-muted-foreground">Yıllık Tasarruf: <span className="text-foreground">{a.vap.annualEnergySavingValue != null ? `${fmtNum(a.vap.annualEnergySavingValue, 0)} ${a.vap.annualEnergySavingUnit ?? ""}` : "—"}</span></span>
+                                                  <span className="text-muted-foreground">CO₂ Azaltımı: <span className="text-foreground">{a.vap.co2ReductionTon != null ? `${fmtNum(a.vap.co2ReductionTon)} ton` : "—"}</span></span>
+                                                  <span className="text-muted-foreground">Teşvik: <span className="text-foreground">{a.vap.incentiveStatus ?? "—"}</span></span>
+                                                  <Link href="/vap-projeler">
+                                                    <Button variant="ghost" size="sm" className="h-6 text-[11px] gap-1 text-teal-400 hover:text-teal-300 px-1.5">
+                                                      <ExternalLink className="h-3 w-3" /> VAP Detayı
+                                                    </Button>
+                                                  </Link>
+                                                </div>
+                                              )}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          <div className="flex flex-wrap gap-3 pt-2">
+            <Link href="/hedefler">
+              <Button variant="outline" size="sm" className="gap-2 text-xs">
+                <Target className="h-3.5 w-3.5" />
+                Enerji Hedefleri Modülüne Git
+              </Button>
+            </Link>
+            <Link href="/vap-projeler">
+              <Button variant="outline" size="sm" className="gap-2 text-xs">
+                <Zap className="h-3.5 w-3.5" />
+                VAP Projeleri Modülüne Git
+              </Button>
+            </Link>
+          </div>
+
+          <Card className="bg-muted/20 border-border">
+            <CardContent className="pt-4 pb-4">
+              <p className="text-xs text-muted-foreground flex items-start gap-2">
+                <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                Bu sekme salt okunurdur. Hedef ekleme, düzenleme ve aksiyon yönetimi için ilgili modüllere gidin.
+              </p>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

@@ -10,7 +10,7 @@ import { buildXlsx, sendXlsxResponse, type XlsxColDef } from "../lib/xlsx-export
 
 const router = Router();
 
-async function calcProgress(unitId: number | null, baselineYear: number, targetYear: number) {
+export async function calcProgress(unitId: number | null, baselineYear: number, targetYear: number) {
   const currentYear = new Date().getFullYear();
   const endYear = Math.min(targetYear, currentYear);
   const years: number[] = [];
