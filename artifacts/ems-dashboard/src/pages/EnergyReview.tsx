@@ -306,12 +306,12 @@ function AchievementBadge({ state }: { state: TargetsActionsSummaryItem["achieve
 
 function RelationBadge({ state }: { state: TargetsActionsSummaryItem["relationState"] }) {
   if (state === "complete")
-    return <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30 text-[10px]">Tam</Badge>;
+    return <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30 text-[10px]">Aksiyon bağlantısı var</Badge>;
   if (state === "company_wide")
-    return <Badge className="bg-indigo-500/20 text-indigo-400 border-0 text-[10px]">Şirket Geneli</Badge>;
+    return <Badge className="bg-indigo-500/20 text-indigo-400 border-0 text-[10px]">Kuruluş geneli hedef</Badge>;
   if (state === "missing_consumption_data")
-    return <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30 text-[10px]">Tüketim Verisi Eksik</Badge>;
-  return <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30 text-[10px]">Aksiyon Yok</Badge>;
+    return <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30 text-[10px]">İzleme verisi yok</Badge>;
+  return <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30 text-[10px]">Aksiyon tanımlı değil</Badge>;
 }
 
 function TargetActionStatusBadge({ status }: { status: string | null }) {
@@ -1253,10 +1253,16 @@ export default function EnergyReview() {
               accent="indigo"
             />
             <KpiCard
-              title="Risk Altında / Veri Yok"
-              value={taSummaryQ.isLoading ? "—" : taKpis.atRisk + taKpis.noData}
+              title="Risk Altındaki Hedef"
+              value={taSummaryQ.isLoading ? "—" : taKpis.atRisk}
               icon={AlertTriangle}
-              accent={(taKpis.atRisk + taKpis.noData) > 0 ? "amber" : "muted"}
+              accent={taKpis.atRisk > 0 ? "amber" : "muted"}
+            />
+            <KpiCard
+              title="İzleme Verisi Olmayan Hedef"
+              value={taSummaryQ.isLoading ? "—" : taKpis.noData}
+              icon={AlertTriangle}
+              accent={taKpis.noData > 0 ? "amber" : "muted"}
             />
           </div>
 
@@ -1424,14 +1430,24 @@ export default function EnergyReview() {
                                         <BarChart2 className="h-3.5 w-3.5" /> İlişkili ÖEK / EnPG İzleme Durumu
                                       </p>
                                       {t.relatedSeu ? (
-                                        <div className="flex flex-wrap gap-2 text-[11px]">
-                                          <Badge variant="outline">{t.relatedSeu.itemCount} kalem</Badge>
-                                          <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30">{t.relatedSeu.monitoredCount} izleniyor</Badge>
-                                          <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30">{t.relatedSeu.baselineWithoutResultsCount} EnRÇ var / sonuç yok</Badge>
-                                          <Badge className="bg-muted/30 text-muted-foreground">{t.relatedSeu.notMonitoredCount} izlenmiyor</Badge>
+                                        <div className="space-y-1.5">
+                                          <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30 text-[11px]">ÖEK değerlendirmesi bağlantısı var</Badge>
+                                          <div className="flex flex-wrap gap-2 text-[11px]">
+                                            <Badge variant="outline">{t.relatedSeu.itemCount} kalem</Badge>
+                                            <Badge className="bg-teal-600/20 text-teal-400 border-teal-600/30">{t.relatedSeu.monitoredCount} izleniyor</Badge>
+                                            <Badge className="bg-amber-600/20 text-amber-400 border-amber-600/30">{t.relatedSeu.baselineWithoutResultsCount} EnRÇ var / sonuç yok</Badge>
+                                            <Badge className="bg-muted/30 text-muted-foreground">{t.relatedSeu.notMonitoredCount} izlenmiyor</Badge>
+                                          </div>
+                                          <p className="text-[11px] text-muted-foreground/70 flex items-start gap-1">
+                                            <Info className="h-3 w-3 shrink-0 mt-0.5" />
+                                            Bu hedef ÖEK değerlendirmesi seviyesinde ilişkilidir; belirli bir ÖEK veya EnPG bağlantısı tanımlanmamıştır.
+                                          </p>
                                         </div>
                                       ) : (
-                                        <p className="text-xs text-muted-foreground">Bu hedef bir ÖEK değerlendirmesine bağlı değil.</p>
+                                        <p className="text-xs text-muted-foreground flex items-start gap-1">
+                                          <Info className="h-3 w-3 shrink-0 mt-0.5" />
+                                          Bu hedef ÖEK değerlendirmesi seviyesinde ilişkilidir; belirli bir ÖEK veya EnPG bağlantısı tanımlanmamıştır.
+                                        </p>
                                       )}
                                     </div>
 
