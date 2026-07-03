@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -19,12 +22,13 @@ import {
 } from "@/components/ui/tooltip";
 import {
   AlertCircle, AlertTriangle, CheckCircle2, Clock, TrendingUp, BarChart2,
-  Zap, Target, Activity, Info, ExternalLink, ListChecks,
+  Zap, Target, Activity, Info, ExternalLink, ListChecks, Plus, History, Lock, FileEdit,
 } from "lucide-react";
 import { Link } from "wouter";
 import { useAuth } from "@/context/AuthContext";
 import { useUnit } from "@/context/UnitContext";
 import { useYear } from "@/context/YearContext";
+import { useToast } from "@/hooks/use-toast";
 import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
 
 const API_BASE = "/api";
@@ -42,6 +46,23 @@ async function apiFetch<T>(url: string, token: string | null): Promise<T> {
     throw Object.assign(new Error(msg), { status: res.status });
   }
   return res.json();
+}
+
+async function apiMutate<T>(token: string | null, method: string, url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) {
+    let msg = "API hatası";
+    try {
+      const errBody = await res.json();
+      msg = errBody?.error ?? errBody?.message ?? msg;
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return res.status === 204 ? (null as T) : res.json();
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────

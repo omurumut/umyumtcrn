@@ -120,6 +120,13 @@
       "when": 1783400000000,
       "tag": "0017_add_consumption_weather_station_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783500000000,
+      "tag": "0018_energy_review_records",
+      "breakpoints": true
     }
   ]
 }

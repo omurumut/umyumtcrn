@@ -1,0 +1,217 @@
+Enerji Gözden Geçirme için yalnızca “Dönemsel Gözden Geçirme Kaydı” temel altyapısını geliştir.
+
+AMAÇ
+Canlı dashboard’dan bağımsız olarak dönemsel bir enerji gözden geçirme kaydı oluşturmak, listelemek, görüntülemek ve durumunu yönetmek.
+
+BU PAKETTE YAPILACAKLAR
+- Yeni kayıt oluşturma
+- Kayıtları listeleme
+- Kayıt detayını görüntüleme
+- Taslak kaydı düzenleme
+- Taslak → Tamamlandı durum geçişi
+- Tamamlanan kaydı kilitleme
+- Tamamlanan kayıttan yeni revizyon oluşturma
+
+BU PAKETTE YAPILMAYACAKLAR
+- Bulgular
+- Kararlar
+- Aksiyon oluşturma
+- KPI/ÖEK/EnPG snapshot
+- PDF
+- Onay akışı
+- Bildirim
+- Silme
+
+ÖNCE
+Mevcut dosya yapısını, auth yardımcılarını, kullanıcı rollerini ve Drizzle şemasını incele.
+Gereksiz refactor yapma.
+Sadece gerekli dosyalarda değişiklik yap.
+Mevcut authentication yapısını değiştirme.
+Multi-tenant companyId ve unitId ayrımını koru.
+
+VERİTABANI
+
+Drizzle schema üzerinden yeni tablo ekle:
+
+energy_review_records
+
+Alanlar:
+- id
+- companyId
+- unitId nullable
+- reviewName
+- reviewYear
+- periodType
+- periodStart
+- periodEnd
+- scopeType
+- status
+- preparedByUserId
+- completedByUserId nullable
+- completedAt nullable
+- revisionNo default 1
+- previousRevisionId nullable
+- generalNotes nullable
+- createdAt
+- updatedAt
+
+Enum/değerler:
+
+periodType:
+- annual
+- semi_annual
+- custom
+
+scopeType:
+- company
+- unit
+
+status:
+- draft
+- completed
+- revised
+
+KURALLAR
+
+1. companyId her zaman session’dan alınmalı.
+2. Standart kullanıcı:
+   - sadece kendi unitId’si için kayıt oluşturabilir
+   - sadece kendi birim kayıtlarını görebilir
+   - scopeType=company oluşturamaz
+3. Firma yöneticisi:
+   - kendi şirketi için company veya unit kapsamlı kayıt oluşturabilir
+   - sadece kendi şirketinin kayıtlarını görebilir
+4. unit scope seçildiyse unitId zorunlu.
+5. company scope seçildiyse unitId null olmalı.
+6. periodStart <= periodEnd olmalı.
+7. reviewYear, periodStart yılıyla mantıklı uyumlu olmalı.
+8. completed kayıt düzenlenemez.
+9. completed kayıt doğrudan silinemez.
+10. Revizyon oluşturulursa:
+    - eski kayıt korunur
+    - eski kayıt status=revised olur
+    - yeni kayıt status=draft olur
+    - revisionNo +1
+    - previousRevisionId eski kaydı gösterir
+11. Aynı kayıt sessizce overwrite edilmemeli.
+12. Audit için preparedByUserId, completedByUserId ve completedAt zorunlu yönetilmeli.
+
+API
+
+Yeni route dosyası:
+artifacts/api-server/src/routes/energy-review-records.ts
+
+Endpoint’ler:
+
+GET /api/energy-review-records
+Filtreler:
+- year
+- status
+- unitId
+- scopeType
+
+POST /api/energy-review-records
+Yeni taslak oluşturur.
+
+GET /api/energy-review-records/:id
+Kayıt detayını döndürür.
+
+PATCH /api/energy-review-records/:id
+Yalnızca draft kayıt düzenlenebilir.
+
+POST /api/energy-review-records/:id/complete
+- status=completed
+- completedByUserId=session user
+- completedAt=current timestamp
+- kayıt kilitlenir
+
+POST /api/energy-review-records/:id/revise
+- yalnızca completed kayıt için
+- eski kayıt revised olur
+- yeni draft revizyon oluşturulur
+- yeni kaydı response’ta döndür
+
+DELETE endpoint oluşturma.
+
+FRONTEND
+
+Enerji Gözden Geçirme sayfasına yeni üst alan ekle:
+
+- “Yeni Gözden Geçirme”
+- “Geçmiş Gözden Geçirmeler”
+
+Mevcut canlı dashboard sekmelerini bozma.
+
+Yeni kayıt formu:
+- Gözden geçirme adı
+- Yıl
+- Dönem tipi
+- Başlangıç tarihi
+- Bitiş tarihi
+- Kapsam
+- Birim
+- Genel not
+
+Rol davranışı:
+- Standart kullanıcıda kapsam unit sabit
+- Birim otomatik kendi birimi
+- Firma yöneticisi company/unit seçebilir
+
+Geçmiş kayıtlar tablosu:
+- Kayıt adı
+- Yıl
+- Dönem
+- Kapsam
+- Birim
+- Durum
+- Revizyon
+- Hazırlayan
+- Tamamlanma tarihi
+- Detay
+
+Detay ekranı veya modal:
+- tüm başlık bilgileri
+- taslak ise düzenle
+- taslak ise tamamla
+- completed ise revizyon oluştur
+- completed/revised kaydı düzenleme
+
+Durum etiketleri:
+- Taslak
+- Tamamlandı
+- Revize Edildi
+
+GÜVENLİK
+
+- companyId backend’de session’dan alınmalı.
+- Query/body içindeki companyId’ye güvenme.
+- Standart kullanıcının başka unitId göndermesini reddet.
+- Firma yöneticisi yalnızca kendi şirketindeki unitId’leri kullanabilsin.
+- ID üzerinden başka şirkete ait kayda erişim engellensin.
+
+MIGRATION
+
+Drizzle schema ve migration dosyasını oluştur.
+Migration/push komutunu çalıştırma.
+Kullanıcı onayı olmadan veritabanına uygulama yapma.
+
+KONTROL
+
+- TypeScript typecheck
+- Frontend build
+- Backend build
+- Standart kullanıcı yetki testi
+- Firma yöneticisi yetki testi
+- Completed kaydın düzenlenemediği test
+- Revizyon zinciri testi
+- Şirketler arası veri sızıntısı testi
+
+İŞ SONUNDA RAPORLA
+1. Değişen dosyalar
+2. Yeni tablo ve alanlar
+3. Eklenen endpoint’ler
+4. Rol/yetki davranışı
+5. Migration dosyası
+6. Typecheck/build sonuçları
+7. Migration’ın çalıştırılmadığı teyidi
+8. Kullanıcı onayı sonrası uygulanacak komut

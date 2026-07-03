@@ -457,6 +457,32 @@ export const insertVapProjectSchema = createInsertSchema(vapProjectsTable).omit(
 export type InsertVapProject = z.infer<typeof insertVapProjectSchema>;
 export type VapProject = typeof vapProjectsTable.$inferSelect;
 
+// ── Energy Review Records (Dönemsel Gözden Geçirme Kayıtları) ────
+export const energyReviewRecordsTable = pgTable("energy_review_records", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
+  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "cascade" }),
+  reviewName: text("review_name").notNull(),
+  reviewYear: integer("review_year").notNull(),
+  periodType: text("period_type").notNull().default("annual"), // annual | semi_annual | custom
+  periodStart: text("period_start").notNull(),
+  periodEnd: text("period_end").notNull(),
+  scopeType: text("scope_type").notNull().default("unit"), // company | unit
+  status: text("status").notNull().default("draft"), // draft | completed | revised
+  preparedByUserId: integer("prepared_by_user_id").references(() => usersTable.id, { onDelete: "set null" }).notNull(),
+  completedByUserId: integer("completed_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  completedAt: timestamp("completed_at"),
+  revisionNo: integer("revision_no").notNull().default(1),
+  previousRevisionId: integer("previous_revision_id"),
+  generalNotes: text("general_notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertEnergyReviewRecordSchema = createInsertSchema(energyReviewRecordsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEnergyReviewRecord = z.infer<typeof insertEnergyReviewRecordSchema>;
+export type EnergyReviewRecord = typeof energyReviewRecordsTable.$inferSelect;
+
 // ── Variables (Değişkenler) ───────────────────────────────
 export const variablesTable = pgTable("variables", {
   id: serial("id").primaryKey(),
