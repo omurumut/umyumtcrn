@@ -607,17 +607,48 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
       }
 
       const lastResult = yearResults.length > 0 ? yearResults[yearResults.length - 1] : null;
-      const latestEei = lastResult?.eei ?? null;
-      const cumulativeCusum = lastResult?.cusum ?? null;
       const lastPeriod = lastResult !== null
         ? `${lastResult.year} ${MONTH_NAMES[lastResult.month] ?? lastResult.month}`
         : null;
 
-      // Tüketim ve sapma alanları
+      // ── Yıllık özet (EnergyPerformance "Toplam / Ort." satırıyla aynı kural) ──
+      // totalActual / totalExpected: tüm aylar toplanır, null → 0
+      // annualEei: yalnızca eei != null olan ayların ortalaması (beklenen ≤ 0 olan aylar hariç)
+      // periodEndCusum: son kaydın cusum değeri — toplamı değil
+      // latestSet: son geçerli (null olmayan) setValue değeri
+      let annualActualConsumption: number | null = null;
+      let annualExpectedConsumption: number | null = null;
+      let annualVariance: number | null = null;
+      let annualVariancePercent: number | null = null;
+      let annualEei: number | null = null;
+
+      if (yearResults.length > 0) {
+        annualActualConsumption = yearResults.reduce(
+          (s, r) => s + (r.actualConsumption != null ? Number(r.actualConsumption) : 0), 0,
+        );
+        annualExpectedConsumption = yearResults.reduce(
+          (s, r) => s + (r.expectedConsumption != null ? Number(r.expectedConsumption) : 0), 0,
+        );
+        annualVariance = annualActualConsumption - annualExpectedConsumption;
+        annualVariancePercent = annualExpectedConsumption !== 0
+          ? Math.round((annualVariance / annualExpectedConsumption) * 10000) / 100
+          : null;
+        const eeiRows = yearResults.filter((r) => r.eei != null);
+        annualEei = eeiRows.length > 0
+          ? eeiRows.reduce((s, r) => s + Number(r.eei!), 0) / eeiRows.length
+          : null;
+      }
+
+      // Dönem sonu CUSUM = son kaydın cusum değeri (kümülatif — toplamı değil)
+      const periodEndCusum = lastResult?.cusum ?? null;
+      // Son geçerli SET (null olmayan son ay)
+      const latestSet = [...yearResults].reverse().find((r) => r.setValue != null)?.setValue ?? null;
+
+      // Geriye dönük uyumluluk için son aya ait alanlar (frontend artık bunları kullanmıyor)
+      const latestEei = lastResult?.eei ?? null;
+      const cumulativeCusum = lastResult?.cusum ?? null;
       const latestExpectedConsumption = lastResult?.expectedConsumption ?? null;
       const latestActualConsumption = lastResult?.actualConsumption ?? null;
-      // Sapma: önce DB'deki difference alanını kullan (hesaplama anında kaydedilen gerçek değer).
-      // difference null ise ve her iki tüketim değeri mevcutsa aritmetik olarak hesapla.
       const dbDifference = lastResult?.difference ?? null;
       const latestVariance = dbDifference !== null
         ? Math.round(dbDifference * 1000) / 1000
@@ -648,8 +679,17 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
         lastResultYear: lastResult?.year ?? null,
         lastResultMonth: lastResult?.month ?? null,
         lastResultPeriod: lastPeriod,
+        // Yıllık özet alanları (EnergyPerformance "Toplam / Ort." kuralı)
+        annualResultCount: yearResults.length,
+        annualActualConsumption,
+        annualExpectedConsumption,
+        annualVariance,
+        annualVariancePercent,
+        annualEei,
+        periodEndCusum,
+        latestSet,
+        // Geriye dönük uyumluluk (artık frontend kullanmıyor)
         latestEei,
-        latestSet: lastResult?.setValue ?? null,
         cumulativeCusum,
         latestExpectedConsumption,
         latestActualConsumption,

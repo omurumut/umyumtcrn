@@ -97,8 +97,17 @@ interface EnpiSummaryItem {
   lastResultYear: number | null;
   lastResultMonth: number | null;
   lastResultPeriod: string | null;
-  latestEei: number | null;
+  // Yıllık özet alanları
+  annualResultCount: number;
+  annualActualConsumption: number | null;
+  annualExpectedConsumption: number | null;
+  annualVariance: number | null;
+  annualVariancePercent: number | null;
+  annualEei: number | null;
+  periodEndCusum: number | null;
   latestSet: number | null;
+  // Geriye dönük uyumluluk
+  latestEei: number | null;
   cumulativeCusum: number | null;
   latestExpectedConsumption: number | null;
   latestActualConsumption: number | null;
@@ -843,12 +852,12 @@ export default function EnergyReview() {
                         <TableHead className="text-xs min-w-[80px]">EnRÇ</TableHead>
                         <TableHead className="text-xs text-right min-w-[110px]">R² / Düz. R²</TableHead>
                         <TableHead className="text-xs min-w-[80px]">Son Dönem</TableHead>
-                        <TableHead className="text-xs text-right min-w-[100px]">Beklenen Tük.</TableHead>
-                        <TableHead className="text-xs text-right min-w-[100px]">Gerç. Tük.</TableHead>
-                        <TableHead className="text-xs text-right min-w-[100px]">Sapma</TableHead>
-                        <TableHead className="text-xs text-right min-w-[70px]">EEI</TableHead>
-                        <TableHead className="text-xs text-right min-w-[70px]">SET</TableHead>
-                        <TableHead className="text-xs text-right min-w-[100px]">Küm. CUSUM</TableHead>
+                        <TableHead className="text-xs text-right min-w-[110px]">Yıllık Beklenen</TableHead>
+                        <TableHead className="text-xs text-right min-w-[110px]">Yıllık Gerçekleşen</TableHead>
+                        <TableHead className="text-xs text-right min-w-[110px]">Yıllık Sapma</TableHead>
+                        <TableHead className="text-xs text-right min-w-[70px]">Yıllık EEI</TableHead>
+                        <TableHead className="text-xs text-right min-w-[80px]">Son SET</TableHead>
+                        <TableHead className="text-xs text-right min-w-[110px]">Dönem Sonu CUSUM</TableHead>
                         <TableHead className="text-xs min-w-[130px]">İzleme Durumu</TableHead>
                         <TableHead className="text-xs text-right">Detay</TableHead>
                       </TableRow>
@@ -878,40 +887,46 @@ export default function EnergyReview() {
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground">{item.lastResultPeriod ?? "—"}</TableCell>
+                            {/* Yıllık Beklenen */}
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestExpectedConsumption != null
-                                ? Number(item.latestExpectedConsumption).toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                              {item.annualExpectedConsumption != null
+                                ? Number(item.annualExpectedConsumption).toLocaleString("tr-TR", { maximumFractionDigits: 2 })
                                 : "—"}
                             </TableCell>
+                            {/* Yıllık Gerçekleşen */}
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestActualConsumption != null
-                                ? Number(item.latestActualConsumption).toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                              {item.annualActualConsumption != null
+                                ? Number(item.annualActualConsumption).toLocaleString("tr-TR", { maximumFractionDigits: 2 })
                                 : "—"}
                             </TableCell>
+                            {/* Yıllık Sapma */}
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestVariance != null ? (
+                              {item.annualVariance != null ? (
                                 <span>
-                                  {Number(item.latestVariance) > 0 ? "▲ " : Number(item.latestVariance) < 0 ? "▼ " : ""}
-                                  {Number(item.latestVariance).toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
-                                  {item.latestVariancePercent != null
-                                    ? ` (${Number(item.latestVariancePercent) > 0 ? "+" : ""}${Number(item.latestVariancePercent).toFixed(1)}%)`
+                                  {Number(item.annualVariance) > 0 ? "▲ " : Number(item.annualVariance) < 0 ? "▼ " : ""}
+                                  {Number(item.annualVariance).toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
+                                  {item.annualVariancePercent != null
+                                    ? ` (${Number(item.annualVariancePercent) > 0 ? "+" : ""}${Number(item.annualVariancePercent).toFixed(1)}%)`
                                     : ""}
                                 </span>
                               ) : "—"}
                             </TableCell>
+                            {/* Yıllık EEI (null olmayan ayların ortalaması) */}
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.latestEei != null
-                                ? Number(item.latestEei).toLocaleString("tr-TR", { maximumFractionDigits: 3 })
+                              {item.annualEei != null
+                                ? Number(item.annualEei).toLocaleString("tr-TR", { maximumFractionDigits: 4 })
                                 : "—"}
                             </TableCell>
+                            {/* Son SET */}
                             <TableCell className="text-xs text-right tabular-nums">
                               {item.latestSet != null
-                                ? Number(item.latestSet).toLocaleString("tr-TR", { maximumFractionDigits: 3 })
+                                ? Number(item.latestSet).toLocaleString("tr-TR", { maximumFractionDigits: 4 })
                                 : "—"}
                             </TableCell>
+                            {/* Dönem Sonu CUSUM */}
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.cumulativeCusum != null
-                                ? Number(item.cumulativeCusum).toLocaleString("tr-TR", { maximumFractionDigits: 2 })
+                              {item.periodEndCusum != null
+                                ? Number(item.periodEndCusum).toLocaleString("tr-TR", { maximumFractionDigits: 4 })
                                 : "—"}
                             </TableCell>
                             <TableCell>

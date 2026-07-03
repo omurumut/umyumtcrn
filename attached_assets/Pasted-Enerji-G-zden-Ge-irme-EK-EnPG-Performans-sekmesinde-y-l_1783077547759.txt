@@ -1,0 +1,172 @@
+Enerji Gözden Geçirme → “ÖEK & EnPG Performansı” sekmesinde yıllık özet mantığını düzelt.
+
+Gözlenen sorun:
+Tabloda Beklenen Tüketim, Gerçekleşen Tüketim, Sapma ve EEI alanları yalnızca en son aya ait sonucu gösteriyor.
+Örneğin 2025 için Aralık ayı baz alınıyor.
+
+Enerji Gözden Geçirme ekranında ise seçili yılın tamamına ait özet gösterilmelidir.
+
+Mevcut çalışan yapıyı bozma.
+Gereksiz refactor yapma.
+Authentication ve multi-tenant yapıya dokunma.
+Migration oluşturma veya çalıştırma.
+Veritabanı kayıtlarını değiştirme.
+
+İncelenecek dosyalar:
+- artifacts/api-server/src/routes/energy-review.ts
+- artifacts/api-server/src/routes/energy-performance.ts
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- artifacts/ems-dashboard/src/pages/EnergyPerformance.tsx
+- lib/db/src/schema/energy.ts
+
+ÖNCE TEŞHİS
+
+Performans Göstergeleri ekranındaki “Toplam / Ort.” satırının nasıl hesaplandığını doğrula.
+
+Gerçek alanlar:
+- actualConsumption
+- expectedConsumption
+- difference
+- eei
+- setValue
+- cusum
+- year
+- month
+- status
+
+YILLIK ÖZET KURALLARI
+
+Seçili yıl için aynı aktif EnRÇ modeline bağlı tüm aylık sonuçları kullan.
+
+Her ÖEK için şu yıllık alanları hesapla:
+
+- annualActualConsumption
+  = seçili yıldaki aylık actualConsumption toplamı
+
+- annualExpectedConsumption
+  = seçili yıldaki aylık expectedConsumption toplamı
+
+- annualVariance
+  = annualActualConsumption - annualExpectedConsumption
+
+- annualVariancePercent
+  = annualExpectedConsumption sıfır veya null değilse:
+    annualVariance / annualExpectedConsumption × 100
+  aksi halde null
+
+- annualEei
+  Tercihen:
+  annualActualConsumption / annualExpectedConsumption
+  Ancak Performans Göstergeleri ekranındaki “Toplam / Ort.” satırı farklı bir kuralla hesaplanıyorsa aynı kuralı kullan.
+  İki modülde farklı yıllık EEI hesabı oluşturma.
+
+- periodEndCusum
+  = seçili yıldaki kronolojik son geçerli sonuç kaydının CUSUM değeri
+  CUSUM değerlerini toplama.
+
+- averageSet
+  SET için toplam alma.
+  Performans Göstergeleri ekranındaki yıllık özet satırında SET gösterilmiyorsa Enerji Gözden Geçirme tablosunda da yıllık SET gösterme.
+  Gerekirse “Son SET” olarak son geçerli SET değerini ayrı alan şeklinde döndür.
+
+- lastResultYear
+- lastResultMonth
+- lastResultPeriod
+  Son izleme dönemini göstermeye devam et.
+
+ÖNEMLİ VERİ KURALLARI
+
+- Negatif veya sıfır expectedConsumption bulunan ayları yıllık beklenen toplam hesabına katma konusunda mevcut Performans Göstergeleri modülünün kuralını esas al.
+- Bu aylar için farklı bir kural varsa aynısını uygula.
+- EEI hesaplanamayan ayları yanlışlıkla 0 kabul etme.
+- Null değerleri 0 gibi yorumlama.
+- Aynı aktif baseline dışındaki archived baseline sonuçlarını dahil etme.
+- Yalnızca seçili yıl ve aktif baseline sonuçlarını kullan.
+- Aynı ay için mükerrer kayıt varsa mevcut Performans Göstergeleri modülünün kullandığı kayıt seçme kuralını uygula.
+
+BACKEND
+
+GET /api/energy-review/enpi-summary endpoint’ini genişlet.
+
+Her ÖEK için mevcut son dönem alanlarına ek olarak şu alanları döndür:
+
+- annualResultCount
+- annualActualConsumption
+- annualExpectedConsumption
+- annualVariance
+- annualVariancePercent
+- annualEei
+- periodEndCusum
+- latestSet
+- lastResultPeriod
+
+Mevcut latestExpectedConsumption, latestActualConsumption, latestVariance ve latestEei alanlarını istersen geriye dönük uyumluluk için koru; ancak frontend yıllık görünümde bunları kullanmasın.
+
+FRONTEND
+
+ÖEK & EnPG Performansı tablosunda kolonları şu şekilde güncelle:
+
+- Son Dönem
+- Yıllık Beklenen
+- Yıllık Gerçekleşen
+- Yıllık Sapma
+- Yıllık EEI
+- Son SET
+- Dönem Sonu CUSUM
+- İzleme Durumu
+- Detay
+
+Kolon başlıklarında “Yıllık” ifadesini açıkça kullan.
+
+Gösterim:
+- Yıllık sapma:
+  değer + yüzde birlikte gösterilebilir
+- Son Dönem:
+  örn. “2025 Aralık”
+- Son SET:
+  son geçerli SET değeri
+- Dönem Sonu CUSUM:
+  son kronolojik kaydın CUSUM değeri
+- annualResultCount istenirse tooltip’te:
+  “12 aylık sonuç üzerinden hesaplandı”
+
+Veri olmayan alanlarda “—” göster.
+2026’da sonuç yoksa “EnRÇ Var / Sonuç Yok” durumu değişmeden kalsın.
+Elektrik ÖEK’in “İzlenmiyor” durumu değişmeden kalsın.
+
+DOĞRULAMA
+
+2025 Doğalgaz ÖEK için sonuçları Performans Göstergeleri ekranındaki “Toplam / Ort.” satırıyla karşılaştır.
+
+Beklenen davranış:
+- Yıllık gerçekleşen ≈ 373.679
+- Yıllık beklenen ≈ 373.679,0056
+- Yıllık sapma ≈ -0,0056
+- Yıllık EEI ≈ 0,9336
+- Son dönem = 2025 Aralık
+- Dönem sonu CUSUM ≈ -0,0083
+- Son SET = 125,5590 veya gerçek son geçerli SET değeri
+
+Not:
+Ekrandaki gerçek kayıt ve mevcut hesaplama kuralı esas alınmalı; yukarıdaki değerler sadece doğrulama referansıdır.
+
+Ayrıca doğrula:
+1. 2025 yıllık özet doğru
+2. 2026 sonuç yok durumu doğru
+3. Archived baseline sonuçları dahil edilmiyor
+4. Standart kullanıcı sadece kendi birimini görüyor
+5. Firma yöneticisi birim filtresiyle doğru sonuç alıyor
+6. Veri İlişkisi Eksik kartı etkilenmiyor
+
+TypeScript typecheck çalıştır.
+Frontend build çalıştır.
+Backend build çalıştır.
+Migration çalıştırma.
+
+İş sonunda raporla:
+- Yıllık özet hesaplama kuralı
+- Performans Göstergeleri ekranıyla kullanılan ortak hesap mantığı
+- 2025 Doğalgaz ÖEK önceki ve yeni değerleri
+- Değişen dosyalar
+- Typecheck ve build sonuçları
+- Veritabanına dokunulmadığının teyidi
