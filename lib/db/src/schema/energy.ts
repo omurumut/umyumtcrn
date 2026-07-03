@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, real, timestamp, boolean } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, real, timestamp, boolean, index, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -460,8 +460,8 @@ export type VapProject = typeof vapProjectsTable.$inferSelect;
 // ── Energy Review Records (Dönemsel Gözden Geçirme Kayıtları) ────
 export const energyReviewRecordsTable = pgTable("energy_review_records", {
   id: serial("id").primaryKey(),
-  companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
-  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "cascade" }),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "set null" }),
   reviewName: text("review_name").notNull(),
   reviewYear: integer("review_year").notNull(),
   periodType: text("period_type").notNull().default("annual"), // annual | semi_annual | custom
@@ -469,15 +469,20 @@ export const energyReviewRecordsTable = pgTable("energy_review_records", {
   periodEnd: text("period_end").notNull(),
   scopeType: text("scope_type").notNull().default("unit"), // company | unit
   status: text("status").notNull().default("draft"), // draft | completed | revised
-  preparedByUserId: integer("prepared_by_user_id").references(() => usersTable.id, { onDelete: "set null" }).notNull(),
+  preparedByUserId: integer("prepared_by_user_id").references(() => usersTable.id, { onDelete: "no action" }).notNull(),
   completedByUserId: integer("completed_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
   completedAt: timestamp("completed_at"),
   revisionNo: integer("revision_no").notNull().default(1),
-  previousRevisionId: integer("previous_revision_id"),
+  previousRevisionId: integer("previous_revision_id").references((): AnyPgColumn => energyReviewRecordsTable.id, { onDelete: "no action" }),
   generalNotes: text("general_notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  companyIdIdx: index("energy_review_records_company_id_idx").on(table.companyId),
+  companyYearIdx: index("energy_review_records_company_year_idx").on(table.companyId, table.reviewYear),
+  companyUnitIdx: index("energy_review_records_company_unit_idx").on(table.companyId, table.unitId),
+  previousRevisionIdx: index("energy_review_records_previous_revision_idx").on(table.previousRevisionId),
+}));
 
 export const insertEnergyReviewRecordSchema = createInsertSchema(energyReviewRecordsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertEnergyReviewRecord = z.infer<typeof insertEnergyReviewRecordSchema>;
