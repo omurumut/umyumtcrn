@@ -13,6 +13,10 @@ import {
   PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
 import {
+  Tooltip as UITooltip, TooltipContent as UITooltipContent,
+  TooltipProvider as UITooltipProvider, TooltipTrigger as UITooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   AlertCircle, AlertTriangle, CheckCircle2, Clock, TrendingUp, BarChart2,
   Zap, Target, Activity, Info, ExternalLink,
 } from "lucide-react";
@@ -104,6 +108,7 @@ interface EnpiSummaryItem {
   annualVariance: number | null;
   annualVariancePercent: number | null;
   annualEei: number | null;
+  annualValidEeiCount: number;
   periodEndCusum: number | null;
   latestSet: number | null;
   // Geriye dönük uyumluluk
@@ -911,11 +916,29 @@ export default function EnergyReview() {
                                 </span>
                               ) : "—"}
                             </TableCell>
-                            {/* Yıllık EEI (null olmayan ayların ortalaması) */}
+                            {/* Yıllık EEI (null olmayan ayların ortalaması) — tooltip ile ay sayısı */}
                             <TableCell className="text-xs text-right tabular-nums">
-                              {item.annualEei != null
-                                ? Number(item.annualEei).toLocaleString("tr-TR", { maximumFractionDigits: 4 })
-                                : "—"}
+                              {item.annualEei != null ? (
+                                <UITooltipProvider delayDuration={150}>
+                                  <UITooltip>
+                                    <UITooltipTrigger asChild>
+                                      <span className="inline-flex items-center gap-1 cursor-default">
+                                        {Number(item.annualEei).toLocaleString("tr-TR", { maximumFractionDigits: 4 })}
+                                        {item.annualValidEeiCount < 12 && (
+                                          <Info className="h-3 w-3 text-amber-400 shrink-0" />
+                                        )}
+                                      </span>
+                                    </UITooltipTrigger>
+                                    <UITooltipContent side="top" className="text-xs max-w-[200px] text-center">
+                                      {item.annualValidEeiCount > 0
+                                        ? `${item.annualValidEeiCount} geçerli aylık sonuç üzerinden hesaplandı.`
+                                        : "Yıllık EEI hesaplanamadı."}
+                                    </UITooltipContent>
+                                  </UITooltip>
+                                </UITooltipProvider>
+                              ) : (
+                                item.annualValidEeiCount === 0 ? "—" : "—"
+                              )}
                             </TableCell>
                             {/* Son SET */}
                             <TableCell className="text-xs text-right tabular-nums">

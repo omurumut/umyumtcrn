@@ -1,0 +1,87 @@
+Enerji Gözden Geçirme → “ÖEK & EnPG Performansı” sekmesinde Yıllık EEI hücresine geçerli ay sayısını gösteren tooltip ekle.
+
+Amaç:
+Kullanıcı ve denetçi, yıllık EEI değerinin kaç geçerli aylık sonuç üzerinden hesaplandığını görebilsin.
+
+Mevcut çalışan hesaplamalara, endpoint’lere, yetkilendirmeye ve veritabanına zarar verme.
+Gereksiz refactor yapma.
+Migration oluşturma veya çalıştırma.
+
+İncelenecek dosyalar:
+- artifacts/api-server/src/routes/energy-review.ts
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- gerekirse mevcut Tooltip bileşenleri
+
+BACKEND
+
+GET /api/energy-review/enpi-summary endpoint’inde her ÖEK için şu iki sayıyı açıkça ayır:
+
+- annualResultCount:
+  seçili yıldaki toplam sonuç kaydı sayısı
+
+- annualValidEeiCount:
+  yıllık EEI hesabına gerçekten dahil edilen aylık EEI sayısı
+
+Kurallar:
+- annualValidEeiCount yalnızca eei != null olan ve mevcut yıllık EEI hesabına gerçekten katılan ayları saysın.
+- EEI hesaplanamayan ayları sayma.
+- null EEI değerlerini 0 kabul etme.
+- Beklenen tüketimi sıfır veya negatif olduğu için EEI üretilemeyen ayları sayma.
+- annualEei hesabında kullanılan filtre ile annualValidEeiCount filtresi birebir aynı olsun.
+- Archived baseline sonuçlarını dahil etme.
+- Yalnızca aktif baseline ve seçili yıl sonuçlarını kullan.
+- Mevcut annualResultCount alanını kaldırma.
+
+FRONTEND
+
+ÖEK & EnPG Performansı tablosundaki “Yıllık EEI” hücresine tooltip ekle.
+
+Tooltip metni:
+
+- annualValidEeiCount > 0 ise:
+  “{N} geçerli aylık sonuç üzerinden hesaplandı.”
+
+- annualValidEeiCount = 0 ise:
+  “Yıllık EEI hesaplanamadı.”
+
+Gösterim kuralları:
+- Yıllık EEI değeri mevcutsa sayıyı normal göster.
+- annualValidEeiCount 12’den küçükse EEI değerinin yanında küçük bir bilgi veya uyarı ikonu göster.
+- annualValidEeiCount = 12 ise ikon gösterilmesi zorunlu değil.
+- Yeni kolon ekleme.
+- Tablo genişliğini artırma.
+- Tooltip mevcut tasarım sistemiyle uyumlu olsun.
+- Mobilde tooltip erişilebilir olsun; hover yanında focus/tap davranışını da desteklesin.
+- Veri yoksa “—” gösterimi korunmalı.
+
+ÖNEMLİ:
+annualResultCount ile annualValidEeiCount aynı şey değildir.
+Örneğin 12 aylık sonuç kaydı bulunabilir ancak yalnızca 9 ayda geçerli EEI hesaplanmış olabilir.
+Tooltip’te annualValidEeiCount kullanılmalı.
+
+DOĞRULAMA
+
+2025 Doğalgaz ÖEK için kontrol et:
+- annualResultCount = 12 olabilir
+- annualValidEeiCount, EEI hesabına dahil edilen gerçek ay sayısı olmalı
+- Yıllık EEI = 0,9336 değişmemeli
+- Tooltip doğru N sayısını göstermeli
+
+Ayrıca doğrula:
+- 2026 sonuç yoksa EEI “—” kalır
+- annualValidEeiCount = 0 olur
+- EnRÇ Var / Sonuç Yok durumu değişmez
+- Elektrik ÖEK izlenmiyor durumu değişmez
+
+TypeScript typecheck çalıştır.
+Frontend build çalıştır.
+Backend build çalıştır.
+Migration çalıştırma.
+
+İş sonunda raporla:
+- annualResultCount ve annualValidEeiCount farkı
+- 2025 Doğalgaz ÖEK için gerçek geçerli EEI ay sayısı
+- Tooltip davranışı
+- Değişen dosyalar
+- Typecheck ve build sonuçları
+- Veritabanına dokunulmadığının teyidi

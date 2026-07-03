@@ -621,6 +621,7 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
       let annualVariance: number | null = null;
       let annualVariancePercent: number | null = null;
       let annualEei: number | null = null;
+      let annualValidEeiCount = 0;
 
       if (yearResults.length > 0) {
         annualActualConsumption = yearResults.reduce(
@@ -637,6 +638,7 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
         annualEei = eeiRows.length > 0
           ? eeiRows.reduce((s, r) => s + Number(r.eei!), 0) / eeiRows.length
           : null;
+        annualValidEeiCount = eeiRows.length;
       }
 
       // Dönem sonu CUSUM = son kaydın cusum değeri (kümülatif — toplamı değil)
@@ -686,6 +688,7 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
         annualVariance,
         annualVariancePercent,
         annualEei,
+        annualValidEeiCount,
         periodEndCusum,
         latestSet,
         // Geriye dönük uyumluluk (artık frontend kullanmıyor)
