@@ -1,0 +1,87 @@
+Enerji Gözden Geçirme → ÖEK & EnPG Performansı sekmesindeki eksik sonuç alanlarını teşhis et ve düzelt.
+
+Gözlenen durum:
+
+2025 yılında Doğalgaz ÖEK için:
+- İzleme durumu: İzleniyor
+- Son dönem: 2025 Aralık
+- EEI: 0,746
+- Kümülatif CUSUM: -0,01
+
+ancak şu alanlar “—” görünüyor:
+- Beklenen tüketim
+- Gerçekleşen tüketim
+- Sapma
+- SET
+
+Bu aşamada tahmin ederek değer üretme.
+Önce gerçek veritabanı kaydını ve Performans Göstergeleri ekranının kullandığı veriyi karşılaştır.
+
+İncelenecek dosyalar:
+- artifacts/api-server/src/routes/energy-review.ts
+- artifacts/api-server/src/routes/energy-performance.ts
+- artifacts/ems-dashboard/src/pages/EnergyReview.tsx
+- artifacts/ems-dashboard/src/pages/EnergyPerformance.tsx
+- lib/db/src/schema/energy.ts
+
+TEŞHİS:
+
+1. İlgili 2025 Aralık energy_performance_results kaydını listele:
+- id
+- baselineId
+- year
+- month
+- expectedConsumption
+- actualConsumption
+- difference
+- setValue
+- eei
+- cusum
+- status
+
+2. Şunları kesin olarak belirle:
+- expectedConsumption gerçekten null mı?
+- actualConsumption gerçekten null mı?
+- difference gerçekten null mı?
+- setValue gerçekten null mı?
+- EEI ve CUSUM hangi kayıt üzerinden geliyor?
+- enpi-summary endpoint’i en son kaydı doğru yıl+ay sırasıyla mı seçiyor?
+- Join veya sıralama nedeniyle EEI bir kayıttan, diğer alanlar başka kayıttan mı geliyor?
+
+DÜZELTME KURALLARI:
+
+- En son sonuç tek bir kayıt olarak belirlenmeli.
+- lastResultYear, lastResultMonth, EEI, SET, CUSUM, expectedConsumption, actualConsumption ve difference aynı sonuç kaydından gelmeli.
+- Yıl ve ay sıralaması sayısal olarak yapılmalı.
+- latestVariance için mümkünse veritabanındaki gerçek difference alanını kullan.
+- difference null fakat expected ve actual doluysa:
+  actualConsumption - expectedConsumption
+  hesabını yap.
+- Veritabanında alan gerçekten null ise frontend “—” göstermeye devam etsin.
+- Sahte veya tahmini değer üretme.
+- CUSUM değerlerini toplama; son kaydın kümülatif değerini kullan.
+- SET null ise 0 gösterme.
+- Tüketim birimi kesin olarak çözülebiliyorsa tabloya ekle; çözülemiyorsa yanlış birim etiketi verme.
+
+TEST:
+
+- 2025 Doğalgaz ÖEK sonucunu doğrula.
+- Performans Göstergeleri ekranındaki değerlerle Enerji Gözden Geçirme tablosunu karşılaştır.
+- 2026 sonuç olmayan kaydın “EnRÇ Var / Sonuç Yok” olarak kalmasını doğrula.
+- Elektrik ÖEK’in “İzlenmiyor” durumunu koru.
+- Verİ İlişkisi Eksik kartının 0 kalmasını doğrula.
+
+Migration çalıştırma.
+Veritabanı kayıtlarını değiştirme.
+Authentication ve yetkilendirme yapısını değiştirme.
+Gereksiz refactor yapma.
+
+Typecheck, frontend build ve backend build çalıştır.
+
+İş sonunda raporla:
+- Gerçek 2025 Aralık sonuç kaydı
+- Boş alanların kök nedeni
+- Değiştirilen sorgu veya seçim mantığı
+- Önceki ve sonraki API yanıtı
+- Değişen dosyalar
+- Build sonuçları

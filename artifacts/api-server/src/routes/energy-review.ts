@@ -521,12 +521,19 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
       }
     }
 
-    // EnPG sonuçları: tüm yıllar için (izleme durumu tespiti)
-    const allResults = seuItemIds.length > 0
+    // EnPG sonuçları: sadece aktif baseline'a ait kayıtları getir (izleme durumu tespiti)
+    // Aktif baseline ID listesi — yalnızca bu baseline'lara ait sonuçlar kullanılır.
+    // Bu filtre, eski/arşiv baseline'lara ait artık kayıtların lastResult seçimini
+    // kirletmesini ve EEI/CUSUM ile expected/actual alanlarının farklı kayıtlardan
+    // gelmesini önler.
+    const activeBaselineIds = Array.from(baselineMap.values()).map((b) => b.id);
+
+    const allResults = seuItemIds.length > 0 && activeBaselineIds.length > 0
       ? await db
           .select({
             id: energyPerformanceResultsTable.id,
             seuAssessmentItemId: energyPerformanceResultsTable.seuAssessmentItemId,
+            baselineId: energyPerformanceResultsTable.baselineId,
             year: energyPerformanceResultsTable.year,
             month: energyPerformanceResultsTable.month,
             eei: energyPerformanceResultsTable.eei,
@@ -535,18 +542,20 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
             setValue: energyPerformanceResultsTable.setValue,
             expectedConsumption: energyPerformanceResultsTable.expectedConsumption,
             actualConsumption: energyPerformanceResultsTable.actualConsumption,
+            difference: energyPerformanceResultsTable.difference,
           })
           .from(energyPerformanceResultsTable)
           .where(
             and(
               eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
               inArray(energyPerformanceResultsTable.seuAssessmentItemId, seuItemIds),
+              inArray(energyPerformanceResultsTable.baselineId, activeBaselineIds),
             ),
           )
           .orderBy(
-            energyPerformanceResultsTable.seuAssessmentItemId,
-            energyPerformanceResultsTable.year,
-            energyPerformanceResultsTable.month,
+            asc(energyPerformanceResultsTable.seuAssessmentItemId),
+            asc(energyPerformanceResultsTable.year),
+            asc(energyPerformanceResultsTable.month),
           )
       : [];
 
@@ -607,9 +616,14 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
       // Tüketim ve sapma alanları
       const latestExpectedConsumption = lastResult?.expectedConsumption ?? null;
       const latestActualConsumption = lastResult?.actualConsumption ?? null;
-      const latestVariance = (latestActualConsumption !== null && latestExpectedConsumption !== null)
-        ? Math.round((latestActualConsumption - latestExpectedConsumption) * 1000) / 1000
-        : null;
+      // Sapma: önce DB'deki difference alanını kullan (hesaplama anında kaydedilen gerçek değer).
+      // difference null ise ve her iki tüketim değeri mevcutsa aritmetik olarak hesapla.
+      const dbDifference = lastResult?.difference ?? null;
+      const latestVariance = dbDifference !== null
+        ? Math.round(dbDifference * 1000) / 1000
+        : (latestActualConsumption !== null && latestExpectedConsumption !== null)
+          ? Math.round((latestActualConsumption - latestExpectedConsumption) * 1000) / 1000
+          : null;
       const latestVariancePercent = (latestExpectedConsumption !== null && latestExpectedConsumption !== 0 && latestVariance !== null)
         ? Math.round((latestVariance / latestExpectedConsumption) * 10000) / 100
         : null;
