@@ -34,6 +34,148 @@ Backend başlarken:
 
 Bu nedenle sistem yalnızca HTTP route katmanı değildir; DB migration, seed, meteoroloji veri hazırlığı ve tenant izolasyonu birlikte çalışır.
 
+### Katman Mimarisi
+
+EnYS mimarisi browser'dan PostgreSQL'e kadar belirgin sorumluluk katmanlarıyla çalışır:
+
+```text
+Browser
+  ->
+React UI
+  ->
+React Context
+  ->
+React Query / Generated API Client
+  ->
+Vite Proxy
+  ->
+Express Route
+  ->
+Middleware / Auth Guard
+  ->
+Validation / Business Logic
+  ->
+Drizzle ORM
+  ->
+PostgreSQL
+```
+
+Katman sorumlulukları:
+
+- Browser: Kullanıcının etkileşim yüzeyidir. Güvenlik veya tenant kararı vermez.
+- React UI: Form, tablo, grafik, loading/error/empty state ve kullanıcı akışını yönetir. Veritabanı veya yetki kararını taklit etmemelidir.
+- React Context: `AuthContext`, `CompanyContext`, `UnitContext` ve `YearContext` ile kullanıcı, tenant filtresi ve raporlama yılı bilgisini taşır. Backend yerine geçmez.
+- React Query / API Client: Veri çekme, cache, mutation ve invalidation davranışını yönetir. API sözleşmesini atlayarak farklı response varsayımı yapmamalıdır.
+- Vite Proxy: Local geliştirmede `/api` isteklerini `http://localhost:8080` adresine taşır. Production auth veya routing kararı vermez.
+- Express Route: HTTP endpoint, guard, parametre parse, validation ve response üretiminden sorumludur.
+- Middleware / Auth Guard: Token çözümleme, `req.user` doldurma ve rol bazlı erişim kontrolünü sağlar.
+- Business Logic: Tenant filtreleri, parent-child doğrulamaları, ISO 50001 iş kuralları ve hata durumlarını yönetir.
+- Drizzle ORM: Type-safe sorgu üretir ve schema ile runtime DB erişimi arasında köprü kurar.
+- PostgreSQL: Kalıcı veri kaynağıdır. Uygulama seviyesindeki tenant ve auth kurallarının yerine geçmez.
+
+En önemli sınır: UI kullanıcının ne görebileceğini kolaylaştırabilir, ancak kullanıcının neye erişmeye yetkili olduğunu backend belirler.
+
+### Dependency Rule / Katmanlar Arası Bağımlılık Kuralları
+
+EnYS'de katmanlar arası bağımlılık tek yönde ve kontrollü olmalıdır. Üst katmanlar alt katmanların sunduğu sözleşmeleri kullanır; alt katmanlar üst katmanların state, component veya ekran davranışına bağımlı olmaz.
+
+İzin verilen temel akış:
+
+```text
+Browser
+  ->
+React UI
+  ->
+React Context
+  ->
+React Query / Generated API Client
+  ->
+API Route
+  ->
+Business Logic / Service
+  ->
+Drizzle
+  ->
+PostgreSQL
+```
+
+Pratik bağımlılık kuralları:
+
+| Katman | Bağımlı Olabilir | Bağımlı Olmamalıdır |
+| --- | --- | --- |
+| React UI | React Context, generated API hook'ları, UI componentleri | Drizzle, DB schema, backend session yapısı |
+| React Context | Auth response, kullanıcı/tenant seçimi, local UI state | Backend route iç mantığı, SQL veya Drizzle |
+| React Query / Generated Client | OpenAPI sözleşmesi, custom fetcher, query key helper'ları | Elle değiştirilmiş generated dosya veya DB detayı |
+| API Route | Middleware, validation, service/business logic, `@workspace/db` | Frontend component state'i, sayfa içi UI varsayımları |
+| Business Logic / Service | Drizzle, schema tipleri, harici entegrasyon yardımcıları | React, Wouter, browser API'leri |
+| `lib/db` | PostgreSQL, Drizzle schema/migration yapısı | Frontend veya API route state'i |
+| `scripts` | `@workspace/db`, import/export kaynakları | Runtime uygulama davranışının yerine geçen iş mantığı |
+
+Yasak veya hatalı akış örnekleri:
+
+- React component doğrudan Drizzle veya DB mantığı bilmemelidir.
+- Frontend tenant güvenliğini tek başına sağlamamalıdır.
+- API route, frontend state yapısına veya component iç davranışına bağımlı olmamalıdır.
+- `lib/db` frontend tarafından doğrudan kullanılmamalıdır.
+- Generated client elle değiştirilmemelidir; kaynak `openapi.yaml` ve codegen akışıdır.
+- `scripts` runtime API davranışının yerine geçmemeli; seed, import/export ve bakım amaçlı kalmalıdır.
+
+Bu kuralın amacı mimariyi katılaştırmak değil, değişikliğin etkisini tahmin edilebilir tutmaktır. Bir katman sınırı aşılacaksa önce neden gerekli olduğu, tenant/auth etkisi ve test kapsamı açıkça değerlendirilmelidir.
+
+### Request Lifecycle
+
+Bir istek sistem içinde aşağıdaki sırayla ilerler:
+
+```text
+Browser
+  ->
+Vite Proxy
+  ->
+Express
+  ->
+Global Middleware
+  ->
+Authentication
+  ->
+Authorization
+  ->
+Route
+  ->
+Validation
+  ->
+Service / Business Logic
+  ->
+Drizzle
+  ->
+PostgreSQL
+  ->
+Response
+  ->
+React Query Cache
+  ->
+UI Update
+```
+
+Adımlar:
+
+1. Browser, React ekranındaki kullanıcı aksiyonu veya query tetiklenmesiyle `/api/...` isteği oluşturur.
+2. Vite dev server local geliştirmede bu isteği API sunucusuna proxy eder.
+3. Express uygulaması isteği alır.
+4. `pino-http`, CORS ve body parser middleware'leri çalışır.
+5. `authMiddleware`, bearer token varsa `sessions` map üzerinden kullanıcıyı çözer ve `req.user` alanını doldurur.
+6. Route bazındaki `requireAuth`, `requireAdmin` veya `requireSuperAdmin` guard'ı erişim yetkisini kontrol eder.
+7. Route query, params ve body alanlarını parse eder.
+8. Validation zorunlu alanları, tipleri, parent-child ilişkilerini ve tenant kapsamını doğrular.
+9. Business logic, role göre filtreleri ve ISO 50001 iş kurallarını uygular.
+10. Drizzle ORM, `@workspace/db` schema objeleriyle PostgreSQL sorgusunu üretir.
+11. PostgreSQL sonucu döndürür.
+12. Route sonucu normalize ederek JSON response üretir.
+13. Generated client veya fetch helper response'u parse eder.
+14. React Query sonucu cache'ler veya mutation sonrası ilgili query key'leri invalidate eder.
+15. React UI loading/error/success state'e göre ekranı günceller.
+
+Bu akışta tenant izolasyonu yalnızca tek bir noktaya bırakılmaz; auth, route validation, business logic, DB ilişkileri ve frontend query parametreleri birlikte tutarlı olmalıdır.
+
 ## 2. Monorepo Yapısı
 
 Proje `pnpm workspaces` kullanır. Workspace paketleri `pnpm-workspace.yaml` içinde tanımlıdır:
@@ -71,6 +213,41 @@ Root `preinstall` scripti `pnpm` dışındaki package manager kullanımını eng
 | `@workspace/api-client-react` | `lib/api-client-react` | Orval generated React Query client ve custom fetcher |
 | `@workspace/api-zod` | `lib/api-zod` | OpenAPI'den üretilen Zod şemaları |
 | `@workspace/scripts` | `scripts` | Seed, import/export ve MGM veri yardımcı scriptleri |
+
+### Paket İlişki Diyagramı
+
+Workspace paketleri birbirinden bağımsız klasörler gibi görünse de build ve runtime akışında birbirine bağlıdır:
+
+```text
+artifacts/api-server
+  -> lib/db
+  -> lib/api-zod
+
+lib/api-spec
+  -> lib/api-client-react
+  -> lib/api-zod
+
+artifacts/ems-dashboard
+  -> lib/api-client-react
+
+scripts
+  -> lib/db
+
+artifacts/mockup-sandbox
+  -> build kapsamı dışında yardımcı/sandbox alan
+```
+
+Sorumluluk özeti:
+
+- `artifacts/api-server`, çalışan HTTP API'dir; DB erişimini `@workspace/db` üzerinden yapar.
+- `artifacts/ems-dashboard`, çalışan React arayüzüdür; mümkün olduğunda `@workspace/api-client-react` hook'larını kullanır.
+- `lib/db`, kalıcı veri modelinin teknik kaynağıdır; schema değişikliği backend, scripts ve bazen frontend tiplerini etkiler.
+- `lib/api-spec`, API sözleşmesinin kaynağıdır; frontend client ve Zod çıktıları buradan üretilir.
+- `lib/api-client-react`, frontend'in kontrata bağlı API kullanımını sağlar.
+- `lib/api-zod`, OpenAPI tabanlı generated validation/type çıktısı sağlar.
+- `scripts`, uygulama runtime'ı dışında seed, import/export ve MGM veri işlemleri için kullanılır.
+
+Monorepo kararında ana ilke şudur: çalışan uygulama kodu `artifacts`, paylaşılan sözleşme ve altyapı kodu `lib`, operasyonel yardımcılar `scripts` altında kalmalıdır.
 
 ### Catalog ve Güvenlik Ayarları
 
@@ -146,6 +323,28 @@ Route modülleri genellikle şu sorumlulukları aynı dosyada toplar:
 - JSON response üretimi.
 
 Yeni route eklenirken `src/routes/index.ts` içine kaydedilmesi gerekir. API server yeniden başlatılmadan yeni route'lar çalışma zamanında görünmez.
+
+### Route, Validation, Business Logic ve Response Sınırları
+
+Route dosyaları HTTP sınırıdır. Bu katmanda yapılması gerekenler:
+
+- path ve method tanımlamak,
+- doğru auth guard'ı bağlamak,
+- `req.params`, `req.query` ve `req.body` alanlarını parse etmek,
+- zorunlu alanları ve temel tipleri doğrulamak,
+- tenant ve rol filtrelerini uygulamak,
+- gerekli business logic veya service fonksiyonunu çağırmak,
+- anlaşılır HTTP status code ve JSON response dönmek.
+
+Route içinde yapılmaması gerekenler:
+
+- frontend davranışına güvenerek auth veya tenant kontrolünü atlamak,
+- aynı parent-child doğrulamasını farklı endpoint'lerde tutarsız yazmak,
+- generated client'a göre değil, rastgele response şekli üretmek,
+- uzun ve tekrar eden business logic'i gereksiz yere route içinde büyütmek,
+- veritabanı schema değişikliğini OpenAPI ve frontend etkisini düşünmeden yapmak.
+
+Mevcut projede birçok route business logic'i aynı dosyada taşır. Yeni geliştirmede önce mevcut pattern korunmalı; logic çok büyür, tekrar eder veya ayrı test edilmesi gerekirse service katmanına ayrılmalıdır.
 
 ### Middleware
 
@@ -252,6 +451,44 @@ Mevcut context'ler:
 
 `AuthContext`, token'ı `localStorage` içinde `eys_token`, kullanıcıyı `eys_user` anahtarıyla saklar. Token ayrıca `setAuthTokenGetter` ile `@workspace/api-client-react` custom fetcher'ına enjekte edilir.
 
+### React Veri Akışı
+
+Bir ekran açıldığında veri akışı genellikle şu sırayla ilerler:
+
+```text
+App Provider zinciri
+  ->
+AuthContext
+  ->
+CompanyContext / UnitContext / YearContext
+  ->
+Page component
+  ->
+Generated API hook veya fetch helper
+  ->
+React Query cache
+  ->
+UI render
+```
+
+Context sorumlulukları:
+
+- `AuthContext`: login/logout, token, kullanıcı bilgisi, loading state ve generated client token getter bağlantısı.
+- `CompanyContext`: yalnızca `superadmin` için aktif company filtresi.
+- `UnitContext`: `admin` ve `superadmin` için aktif unit filtresi; normal kullanıcı için kendi `unitId` kapsamı.
+- `YearContext`: dashboard, analiz, hedef, performans ve raporlama ekranlarında kullanılan aktif yıl.
+
+Sayfa bileşeni bu context değerlerini okuyarak API parametrelerini üretir. Örneğin admin için `unitId === null` "Tüm Birimler" görünümüdür; generated hook'a parametre gönderirken bazı akışlarda `null` yerine `undefined` kullanılması gerekir. Bu ayrım frontend cache key'leri ve backend filtreleriyle uyumlu olmalıdır.
+
+React Query:
+
+- GET isteklerinde loading/error/success state sağlar,
+- response'u query key'e göre cache'ler,
+- mutation sonrası ilgili query key'lerin invalidate edilmesini bekler,
+- `401` hatalarında global hata yönetimi üzerinden logout akışını tetikleyebilir.
+
+Generated client, API sözleşmesini frontend'e taşır. Doğrudan `fetch` kullanılan yerlerde aynı token, error ve cache davranışının elle korunması gerekir.
+
 ### API Client Kullanımı
 
 Frontend iki şekilde API çağrısı yapar:
@@ -341,6 +578,34 @@ pnpm --filter @workspace/db run push-force
 
 Bu komutlar local/dev DB geliştirme içindir. Replit import veya sıradan uygulama geliştirme sırasında migration oluşturmak, DB state değiştirmek veya push-force çalıştırmak mimari olarak risklidir ve açık talep olmadan yapılmamalıdır.
 
+### Schema, Migration ve Runtime İlişkisi
+
+Drizzle mimarisinde üç kavram birlikte düşünülmelidir:
+
+```text
+lib/db/src/schema/energy.ts
+  -> TypeScript table/type kaynağı
+  -> drizzle migration SQL dosyaları
+  -> API build sırasında dist/drizzle kopyası
+  -> runtime runMigrations
+  -> PostgreSQL gerçek tablo yapısı
+```
+
+Schema değişirse şu alanlar etkilenebilir:
+
+- backend route sorguları,
+- insert/select TypeScript tipleri,
+- `drizzle-zod` insert şemaları,
+- seed/import/export scriptleri,
+- OpenAPI response/request şemaları,
+- generated client tipleri,
+- frontend form ve tablo alanları,
+- raporlama ve ISO 50001 hesaplama akışları.
+
+Bu nedenle schema değişikliği yalnızca tablo alanı eklemek değildir; API, frontend, test ve migration uyumu gerektirir. Migration ise mevcut verinin yeni yapıya güvenli taşınmasıdır. Local/dev DB için hızlı `push` kullanılabilir, ancak paylaşılan veya kalıcı ortamda migration planı açık olmalıdır.
+
+Runtime'da API başlangıcı migration klasörünü `dist/drizzle` altında beklediği için API build süreci migration dosyalarını kopyalar. Build çıktısı, schema ve migration klasörü uyumsuzsa uygulama başlama aşamasında veya ilk DB erişiminde hata verebilir.
+
 ## 6. API Katmanı
 
 API katmanı üç parçadan oluşur:
@@ -393,6 +658,36 @@ export { setBaseUrl, setAuthTokenGetter } from "./custom-fetch";
 
 Generated dosyalar elle değiştirilmemelidir. API sözleşmesi değiştiğinde `openapi.yaml` güncellenir ve codegen çalıştırılır.
 
+### OpenAPI ve Orval Akışı
+
+Gerçek geliştirme zinciri şu şekildedir:
+
+```text
+Backend davranışı
+  ->
+lib/api-spec/openapi.yaml
+  ->
+pnpm --filter @workspace/api-spec run codegen
+  ->
+lib/api-client-react/src/generated
+  ->
+lib/api-zod/src/generated
+  ->
+Frontend hook kullanımı
+```
+
+Bu zincir önemlidir çünkü frontend'in kullandığı hook isimleri, request parametreleri, response tipleri ve query key helper'ları OpenAPI sözleşmesinden üretilir. Backend davranışı değişip OpenAPI güncellenmezse frontend eski sözleşmeye göre çalışır. OpenAPI güncellenip codegen çalıştırılmazsa frontend eski generated client'ı kullanmaya devam eder.
+
+Generated dosyalar elle değiştirilmez; çünkü bir sonraki codegen çalışmasında üzerine yazılır. Kalıcı değişiklik yapılacaksa kaynak dosya `openapi.yaml`, `orval.config.ts` veya custom fetcher olmalıdır.
+
+API değişikliğinde beklenen sıra:
+
+1. Backend davranışı ve response şekli netleştirilir.
+2. OpenAPI sözleşmesi güncellenir.
+3. Codegen çalıştırılır.
+4. Frontend generated hook ve tiplerle güncellenir.
+5. Typecheck ve ilgili manuel test yapılır.
+
 ## 7. Authentication
 
 Authentication mevcut mimaride bearer token ve memory session üzerine kuruludur.
@@ -444,6 +739,20 @@ React Query global hata yönetimi `401` hatalarında logout fonksiyonunu çağı
 
 Authentication davranışı değiştirilirse backend middleware, auth route, frontend `AuthContext`, generated client token bağlantısı ve route guard'lar birlikte değerlendirilmelidir.
 
+### Authorization ve Tenant İlişkisi
+
+Authentication "kullanıcı kim?" sorusunu cevaplar. Authorization ise "bu kullanıcı bu kaynağa erişebilir mi?" sorusunu cevaplar. EnYS'de authorization tenant hiyerarşisiyle birlikte uygulanır.
+
+Rol davranışı mimari olarak:
+
+- `superadmin`: Sistem seviyesinde çalışır. Firma yönetebilir, birden fazla company kapsamında veri görebilir. Buna rağmen frontend'de aktif company filtresi (`CompanyContext`) ve backend'de gerektiğinde `companyId` filtresi kullanılır.
+- `admin`: Kendi `companyId` kapsamındaki unit, kullanıcı ve enerji verilerini yönetir. Başka company verisine erişmemelidir.
+- `user`: Genellikle kendi `unitId` kapsamındaki operasyon verileriyle sınırlıdır. UI'da seçim alanları kısıtlanabilir, ancak gerçek sınır backend route'larında uygulanır.
+
+Token tek başına tenant yetkisi anlamına gelmez. Token'dan çözülen `req.user` içindeki `role`, `companyId` ve `unitId` bilgileri route bazında filtreye dönüştürülmelidir. Özellikle `meters`, `consumption`, `sub-units`, `targets`, `risks`, `seu`, `energy-performance` ve `energy-review` gibi modüllerde parent kayıtların aynı tenant kapsamında olduğu doğrulanmalıdır.
+
+Frontend route guard'ları kullanıcı deneyimi içindir. Backend guard ve tenant filtreleri olmadan güvenlik sağlanmış sayılmaz.
+
 ## 8. Multi Tenant
 
 EnYS multi-tenant çalışır. Tenant izolasyonu mimarinin temel güvenlik kuralıdır.
@@ -460,6 +769,57 @@ Company
 ```
 
 Bu hiyerarşi bazı tablolarda doğrudan foreign key ile, bazı tablolarda ise `companyId`, `unitId`, `subUnitId`, `energySourceId` gibi alanların birlikte doğrulanmasıyla korunur.
+
+### Data Ownership / Veri Sahipliği İlkeleri
+
+Veri sahipliği, EnYS'de tenant güvenliği ve ISO 50001 denetlenebilirliği için temel mimari karardır. Bir kaydın kime ait olduğu yalnızca frontend filtresiyle değil; backend route kontrolü, parent-child ilişkisi ve DB alanlarıyla doğrulanmalıdır.
+
+Yönetim sistemi veri sahipliği şu akışla düşünülür:
+
+```text
+Company
+  ->
+Unit
+  ->
+SubUnit
+  ->
+Energy Source
+  ->
+Meter
+  ->
+Consumption
+  ->
+Variable / EnPI / SEU
+  ->
+Target / Action
+  ->
+Energy Review
+  ->
+Report
+```
+
+Sahiplik ilkeleri:
+
+- `Company`, tenant sınırıdır. Farklı company verileri hiçbir route, rapor veya frontend cache davranışında karışmamalıdır.
+- `Unit`, operasyonel sorumluluk sınırıdır. Normal kullanıcı erişimi çoğunlukla kendi unit kapsamıyla sınırlıdır.
+- `SubUnit`, fiziksel lokasyon veya organizasyonel alt kapsamdır. Parent unit ve company ilişkisi create/update sırasında doğrulanmalıdır.
+- `Energy Source`, tüketim verisinin enerji türü bağlamını belirler ve unit/company kapsamına bağlıdır.
+- `Meter`, ölçüm noktasının sahibidir. Tüketim kaydının hangi unit, subUnit ve enerji kaynağına bağlandığı meter üzerinden doğrulanır.
+- `Consumption`, enerji performansı hesaplarının ana girdisidir. Yanlış tenant veya meter ilişkisi EnPI, SEU, hedef, enerji gözden geçirme ve rapor çıktısını bozar.
+- `Variable`, `EnPI` ve `SEU` kayıtları tüketim ve operasyon verilerinden türeyen performans/önceliklendirme kayıtlarıdır.
+- `Target` ve `Action`, analiz sonucunu takip edilebilir yönetim sistemi işine dönüştürür.
+- `Energy Review`, tüketim, performans, risk, fırsat, hedef ve aksiyonları denetlenebilir yönetim gözden geçirme bağlamında toplar.
+- `Report`, bu ilişkilerin çıktı katmanıdır; sahiplik ve filtreleme hatalarını görünür hale getirir.
+
+Rol bazlı sahiplik:
+
+- Normal `user`, kendi `unitId` kapsamındaki verilere erişmelidir.
+- `admin`, kendi `companyId` kapsamındaki unit ve alt verileri yönetmelidir.
+- `superadmin`, daha geniş kapsamda çalışabilir; ancak company filtresi ve tenant bağlamı yine açık olmalıdır.
+
+Frontend görünürlüğü veri sahipliği yerine geçmez. UI'da bir seçeneğin gizlenmesi güvenlik kontrolü değildir. Backend route'ları, ilgili parent kayıtların aynı company/unit zincirinde olduğunu doğrulamalı; DB ilişkileri de bu sahiplik modelini desteklemelidir.
+
+Bu yaklaşım ISO 50001 açısından da kritiktir: denetimde bir tüketim kaydının hangi sayaçtan, hangi birimden, hangi enerji kaynağından geldiği ve hangi hedef/aksiyon/rapor çıktısını etkilediği geriye dönük izlenebilir olmalıdır.
 
 ### Company
 
@@ -619,6 +979,46 @@ Consumption page
   -> tablo/form/grafik render
 ```
 
+### ISO 50001 Modül İlişkileri
+
+EnYS modülleri bağımsız ekranlar olarak değil, ISO 50001 enerji yönetim döngüsünün bağlı parçaları olarak çalışır:
+
+```text
+Enerji Kaynağı
+  ->
+Sayaç
+  ->
+Tüketim
+  ->
+Değişken
+  ->
+EnPI
+  ->
+SEU
+  ->
+Enerji Gözden Geçirme
+  ->
+Hedef
+  ->
+Aksiyon
+  ->
+Rapor
+```
+
+Akışın anlamı:
+
+- Enerji kaynağı, tüketimin hangi enerji türüyle ilişkili olduğunu belirler.
+- Sayaç, ölçüm noktasını ve tenant kapsamını taşır.
+- Tüketim, KPI, EnPI, hedef ve raporlama hesaplarının ana girdisidir.
+- Değişkenler, üretim, hava durumu veya operasyonel etkenleri enerji performansı ile ilişkilendirir.
+- EnPI ve baseline kayıtları performans değerlendirmesini oluşturur.
+- SEU modülleri önemli enerji kullanımlarını tanımlar ve önceliklendirir.
+- Enerji gözden geçirme, tüketim, performans, risk, fırsat, hedef ve aksiyonların yönetim sistemi seviyesinde değerlendirilmesini sağlar.
+- Hedefler ve aksiyonlar, analiz sonucunu takip edilebilir iyileştirme planına dönüştürür.
+- Raporlar, denetlenebilir çıktı üretir.
+
+Bu nedenle bir modülde yapılan değişiklik diğer modüllerin hesaplama, filtreleme veya raporlama davranışını etkileyebilir. Örneğin tüketim kaydı yalnızca sayaç ekranının verisi değildir; enerji performansı, hedef ilerlemesi, SEU değerlendirmesi ve enerji gözden geçirme kayıtları için de girdidir.
+
 ## 10. Geliştirme Prensipleri
 
 Yeni modül eklerken sistem şu sırayla genişletilmelidir.
@@ -700,3 +1100,79 @@ Yeni geliştirmelerde aşağıdaki sınırlar korunmalıdır:
 - Migration açık talep olmadan oluşturulmaz.
 - Büyük refactor, küçük özellik işinin içine dahil edilmez.
 - Route, schema, OpenAPI ve frontend client değişiklikleri birbiriyle tutarlı tutulur.
+
+## 11. Geleceğe Açık Mimari
+
+EnYS bugün ISO 50001 odaklıdır, ancak ileride ISO 9001, ISO 14001, ISO 45001 veya ISO 27001 gibi farklı yönetim sistemi modüllerine genişleyebilir. Bu ihtimal mimari kararlarda dikkate alınmalıdır.
+
+Korunması gereken genişleme noktaları:
+
+- tenant, kullanıcı, rol, firma, birim ve raporlama altyapısı mümkün olduğunca ortak kalmalıdır,
+- risk, fırsat, aksiyon, doküman, hedef ve rapor gibi yönetim sistemi kavramları gereksiz yere sadece enerji terminolojisine kilitlenmemelidir,
+- ISO 50001'e özel hesaplama ve alanlar kendi modüllerinde tutulmalıdır,
+- yeni standart ihtimali var diye bugünden gereksiz soyutlama ve genel framework yazılmamalıdır.
+
+Doğru yaklaşım, bugünkü gerçek ihtiyaç için sade çözüm üretmek; ancak isimlendirme, tenant ilişkisi ve modül sınırlarını gelecekte genişlemeyi imkansız hale getirmeyecek şekilde korumaktır.
+
+Örnek karar: Enerji tüketimi ve EnPI hesapları ISO 50001'e özgüdür. Ancak aksiyon planı, risk notu, kullanıcı rolü veya rapor üretimi gibi kavramlar ileride başka yönetim sistemi modülleriyle paylaşılabilecek şekilde temiz sınırlar içinde tutulmalıdır.
+
+## 12. Performans Yaklaşımı
+
+Performans mimarisi yalnızca runtime hızından ibaret değildir; geliştirme, typecheck, build ve frontend veri akışı da performansın parçasıdır.
+
+### Frontend Performansı
+
+- React Query cache, aynı veri için tekrar tekrar API çağrısı yapılmasını azaltır.
+- `QueryClient` varsayılan `staleTime: 30_000` kullanır; bu değer gereksiz refetch'i azaltır.
+- Query key'ler `companyId`, `unitId`, `year` ve ilgili filtreleri içermelidir; aksi halde eski tenant veya yıl verisi ekranda kalabilir.
+- Mutation sonrası yalnızca ilgili query key'ler invalidate edilmelidir.
+- Büyük listelerde filtreleme, sayfalama veya server-side query ihtiyacı değerlendirilmelidir.
+- Lazy loading yalnızca gerçek bundle veya rota yükü belirginleşirse düşünülmelidir; her ekran için erken soyutlama yapılmamalıdır.
+
+### Build ve Workspace Performansı
+
+- TypeScript project references, `lib` paketlerinin ayrı kontrol edilmesini sağlar.
+- Root `typecheck`, önce paylaşılan `lib` paketlerini sonra uygulama paketlerini kontrol eder.
+- Vite frontend build'i `artifacts/ems-dashboard/dist/public` çıktısını üretir.
+- API build'i esbuild kullanır ve migration/data gibi runtime dosyalarını dist altına taşır.
+- Workspace filtreleri (`pnpm --filter ...`) geliştirme sırasında hedefli build/typecheck yapılmasını sağlar.
+
+### Backend ve DB Performansı
+
+- Tenant filtresi performans gerekçesiyle kaldırılmamalıdır.
+- N+1 sorgu üretebilecek döngülerden kaçınılmalıdır.
+- Liste endpoint'lerinde gereksiz geniş join veya tüm tenant verisini çekme davranışı dikkatle değerlendirilmelidir.
+- Meter, consumption, target, EnPI ve report akışlarında veri hacmi büyüyebileceği için filtreler ve tarih/yıl parametreleri mimari olarak önemlidir.
+
+Performans iyileştirmesi gerçek belirti, ölçüm veya kullanıcı etkisiyle yapılmalıdır. Varsayımsal optimizasyon büyük refactor gerekçesi olmamalıdır.
+
+## 13. Mimari Karar İlkeleri
+
+Yeni geliştirme yapılırken AI ve geliştiriciler aşağıdaki karar sırasını izlemelidir:
+
+1. Mevcut pattern bulunur ve korunur.
+2. Değişiklik mümkün olan en küçük güvenli kapsamda tutulur.
+3. Tenant izolasyonu ilk tasarım kararı olarak değerlendirilir.
+4. Authentication ve authorization davranışı açık talep olmadan değiştirilmez.
+5. Mevcut API sözleşmesi gereksiz yere bozulmaz.
+6. OpenAPI, generated client ve frontend kullanım zinciri birlikte düşünülür.
+7. Schema değişikliği migration, API, frontend ve script etkileriyle birlikte değerlendirilir.
+8. Package eklemek son çare olarak görülür.
+9. Gereksiz refactor yapılmaz.
+10. Büyük geliştirme küçük görevlere bölünür.
+11. Doğrulama için en az typecheck, gerekiyorsa build ve manuel ekran/API testi yapılır.
+12. Kullanıcı istemedikçe commit, push veya release yapılmaz.
+
+Mimari karar verilemiyorsa tahminle ilerlenmemelidir. Önce ilgili dosyalar okunmalı, benzer uygulama aranmalı, risk tenant/auth/DB/API sözleşmesi seviyesindeyse kullanıcıdan net karar alınmalıdır.
+
+## 14. Mimari Özet
+
+EnYS mimarisinin temel felsefesi:
+
+- Monorepo yapısı, çalışan uygulamaları `artifacts` altında; paylaşılan sözleşme ve altyapıyı `lib` altında toplar.
+- Backend güvenlik sınırıdır; auth, authorization ve tenant izolasyonu backend route'larında korunur.
+- Frontend kullanıcı deneyimini yönetir; context ve React Query ile doğru kapsamda veri ister.
+- OpenAPI ve Orval, backend ile frontend arasındaki teknik sözleşmeyi taşır.
+- Drizzle schema, veritabanı ve TypeScript dünyası arasındaki ana köprüdür.
+- ISO 50001 modülleri birbirine bağlıdır; tüketimden rapora kadar veri akışı bütün olarak düşünülmelidir.
+- Mimari kararlar sade, denetlenebilir, tenant güvenli ve uzun ömürlü olmalıdır.
