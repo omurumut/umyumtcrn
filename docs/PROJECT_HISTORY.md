@@ -1,5 +1,14 @@
 # Project History
 PROJECT_HISTORY.md Taslak
+
+2026-07-10 - Bekleyen İşler Faz 1A
+
+Bekleyen İşler modülünün Faz 1A uygulaması tamamlandı. Bu modül eski manuel tasks altyapısına bağlı değildir ve manuel görev takip sistemi olarak tasarlanmamıştır.
+
+Bu fazda yeni DB tablosu veya migration oluşturulmadı. `GET /api/pending-work-items` endpoint'i mevcut ISO 50001 verilerinden dinamik bekleyen iş üretir.
+
+İlk kontrol kapsamı, önceki aya ait tüketim verisi eksik olan mevcut sayaçların uyarı olarak listelenmesidir. Ekran `/bekleyen-isler` altında çalışır. Build ve typecheck kontrolleri başarılıdır.
+
 Bu belge teknik bir changelog değildir.
 
 Amaç, EnYS projesinin neden bugünkü yapısına ulaştığını anlatmaktır. Kod değişebilir, teknoloji değişebilir; ancak bu belgede anlatılan kararların arkasındaki düşünce uzun ömürlüdür.
@@ -60,4 +69,3 @@ Projede hazırlanan dokümanlar yalnızca açıklama amacıyla değil, AI araçl
 EnYS'nin değeri kullandığı teknoloji değil, kararlarının tutarlılığıdır. Yeni modüller, yeni AI araçları ve yeni teknolojiler eklense bile; kullanıcıyı doğru yönlendiren, denetlenebilir ve sürdürülebilir bir yönetim sistemi oluşturma amacı korunmalıdır.
 
 Bu belge yaşayan bir proje hafızasıdır. Büyük mimari kararlar, önemli yön değişiklikleri ve öğrenilen dersler ortaya çıktıkça güncellenmelidir.
-

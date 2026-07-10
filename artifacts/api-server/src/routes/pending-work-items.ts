@@ -113,6 +113,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     const actionPlans = await db
       .select({
         id: energyActionPlansTable.id,
+        targetId: energyActionPlansTable.targetId,
         title: energyActionPlansTable.title,
         status: energyActionPlansTable.status,
         completionDate: energyActionPlansTable.completionDate,
@@ -145,7 +146,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
           unitId: plan.unitId,
           unitName: plan.unitName,
           dueDate,
-          actionUrl: "/hedefler",
+          actionUrl: `/hedefler?targetId=${plan.targetId}&actionPlanId=${plan.id}`,
         });
       } else if (dueDate <= soonLimitDateOnly) {
         items.push({
@@ -159,7 +160,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
           unitId: plan.unitId,
           unitName: plan.unitName,
           dueDate,
-          actionUrl: "/hedefler",
+          actionUrl: `/hedefler?targetId=${plan.targetId}&actionPlanId=${plan.id}`,
         });
       }
     }

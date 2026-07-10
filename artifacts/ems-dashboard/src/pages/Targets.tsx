@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUnit } from "@/context/UnitContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -213,6 +213,8 @@ export default function Targets() {
   const [actionForm, setActionForm] = useState<ActionPlanForm>(EMPTY_ACTION);
   const [deleteActionId, setDeleteActionId] = useState<number | null>(null);
   const [selectedTargetId, setSelectedTargetId] = useState<string>("");
+  const [activeTab, setActiveTab] = useState("objectives");
+  const [focusedActionId, setFocusedActionId] = useState<string>("");
 
   // ── Progress ────────────────────────────────────────────
   const [progressOpen, setProgressOpen] = useState(false);
@@ -248,6 +250,20 @@ export default function Targets() {
   const progressList = progressData ?? [];
   const createProgress = useCreateEnergyTargetProgress();
   const deleteProgress = useDeleteEnergyTargetProgress();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const targetId = params.get("targetId");
+    const actionPlanId = params.get("actionPlanId");
+
+    if (targetId) {
+      setSelectedTargetId(targetId);
+      setActiveTab("actions");
+    }
+    if (actionPlanId) {
+      setFocusedActionId(actionPlanId);
+    }
+  }, []);
 
   // ─── Target handlers ─────────────────────────────────────
   function openCreateTarget() {
@@ -494,7 +510,7 @@ export default function Targets() {
       )}
 
       {/* Tabs */}
-      <Tabs defaultValue="objectives">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="bg-muted/40">
           <TabsTrigger value="objectives" className="gap-2"><Target className="h-4 w-4" />Amaç ve Hedefler</TabsTrigger>
           <TabsTrigger value="actions" className="gap-2"><ListChecks className="h-4 w-4" />Eylem Planları</TabsTrigger>
@@ -613,7 +629,10 @@ export default function Targets() {
           ) : (
             <div className="space-y-3">
               {actions.map((a: any) => (
-                <Card key={a.id} className="bg-card/50 border-border/50">
+                <Card
+                  key={a.id}
+                  className={`bg-card/50 ${focusedActionId === a.id.toString() ? "border-primary/60" : "border-border/50"}`}
+                >
                   <CardContent className="p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
