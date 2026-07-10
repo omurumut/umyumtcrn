@@ -265,6 +265,18 @@ export default function Targets() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!focusedActionId || actionsLoading) return;
+
+    const handle = window.setTimeout(() => {
+      document
+        .getElementById(`action-plan-${focusedActionId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+
+    return () => window.clearTimeout(handle);
+  }, [actions.length, actionsLoading, focusedActionId]);
+
   // ─── Target handlers ─────────────────────────────────────
   function openCreateTarget() {
     setEditingTargetId(null);
@@ -631,6 +643,7 @@ export default function Targets() {
               {actions.map((a: any) => (
                 <Card
                   key={a.id}
+                  id={`action-plan-${a.id}`}
                   className={`bg-card/50 ${focusedActionId === a.id.toString() ? "border-primary/60" : "border-border/50"}`}
                 >
                   <CardContent className="p-4">

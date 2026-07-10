@@ -52,8 +52,14 @@ const EMPTY_FORM = (year: number): FormState => ({
   kwh: "", tep: "", co2: "", hdd: "", cdd: "", notes: "",
 });
 
+function parsePositiveInt(value: string | null) {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 export default function Consumption() {
-  const { year } = useYear();
+  const { year, setYear } = useYear();
   const { user, token } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -67,6 +73,8 @@ export default function Consumption() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM(year));
+  const [deepLinkMonth, setDeepLinkMonth] = useState<number | null>(null);
+  const [deepLinkApplied, setDeepLinkApplied] = useState(false);
   const [formEnergySource, setFormEnergySource] = useState("");
   const [formSubUnit, setFormSubUnit] = useState("");
   const [hddFetching, setHddFetching] = useState(false);
@@ -80,8 +88,26 @@ export default function Consumption() {
     usedProvinceFallback?: boolean;
   } | null>(null);
 
-  const { unitId } = useUnit();
-  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const { unitId, setUnitId } = useUnit();
+  const canApplyUnitQuery = user?.role === "admin" || user?.role === "kontrol_admin";
+  const isAdmin = canApplyUnitQuery || user?.role === "superadmin";
+
+  useEffect(() => {
+    if (deepLinkApplied || !user) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const queryYear = parsePositiveInt(params.get("year"));
+    const queryUnitId = parsePositiveInt(params.get("unitId"));
+    const queryMeterId = parsePositiveInt(params.get("meterId"));
+    const queryMonth = parsePositiveInt(params.get("month"));
+
+    if (queryYear) setYear(queryYear);
+    if (canApplyUnitQuery && queryUnitId) setUnitId(queryUnitId);
+    if (queryMeterId) setFilterMeter(String(queryMeterId));
+    if (queryMonth && queryMonth >= 1 && queryMonth <= 12) setDeepLinkMonth(queryMonth);
+
+    setDeepLinkApplied(true);
+  }, [canApplyUnitQuery, deepLinkApplied, setUnitId, setYear, user]);
 
   const esKey = ["energy-sources", unitId];
   const { data: energySources } = useQuery<EnergySource[]>({
@@ -208,7 +234,11 @@ export default function Consumption() {
     setMgmStation(null);
     setFormEnergySource(filterEnergySource !== "all" ? filterEnergySource : "");
     setFormSubUnit(filterSubUnit !== "all" ? filterSubUnit : "");
-    setForm({ ...EMPTY_FORM(year), meterId: filterMeter !== "all" ? filterMeter : "" });
+    setForm({
+      ...EMPTY_FORM(year),
+      month: deepLinkMonth ? String(deepLinkMonth) : "1",
+      meterId: filterMeter !== "all" ? filterMeter : "",
+    });
     setOpen(true);
   }
 
@@ -421,6 +451,11 @@ export default function Consumption() {
           </SelectContent>
         </Select>
         <span className="text-sm text-muted-foreground">{filteredRecords.length} kayıt</span>
+        {deepLinkMonth && (
+          <span className="text-xs text-primary border border-primary/20 bg-primary/5 rounded-md px-2 py-1">
+            Odak ay: {MONTHS[deepLinkMonth - 1]}
+          </span>
+        )}
         {selectedIds.size > 0 && (
           <div className="flex items-center gap-2 ml-auto bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-1.5">
             <CheckSquare className="h-4 w-4 text-destructive" />
@@ -478,8 +513,12 @@ export default function Consumption() {
                   const grpName = getGroupName(r.meterId);
                   const m = (allMeters ?? []).find(m => m.id === r.meterId);
                   const isSelected = selectedIds.has(r.id);
+                  const isDeepLinkedMonth = deepLinkMonth === r.month;
                   return (
-                    <TableRow key={r.id} className={isSelected ? "bg-destructive/5" : undefined}>
+                    <TableRow
+                      key={r.id}
+                      className={isSelected ? "bg-destructive/5" : isDeepLinkedMonth ? "bg-primary/5" : undefined}
+                    >
                       <TableCell>
                         <Checkbox checked={isSelected} onCheckedChange={() => toggleSelect(r.id)} aria-label="Satırı seç" />
                       </TableCell>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -209,16 +209,33 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   archived: { label: "Arşivlendi", color: "border-border text-muted-foreground bg-muted/30" },
 };
 
+const TAB_VALUES = new Set(["seu-selection", "dataset", "regression", "baselines", "monitoring"]);
+
+function parsePositiveInt(value: string | null) {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 export default function EnergyPerformance() {
   const { token, user } = useAuth();
   const { unitId: contextUnitId } = useUnit();
-  const { year } = useYear();
-  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const { year, setYear } = useYear();
+  const isAdmin = user?.role === "admin" || user?.role === "kontrol_admin" || user?.role === "superadmin";
   const queryClient = useQueryClient();
+  const [deepLinkParams] = useState(() => new URLSearchParams(window.location.search));
+  const deepLinkSeuItemId = parsePositiveInt(deepLinkParams.get("seuItemId"));
+  const deepLinkBaselineId = parsePositiveInt(deepLinkParams.get("baselineId"));
+  const deepLinkYear = parsePositiveInt(deepLinkParams.get("year"));
+  const requestedTab = deepLinkParams.get("tab");
+  const deepLinkTab = requestedTab && TAB_VALUES.has(requestedTab) ? requestedTab : null;
 
   const [activeTab, setActiveTab] = useState("seu-selection");
   const [unitFilter, setUnitFilter] = useState<number | null>(null);
   const [selectedSeuItem, setSelectedSeuItem] = useState<SeuItemRow | null>(null);
+  const [deepLinkYearApplied, setDeepLinkYearApplied] = useState(false);
+  const [deepLinkSeuApplied, setDeepLinkSeuApplied] = useState(false);
+  const [deepLinkBaselineApplied, setDeepLinkBaselineApplied] = useState(false);
   const [selectedVariables, setSelectedVariables] = useState<string[]>([]);
   const [regressionResult, setRegressionResult] = useState<RegressionResult | null>(null);
   const [regressionLoading, setRegressionLoading] = useState(false);
@@ -237,7 +254,7 @@ export default function EnergyPerformance() {
 
   // EnPG İzleme state
   const [monitorBaselineId, setMonitorBaselineId] = useState<number | null>(null);
-  const [monitorYear, setMonitorYear] = useState<number>(year);
+  const [monitorYear, setMonitorYear] = useState<number>(deepLinkYear ?? year);
   const [calcLoading, setCalcLoading] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [calcWarnings, setCalcWarnings] = useState<Array<{ month: number; monthLabel: string; issue: string }>>([]);
@@ -287,6 +304,47 @@ export default function EnergyPerformance() {
     queryFn: () => apiFetch(baselinesUrl!, token),
     enabled: !!selectedSeuItem,
   });
+
+  useEffect(() => {
+    if (deepLinkYearApplied) return;
+    if (deepLinkYear) {
+      setYear(deepLinkYear);
+      setMonitorYear(deepLinkYear);
+    }
+    setDeepLinkYearApplied(true);
+  }, [deepLinkYear, deepLinkYearApplied, setYear]);
+
+  useEffect(() => {
+    if (deepLinkSeuApplied || !deepLinkSeuItemId || !seuItems) return;
+
+    const item = seuItems.find((candidate) => candidate.id === deepLinkSeuItemId);
+    if (!item) return;
+
+    setSelectedSeuItem(item);
+    setRegressionResult(null);
+    setRegressionError(null);
+    setSaveError(null);
+    setSaveSuccess(null);
+    setActiveTab(deepLinkTab === "seu-selection" ? "dataset" : deepLinkTab ?? "dataset");
+    setDeepLinkSeuApplied(true);
+  }, [deepLinkSeuApplied, deepLinkSeuItemId, deepLinkTab, seuItems]);
+
+  useEffect(() => {
+    if (deepLinkBaselineApplied || !deepLinkBaselineId || !baselines) return;
+
+    const baseline = baselines.find((candidate) => candidate.id === deepLinkBaselineId);
+    if (!baseline) return;
+
+    setMonitorBaselineId(baseline.id);
+    setExpandedBaseline(baseline.id);
+    setMonitorResults([]);
+    setCalcWarnings([]);
+    setCalcError(null);
+    if (deepLinkTab === "monitoring" || deepLinkTab === "baselines") {
+      setActiveTab(deepLinkTab);
+    }
+    setDeepLinkBaselineApplied(true);
+  }, [baselines, deepLinkBaselineApplied, deepLinkBaselineId, deepLinkTab]);
 
   function handleSelectSeuItem(item: SeuItemRow) {
     setSelectedSeuItem(item);
