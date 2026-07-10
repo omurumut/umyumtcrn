@@ -105,8 +105,9 @@ export function Layout({ children }: { children: ReactNode }) {
     }
 
     const controller = new AbortController();
+    const params = new URLSearchParams({ year: String(year) });
 
-    fetch("/api/pending-work-items", {
+    fetch(`/api/pending-work-items?${params.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: controller.signal,
     })
@@ -123,7 +124,7 @@ export function Layout({ children }: { children: ReactNode }) {
       });
 
     return () => controller.abort();
-  }, [isStandardUser, token]);
+  }, [isStandardUser, token, year]);
 
   const effectiveUnitName = isAdmin
     ? (unitId !== null ? units?.find((u: any) => u.id === unitId)?.name : "Tüm Birimler")

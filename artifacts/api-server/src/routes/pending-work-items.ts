@@ -3,11 +3,15 @@ import {
   db,
   consumptionTable,
   energyActionPlansTable,
+  energyBaselinesTable,
+  energyPerformanceResultsTable,
   energyTargetsTable,
   metersTable,
+  seuAssessmentItemsTable,
+  seuAssessmentsTable,
   unitsTable,
 } from "@workspace/db";
-import { and, eq, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, lte, type SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -32,6 +36,22 @@ interface MissingConsumptionGroup {
   unitId: number | null;
   unitName: string | null;
   meterNames: string[];
+}
+
+interface AcceptedOfficialSeuItem {
+  id: number;
+  name: string;
+  energyUseGroupId: number | null;
+  meterId: number | null;
+  subUnitId: number | null;
+  energySourceId: number | null;
+  unitId: number | null;
+  unitName: string | null;
+}
+
+interface ActiveEnergyBaseline {
+  id: number;
+  seuAssessmentItemId: number | null;
 }
 
 const ACTION_PLAN_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
@@ -92,6 +112,177 @@ function buildWhere(conditions: SQL[]) {
   return conditions.length === 1 ? conditions[0] : and(...conditions);
 }
 
+function getSeuDecisionKey(item: AcceptedOfficialSeuItem): string {
+  const unitKey = item.unitId ?? "none";
+  if (item.energyUseGroupId !== null) return `${unitKey}:energy-use-group:${item.energyUseGroupId}`;
+  if (item.meterId !== null) return `${unitKey}:meter:${item.meterId}`;
+  if (item.subUnitId !== null) return `${unitKey}:sub-unit:${item.subUnitId}`;
+  if (item.energySourceId !== null) return `${unitKey}:energy-source:${item.energySourceId}`;
+  return `${unitKey}:name:${item.name.trim().toLocaleLowerCase("tr")}`;
+}
+
+async function getAcceptedOfficialSeuItems(
+  companyId: number,
+  unitId: number | undefined,
+  year: number,
+): Promise<AcceptedOfficialSeuItem[]> {
+  const conditions: SQL[] = [
+    eq(seuAssessmentsTable.companyId, companyId),
+    lte(seuAssessmentsTable.year, year),
+    eq(seuAssessmentsTable.recordType, "unit_official"),
+    eq(seuAssessmentItemsTable.userDecision, "accepted_as_seu"),
+  ];
+
+  if (unitId !== undefined) {
+    conditions.push(eq(seuAssessmentsTable.unitId, unitId));
+  }
+
+  const rows = await db
+    .select({
+      id: seuAssessmentItemsTable.id,
+      name: seuAssessmentItemsTable.name,
+      energyUseGroupId: seuAssessmentItemsTable.energyUseGroupId,
+      meterId: seuAssessmentItemsTable.meterId,
+      subUnitId: seuAssessmentItemsTable.subUnitId,
+      energySourceId: seuAssessmentItemsTable.energySourceId,
+      unitId: seuAssessmentsTable.unitId,
+      unitName: unitsTable.name,
+    })
+    .from(seuAssessmentItemsTable)
+    .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+    .leftJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
+    .where(buildWhere(conditions))
+    .orderBy(
+      desc(seuAssessmentsTable.year),
+      desc(seuAssessmentsTable.updatedAt),
+      desc(seuAssessmentsTable.createdAt),
+      desc(seuAssessmentItemsTable.updatedAt),
+      desc(seuAssessmentItemsTable.id),
+    );
+
+  const latestByDecisionKey = new Map<string, AcceptedOfficialSeuItem>();
+  for (const row of rows) {
+    const key = getSeuDecisionKey(row);
+    if (!latestByDecisionKey.has(key)) {
+      latestByDecisionKey.set(key, row);
+    }
+  }
+
+  return Array.from(latestByDecisionKey.values());
+}
+
+async function getActiveBaselineBySeuItem(
+  companyId: number,
+  seuItemIds: number[],
+): Promise<Map<number, ActiveEnergyBaseline>> {
+  const baselineBySeuItem = new Map<number, ActiveEnergyBaseline>();
+  if (seuItemIds.length === 0) return baselineBySeuItem;
+
+  const baselines = await db
+    .select({
+      id: energyBaselinesTable.id,
+      seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
+    })
+    .from(energyBaselinesTable)
+    .where(and(
+      eq(energyBaselinesTable.companyId, companyId),
+      inArray(energyBaselinesTable.seuAssessmentItemId, seuItemIds),
+      eq(energyBaselinesTable.status, "active"),
+      eq(energyBaselinesTable.isValid, true),
+    ));
+
+  for (const baseline of baselines) {
+    if (baseline.seuAssessmentItemId === null) continue;
+    const existing = baselineBySeuItem.get(baseline.seuAssessmentItemId);
+    if (!existing || baseline.id > existing.id) {
+      baselineBySeuItem.set(baseline.seuAssessmentItemId, baseline);
+    }
+  }
+
+  return baselineBySeuItem;
+}
+
+async function getMonitoredSeuItemIds(
+  companyId: number,
+  baselineIds: number[],
+  year: number,
+): Promise<Set<number>> {
+  const monitoredSeuItemIds = new Set<number>();
+  if (baselineIds.length === 0) return monitoredSeuItemIds;
+
+  const results = await db
+    .select({
+      seuAssessmentItemId: energyPerformanceResultsTable.seuAssessmentItemId,
+    })
+    .from(energyPerformanceResultsTable)
+    .where(and(
+      eq(energyPerformanceResultsTable.companyId, companyId),
+      inArray(energyPerformanceResultsTable.baselineId, baselineIds),
+      eq(energyPerformanceResultsTable.year, year),
+    ));
+
+  for (const result of results) {
+    if (result.seuAssessmentItemId !== null) {
+      monitoredSeuItemIds.add(result.seuAssessmentItemId);
+    }
+  }
+
+  return monitoredSeuItemIds;
+}
+
+async function appendSeuEnergyPerformanceWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+  year: number,
+) {
+  const seuItems = await getAcceptedOfficialSeuItems(companyId, unitId, year);
+  if (seuItems.length === 0) return;
+
+  const seuItemIds = seuItems.map((item) => item.id);
+  const baselineBySeuItem = await getActiveBaselineBySeuItem(companyId, seuItemIds);
+  const baselineIds = Array.from(baselineBySeuItem.values()).map((baseline) => baseline.id);
+  const monitoredSeuItemIds = await getMonitoredSeuItemIds(companyId, baselineIds, year);
+
+  for (const seuItem of seuItems) {
+    const baseline = baselineBySeuItem.get(seuItem.id);
+    const unitLabel = seuItem.unitName ?? "Şirket geneli";
+
+    if (!baseline) {
+      items.push({
+        id: `seu-missing-energy-baseline-${year}-${seuItem.id}`,
+        type: "seu_missing_energy_baseline",
+        severity: "critical",
+        title: `ÖEK için aktif EnRÇ modeli yok: ${seuItem.name}`,
+        description: `${unitLabel} biriminde kabul edilmiş ÖEK için aktif/geçerli EnRÇ modeli bulunmuyor.`,
+        sourceModule: "EnRÇ / EnPG İzleme",
+        sourceRecordId: seuItem.id,
+        unitId: seuItem.unitId,
+        unitName: seuItem.unitName,
+        dueDate: null,
+        actionUrl: `/performans-gostergeleri?seuItemId=${seuItem.id}&tab=baselines`,
+      });
+      continue;
+    }
+
+    if (!monitoredSeuItemIds.has(seuItem.id)) {
+      items.push({
+        id: `seu-missing-monitoring-result-${year}-${seuItem.id}-${baseline.id}`,
+        type: "seu_missing_monitoring_result",
+        severity: "warning",
+        title: `${year} yılı için EnPG izleme sonucu yok: ${seuItem.name}`,
+        description: `Aktif EnRÇ modeli var ancak ${year} yılına ait izleme sonucu hesaplanmamış.`,
+        sourceModule: "EnRÇ / EnPG İzleme",
+        sourceRecordId: baseline.id,
+        unitId: seuItem.unitId,
+        unitName: seuItem.unitName,
+        dueDate: null,
+        actionUrl: `/performans-gostergeleri?seuItemId=${seuItem.id}&baselineId=${baseline.id}&year=${year}&tab=monitoring`,
+      });
+    }
+  }
+}
+
 // GET /api/pending-work-items
 router.get("/pending-work-items", requireAuth, async (req, res) => {
   try {
@@ -107,6 +298,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     const effectiveUnitId = isAdmin ? requestedUnitId : sessionUnitId ?? undefined;
 
     const today = new Date();
+    const selectedYear = parseOptionalInt(req.query.year) ?? today.getFullYear();
     const todayDateOnly = toDateOnlyString(today);
     const soonLimitDateOnly = toDateOnlyString(addDays(today, 7));
     const items: PendingWorkItem[] = [];
@@ -240,6 +432,8 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
         actionUrl: `/tuketim?${params.toString()}`,
       });
     }
+
+    await appendSeuEnergyPerformanceWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
 
     items.sort((a, b) => {
       const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];

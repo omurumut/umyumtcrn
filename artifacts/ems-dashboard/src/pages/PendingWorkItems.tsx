@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useUnit } from "@/context/UnitContext";
+import { useYear } from "@/context/YearContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,8 +59,9 @@ const SEVERITY_CONFIG: Record<PendingWorkItemSeverity, { label: string; classNam
   },
 };
 
-async function fetchPendingWorkItems(token: string | null, unitId: number | null, isAdmin: boolean) {
+async function fetchPendingWorkItems(token: string | null, unitId: number | null, isAdmin: boolean, year: number) {
   const params = new URLSearchParams();
+  params.set("year", String(year));
   if (isAdmin && unitId !== null) params.set("unitId", String(unitId));
   const query = params.toString();
   const res = await fetch(`/api/pending-work-items${query ? `?${query}` : ""}`, {
@@ -126,13 +128,14 @@ function SeverityBadge({ severity }: { severity: PendingWorkItemSeverity }) {
 export default function PendingWorkItems() {
   const { token, user } = useAuth();
   const { unitId } = useUnit();
+  const { year } = useYear();
   const canUseUnitFilter = user?.role === "admin" || user?.role === "kontrol_admin";
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [moduleFilter, setModuleFilter] = useState<string>("all");
 
   const { data, isLoading, isFetching, error } = useQuery<PendingWorkItem[]>({
-    queryKey: ["pending-work-items", unitId, canUseUnitFilter],
-    queryFn: () => fetchPendingWorkItems(token, unitId, canUseUnitFilter),
+    queryKey: ["pending-work-items", unitId, canUseUnitFilter, year],
+    queryFn: () => fetchPendingWorkItems(token, unitId, canUseUnitFilter, year),
     enabled: token !== null,
   });
 
