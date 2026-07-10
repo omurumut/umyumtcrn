@@ -1,6 +1,10 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 import { useAuth } from "./AuthContext";
 
+function canUseGlobalUnitFilter(role: string | undefined) {
+  return role === "admin" || role === "kontrol_admin" || role === "superadmin";
+}
+
 interface UnitContextType {
   unitId: number | null;
   setUnitId: (id: number | null) => void;
@@ -15,13 +19,13 @@ export function UnitProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (user?.role === "user" && user.unitId !== null) {
       setUnitIdState(user.unitId);
-    } else if (user?.role === "admin" || user?.role === "superadmin") {
+    } else if (canUseGlobalUnitFilter(user?.role)) {
       setUnitIdState(null);
     }
   }, [user]);
 
   function setUnitId(id: number | null) {
-    if (user?.role !== "admin" && user?.role !== "superadmin") return;
+    if (!canUseGlobalUnitFilter(user?.role)) return;
     setUnitIdState(id);
   }
 

@@ -144,11 +144,11 @@ export default function PendingWorkItems() {
 
   const filteredItems = useMemo(
     () => items.filter((item) => {
-      if (severityFilter !== "all" && item.severity !== severityFilter) return false;
-      if (moduleFilter !== "all" && item.sourceModule !== moduleFilter) return false;
+      if (canUseUnitFilter && severityFilter !== "all" && item.severity !== severityFilter) return false;
+      if (canUseUnitFilter && moduleFilter !== "all" && item.sourceModule !== moduleFilter) return false;
       return true;
     }),
-    [items, severityFilter, moduleFilter],
+    [items, severityFilter, moduleFilter, canUseUnitFilter],
   );
 
   const totals = useMemo(
@@ -182,40 +182,42 @@ export default function PendingWorkItems() {
         <SummaryCard title="Bilgi" value={totals.info} tone="info" />
       </div>
 
-      <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 sm:flex-row sm:items-center">
-        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-          <Filter className="h-4 w-4" />
-          Filtreler
-        </div>
-        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
-          <Select value={severityFilter} onValueChange={setSeverityFilter}>
-            <SelectTrigger className="bg-background">
-              <SelectValue placeholder="Öncelik" />
-            </SelectTrigger>
-            <SelectContent>
-              {SEVERITY_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      {canUseUnitFilter && (
+        <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <Filter className="h-4 w-4" />
+            Filtreler
+          </div>
+          <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+            <Select value={severityFilter} onValueChange={setSeverityFilter}>
+              <SelectTrigger className="bg-background">
+                <SelectValue placeholder="Öncelik" />
+              </SelectTrigger>
+              <SelectContent>
+                {SEVERITY_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-          <Select value={moduleFilter} onValueChange={setModuleFilter}>
-            <SelectTrigger className="bg-background">
-              <SelectValue placeholder="Modül" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Tümü</SelectItem>
-              {modules.map((module) => (
-                <SelectItem key={module} value={module}>
-                  {module}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            <Select value={moduleFilter} onValueChange={setModuleFilter}>
+              <SelectTrigger className="bg-background">
+                <SelectValue placeholder="Modül" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Tümü</SelectItem>
+                {modules.map((module) => (
+                  <SelectItem key={module} value={module}>
+                    {module}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
-      </div>
+      )}
 
       {isLoading ? (
         <div className="space-y-3">

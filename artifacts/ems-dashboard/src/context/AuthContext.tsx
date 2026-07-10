@@ -5,7 +5,7 @@ export interface AuthUser {
   id: number;
   username: string;
   name: string;
-  role: "admin" | "user" | "superadmin";
+  role: "admin" | "kontrol_admin" | "user" | "superadmin";
   unitId: number | null;
 }
 
@@ -13,7 +13,7 @@ interface AuthContextType {
   user: AuthUser | null;
   token: string | null;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<AuthUser>;
   logout: () => void;
 }
 
@@ -61,6 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(newToken);
     setUser(newUser);
     setAuthTokenGetter(() => newToken);
+    return newUser as AuthUser;
   }
 
   function logout() {

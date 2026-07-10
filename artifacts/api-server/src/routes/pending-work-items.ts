@@ -28,6 +28,12 @@ interface PendingWorkItem {
   actionUrl: string | null;
 }
 
+interface MissingConsumptionGroup {
+  unitId: number | null;
+  unitName: string | null;
+  meterNames: string[];
+}
+
 const ACTION_PLAN_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
 const severityOrder: Record<PendingWorkItemSeverity, number> = {
   critical: 0,
@@ -193,21 +199,45 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     const metersWithConsumption = new Set(consumptionRecords.map((record) => record.meterId));
     const periodLabel = formatPeriod(previousPeriod.year, previousPeriod.month);
 
+    const missingConsumptionGroups = new Map<string, MissingConsumptionGroup>();
+
     for (const meter of meters) {
       if (metersWithConsumption.has(meter.id)) continue;
 
-      items.push({
-        id: `missing-consumption-${previousPeriod.year}-${previousPeriod.month}-${meter.id}`,
-        type: "missing_consumption_previous_month",
-        severity: "warning",
-        title: `Eksik tüketim verisi: ${meter.name}`,
-        description: `${periodLabel} dönemi için tüketim kaydı bulunmuyor.`,
-        sourceModule: "Tüketim Verileri",
-        sourceRecordId: meter.id,
+      const groupKey = `${previousPeriod.year}-${previousPeriod.month}-${meter.unitId ?? "none"}`;
+      const group = missingConsumptionGroups.get(groupKey) ?? {
         unitId: meter.unitId,
         unitName: meter.unitName,
+        meterNames: [],
+      };
+      group.meterNames.push(meter.name);
+      missingConsumptionGroups.set(groupKey, group);
+    }
+
+    for (const [groupKey, group] of missingConsumptionGroups) {
+      const params = new URLSearchParams({
+        year: String(previousPeriod.year),
+        month: String(previousPeriod.month),
+      });
+      if (group.unitId !== null) {
+        params.set("unitId", String(group.unitId));
+      }
+
+      const meterCount = group.meterNames.length;
+      const sortedMeterNames = [...group.meterNames].sort((a, b) => a.localeCompare(b, "tr"));
+
+      items.push({
+        id: `missing-consumption-${groupKey}`,
+        type: "missing_consumption_previous_month",
+        severity: "warning",
+        title: `${periodLabel} döneminde ${meterCount} sayaç için tüketim verisi eksik`,
+        description: `Eksik sayaçlar: ${sortedMeterNames.join(", ")}.`,
+        sourceModule: "Tüketim Verileri",
+        sourceRecordId: null,
+        unitId: group.unitId,
+        unitName: group.unitName,
         dueDate: null,
-        actionUrl: `/tuketim?meterId=${meter.id}&year=${previousPeriod.year}&month=${previousPeriod.month}`,
+        actionUrl: `/tuketim?${params.toString()}`,
       });
     }
 

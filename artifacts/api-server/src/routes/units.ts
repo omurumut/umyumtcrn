@@ -12,7 +12,7 @@ router.get("/units", requireAuth, async (req, res) => {
     const queryCompanyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
 
     // Normal kullanıcı: sadece kendi birimi
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
+    if (role !== "admin" && role !== "kontrol_admin" && role !== "superadmin" && sessionUnitId !== null) {
       const units = await db.select().from(unitsTable)
         .where(eq(unitsTable.id, sessionUnitId!))
         .orderBy(unitsTable.name);
