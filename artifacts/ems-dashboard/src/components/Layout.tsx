@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useYear } from "../context/YearContext";
 import { useUnit } from "../context/UnitContext";
@@ -11,7 +11,7 @@ import {
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
   SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuButton,
-  SidebarMenuItem, SidebarProvider,
+  SidebarMenuBadge, SidebarMenuItem, SidebarProvider,
 } from "@/components/ui/sidebar";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -54,7 +54,6 @@ const COMMON_NAV = [
     items: [
       { title: "Enerji Hedefleri", url: "/hedefler", icon: Target },
       { title: "Verimlilik Artırıcı Projeler", url: "/vap-projeler", icon: Zap },
-      { title: "Bekleyen İşler", url: "/bekleyen-isler", icon: ClipboardList },
       { title: "SWOT Analizi", url: "/swot", icon: Target },
       { title: "Risk & Fırsat", url: "/riskler", icon: ShieldAlert },
       { title: "Önemli Enerji Kullanımları", url: "/oek", icon: AlertTriangle },
@@ -71,15 +70,22 @@ const COMMON_NAV = [
   },
 ];
 
+interface PendingWorkItemCountRecord {
+  severity?: string;
+}
+
 export function Layout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   const { year, setYear } = useYear();
   const { unitId, setUnitId } = useUnit();
   const { companyId, setCompanyId } = useCompany();
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
+  const [pendingWorkItemCount, setPendingWorkItemCount] = useState<number | null>(null);
 
   const isSuperAdmin = user?.role === "superadmin";
-  const isAdmin = user?.role === "admin" || isSuperAdmin;
+  const isCompanyAdmin = user?.role === "admin" || user?.role === "kontrol_admin";
+  const isAdmin = isCompanyAdmin || isSuperAdmin;
+  const isStandardUser = user?.role === "user";
 
   const { data: companies } = useListCompanies({ query: { queryKey: getListCompaniesQueryKey(), enabled: isSuperAdmin } });
 
@@ -91,6 +97,33 @@ export function Layout({ children }: { children: ReactNode }) {
   const years = Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - i);
   const topNavItems = isAdmin ? ADMIN_NAV : USER_NAV;
   const navItems = [...topNavItems, ...COMMON_NAV];
+
+  useEffect(() => {
+    if (!token || !isStandardUser) {
+      setPendingWorkItemCount(null);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    fetch("/api/pending-work-items", {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json() as Promise<PendingWorkItemCountRecord[]>;
+      })
+      .then((items) => {
+        const visibleCount = items.filter((item) => item.severity === "critical" || item.severity === "warning").length;
+        setPendingWorkItemCount(visibleCount);
+      })
+      .catch((err) => {
+        if (err?.name !== "AbortError") setPendingWorkItemCount(null);
+      });
+
+    return () => controller.abort();
+  }, [isStandardUser, token]);
 
   const effectiveUnitName = isAdmin
     ? (unitId !== null ? units?.find((u: any) => u.id === unitId)?.name : "Tüm Birimler")
@@ -115,6 +148,25 @@ export function Layout({ children }: { children: ReactNode }) {
                       <Link href="/"><Home className="h-4 w-4" /><span>Anasayfa</span></Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
+                  {!isSuperAdmin && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={location === "/bekleyen-isler"}
+                        className={isStandardUser && pendingWorkItemCount ? "pr-8" : undefined}
+                      >
+                        <Link href="/bekleyen-isler">
+                          <ClipboardList className="h-4 w-4" />
+                          <span>Bekleyen İşler</span>
+                        </Link>
+                      </SidebarMenuButton>
+                      {isStandardUser && pendingWorkItemCount !== null && pendingWorkItemCount > 0 && (
+                        <SidebarMenuBadge className="bg-red-500/20 text-red-400 border border-red-500/30">
+                          {pendingWorkItemCount > 99 ? "99+" : pendingWorkItemCount}
+                        </SidebarMenuBadge>
+                      )}
+                    </SidebarMenuItem>
+                  )}
                   {isAdmin && (
                     <SidebarMenuItem>
                       <SidebarMenuButton asChild isActive={location === "/ozet"}>

@@ -90,7 +90,7 @@ function buildWhere(conditions: SQL[]) {
 router.get("/pending-work-items", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const isAdmin = role === "admin" || role === "superadmin";
+    const isAdmin = role === "admin" || role === "kontrol_admin" || role === "superadmin";
 
     if (!isAdmin && sessionUnitId === null) {
       res.json([]);

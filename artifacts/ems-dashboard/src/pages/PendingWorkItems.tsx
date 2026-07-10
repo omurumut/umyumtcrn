@@ -126,13 +126,13 @@ function SeverityBadge({ severity }: { severity: PendingWorkItemSeverity }) {
 export default function PendingWorkItems() {
   const { token, user } = useAuth();
   const { unitId } = useUnit();
-  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const canUseUnitFilter = user?.role === "admin" || user?.role === "kontrol_admin";
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [moduleFilter, setModuleFilter] = useState<string>("all");
 
   const { data, isLoading, isFetching, error } = useQuery<PendingWorkItem[]>({
-    queryKey: ["pending-work-items", unitId, isAdmin],
-    queryFn: () => fetchPendingWorkItems(token, unitId, isAdmin),
+    queryKey: ["pending-work-items", unitId, canUseUnitFilter],
+    queryFn: () => fetchPendingWorkItems(token, unitId, canUseUnitFilter),
     enabled: token !== null,
   });
 

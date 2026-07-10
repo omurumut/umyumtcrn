@@ -18,7 +18,15 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await login(username, password);
+      const loggedInUser = await login(username, password);
+      const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+      const currentPath = basePath && window.location.pathname.startsWith(basePath)
+        ? window.location.pathname.slice(basePath.length) || "/"
+        : window.location.pathname;
+
+      if (loggedInUser.role === "user" && (currentPath === "/" || currentPath === "")) {
+        window.history.replaceState(null, "", `${basePath}/bekleyen-isler`);
+      }
     } catch (err: any) {
       setError(err.message || "Giriş başarısız");
     } finally {

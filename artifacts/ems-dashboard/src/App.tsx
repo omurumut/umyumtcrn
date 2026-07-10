@@ -49,7 +49,7 @@ const queryClient = new QueryClient({
 
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {
   const { user } = useAuth();
-  if (user?.role !== "admin" && user?.role !== "superadmin") return <Redirect to="/" />;
+  if (user?.role !== "admin" && user?.role !== "kontrol_admin" && user?.role !== "superadmin") return <Redirect to="/" />;
   return <Component />;
 }
 
@@ -63,6 +63,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
+      <Route path="/dashboard" component={Dashboard} />
       <Route path="/ozet">
         {() => <AdminRoute component={Summary} />}
       </Route>
