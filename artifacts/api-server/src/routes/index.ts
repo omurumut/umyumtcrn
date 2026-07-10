@@ -28,6 +28,7 @@ import energyTargetProgressRouter from "./energy-target-progress";
 import vapProjectsRouter from "./vap-projects";
 import energyReviewRouter from "./energy-review";
 import energyReviewRecordsRouter from "./energy-review-records";
+import pendingWorkItemsRouter from "./pending-work-items";
 
 const router: IRouter = Router();
 
@@ -60,5 +61,6 @@ router.use(energyTargetProgressRouter);
 router.use(vapProjectsRouter);
 router.use(energyReviewRouter);
 router.use(energyReviewRecordsRouter);
+router.use(pendingWorkItemsRouter);
 
 export default router;
