@@ -567,6 +567,29 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
       res.json({ error: "Bu ÖEK için eşleşen sayaç bulunamadı. Tüketim verisi yok." }); return;
     }
 
+    const matchedMeterScopes = await db
+      .select({
+        id: metersTable.id,
+        unitId: metersTable.unitId,
+        subUnitId: metersTable.subUnitId,
+      })
+      .from(metersTable)
+      .where(inArray(metersTable.id, matchedMeterIds));
+
+    const matchedMeterIdSet = new Set(matchedMeterIds);
+    const matchedSubUnitIdSet = new Set<number>(
+      matchedMeterScopes
+        .map(m => m.subUnitId)
+        .filter((id): id is number => id != null)
+    );
+    const matchedUnitIdSet = new Set<number>(
+      matchedMeterScopes
+        .map(m => m.unitId)
+        .filter((id): id is number => id != null)
+    );
+    if (seuItem.itemSubUnitId) matchedSubUnitIdSet.add(seuItem.itemSubUnitId);
+    if (assessmentUnitId) matchedUnitIdSet.add(assessmentUnitId);
+
     // Tüketim verileri — aylık agragasyon
     const rows = await db
       .select({
@@ -597,6 +620,92 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
     // Değişken değerlerini çöz (user-defined variables from variable_values)
     // code → { month → value }
     const varValueMap: Record<string, Record<number, number>> = {};
+    type ScopeMatch = "meter" | "subUnit" | "unit" | "company";
+    type RegressionVariableValue = {
+      value: number;
+      periodStart: string;
+      unitId: number | null;
+      subUnitId: number | null;
+      meterId: number | null;
+    };
+    const variableMatchDebug: Array<{
+      selectedVariableId: number;
+      selectedVariableName: string | null;
+      analysisYear: number;
+      consumptionMonths: number[];
+      matchedVariableMonths: number[];
+      missingVariableMonths: number[];
+      scopeMatchCounts: Record<ScopeMatch, number>;
+    }> = [];
+
+    const getPeriodMonth = (periodStart: string): number | null => {
+      const parts = periodStart.split("-");
+      if (parts.length < 2 || parseInt(parts[0], 10) !== year) return null;
+      const month = parseInt(parts[1], 10);
+      return month >= 1 && month <= 12 ? month : null;
+    };
+
+    const pickVariableValueForMonth = (
+      values: RegressionVariableValue[],
+      month: number
+    ): { value: number; scope: ScopeMatch } | null => {
+      const monthValues = values.filter(v => getPeriodMonth(v.periodStart) === month);
+      const meterMatch = monthValues.find(v => v.meterId != null && matchedMeterIdSet.has(v.meterId));
+      if (meterMatch) return { value: meterMatch.value, scope: "meter" };
+
+      const subUnitMatch = monthValues.find(v =>
+        v.meterId == null &&
+        v.subUnitId != null &&
+        matchedSubUnitIdSet.has(v.subUnitId)
+      );
+      if (subUnitMatch) return { value: subUnitMatch.value, scope: "subUnit" };
+
+      const unitMatch = monthValues.find(v =>
+        v.meterId == null &&
+        v.subUnitId == null &&
+        v.unitId != null &&
+        matchedUnitIdSet.has(v.unitId)
+      );
+      if (unitMatch) return { value: unitMatch.value, scope: "unit" };
+
+      const companyMatch = monthValues.find(v =>
+        v.meterId == null &&
+        v.subUnitId == null &&
+        v.unitId == null
+      );
+      return companyMatch ? { value: companyMatch.value, scope: "company" } : null;
+    };
+
+    const applyScopedVariableValues = (
+      code: string,
+      selectedVariableId: number,
+      selectedVariableName: string | null,
+      values: RegressionVariableValue[]
+    ) => {
+      const consumptionMonths = Object.keys(monthAgg).map(Number).sort((a, b) => a - b);
+      const scopeMatchCounts: Record<ScopeMatch, number> = { meter: 0, subUnit: 0, unit: 0, company: 0 };
+      varValueMap[code] = {};
+
+      for (const month of consumptionMonths) {
+        const match = pickVariableValueForMonth(values, month);
+        if (match) {
+          varValueMap[code][month] = match.value;
+          scopeMatchCounts[match.scope]++;
+        }
+      }
+
+      const matchedVariableMonths = Object.keys(varValueMap[code]).map(Number).sort((a, b) => a - b);
+      const matchedMonthSet = new Set(matchedVariableMonths);
+      variableMatchDebug.push({
+        selectedVariableId,
+        selectedVariableName,
+        analysisYear: year,
+        consumptionMonths,
+        matchedVariableMonths,
+        missingVariableMonths: consumptionMonths.filter(month => !matchedMonthSet.has(month)),
+        scopeMatchCounts,
+      });
+    };
 
     for (const code of selectedVariables) {
       if (code === "HDD") {
@@ -613,46 +722,50 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         }
       } else if (code.startsWith("user-")) {
         const varId = parseInt(code.replace("user-", ""));
+        const [selectedVariable] = await db
+          .select({ name: variablesTable.name })
+          .from(variablesTable)
+          .where(and(
+            eq(variablesTable.companyId, sessionCompanyId),
+            eq(variablesTable.id, varId),
+          ));
         const vvals = await db
-          .select({ value: variableValuesTable.value, periodStart: variableValuesTable.periodStart })
+          .select({
+            value: variableValuesTable.value,
+            periodStart: variableValuesTable.periodStart,
+            unitId: variableValuesTable.unitId,
+            subUnitId: variableValuesTable.subUnitId,
+            meterId: variableValuesTable.meterId,
+          })
           .from(variableValuesTable)
           .where(and(
             eq(variableValuesTable.companyId, sessionCompanyId),
             eq(variableValuesTable.variableId, varId),
-            ...(assessmentUnitId ? [eq(variableValuesTable.unitId, assessmentUnitId)] : []),
-          ));
-        varValueMap[code] = {};
-        for (const vv of vvals) {
-          // period_start örn. "2024-03" veya "2024-03-01"
-          const parts = vv.periodStart.split("-");
-          if (parts.length >= 2 && parseInt(parts[0]) === year) {
-            const mn = parseInt(parts[1]);
-            if (mn >= 1 && mn <= 12) varValueMap[code][mn] = vv.value;
-          }
-        }
+          ))
+          .orderBy(asc(variableValuesTable.periodStart), desc(variableValuesTable.id));
+        applyScopedVariableValues(code, varId, selectedVariable?.name ?? null, vvals);
       } else {
         // Sistem kodu (PRODUCTION vb.) — variable_values tablosundan çek
         const sysVars = await db
-          .select({ id: variablesTable.id })
+          .select({ id: variablesTable.id, name: variablesTable.name })
           .from(variablesTable)
           .where(and(eq(variablesTable.companyId, sessionCompanyId), eq(variablesTable.code ?? variablesTable.name, code)));
         if (sysVars.length > 0) {
           const vvals = await db
-            .select({ value: variableValuesTable.value, periodStart: variableValuesTable.periodStart })
+            .select({
+              value: variableValuesTable.value,
+              periodStart: variableValuesTable.periodStart,
+              unitId: variableValuesTable.unitId,
+              subUnitId: variableValuesTable.subUnitId,
+              meterId: variableValuesTable.meterId,
+            })
             .from(variableValuesTable)
             .where(and(
               eq(variableValuesTable.companyId, sessionCompanyId),
               eq(variableValuesTable.variableId, sysVars[0].id),
-              ...(assessmentUnitId ? [eq(variableValuesTable.unitId, assessmentUnitId)] : []),
-            ));
-          varValueMap[code] = {};
-          for (const vv of vvals) {
-            const parts = vv.periodStart.split("-");
-            if (parts.length >= 2 && parseInt(parts[0]) === year) {
-              const mn = parseInt(parts[1]);
-              if (mn >= 1 && mn <= 12) varValueMap[code][mn] = vv.value;
-            }
-          }
+            ))
+            .orderBy(asc(variableValuesTable.periodStart), desc(variableValuesTable.id));
+          applyScopedVariableValues(code, sysVars[0].id, sysVars[0].name ?? null, vvals);
         } else {
           varValueMap[code] = {};
         }
@@ -680,10 +793,16 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
     }
 
     const sampleSize = completeMonths.length;
+    if (process.env.NODE_ENV === "development") {
+      for (const debugInfo of variableMatchDebug) {
+        req.log.debug({ ...debugInfo, sampleSize }, "Regression variable value matching");
+      }
+    }
+
     if (sampleSize < 6) {
       const hasMissVars = Object.values(missingVarByMonth).some(v => v.length > 0);
       const msg = hasMissVars
-        ? `Regresyon için en az 6 aylık tam veri gerekli. Bazı aylarda değişken değeri eksik. Önce Değişken Değerleri ekranından değerleri girin.`
+        ? `Seçilen değişken için tüketim aylarıyla eşleşen en az 6 aylık veri bulunamadı. Değişken değerlerinin kapsamı, yılı ve ayları kontrol edilmelidir.`
         : `Regresyon için en az 6 aylık tüketim verisi gerekli. Mevcut: ${sampleSize} ay.`;
       res.json({
         error: msg,

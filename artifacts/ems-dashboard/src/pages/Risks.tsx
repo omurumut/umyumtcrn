@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUnit } from "@/context/UnitContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -141,13 +141,26 @@ function formatDate(dateStr: string): string {
   }
 }
 
+function parseDeepLinkInt(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export default function Risks() {
-  const { unitId: activeUnitId } = useUnit();
+  const { unitId: activeUnitId, setUnitId } = useUnit();
   const { companyId } = useCompany();
   const { token, user } = useAuth();
   const role = user?.role;
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [deepLinkParams] = useState(() => new URLSearchParams(window.location.search));
+  const deepLinkRiskId = parseDeepLinkInt(deepLinkParams.get("riskId"));
+  const deepLinkUnitId = parseDeepLinkInt(deepLinkParams.get("unitId"));
+  const deepLinkType = deepLinkParams.get("type");
+  const riskRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const deepLinkAppliedRef = useRef(false);
+  const isCompanyAdmin = role === "admin" || role === "kontrol_admin";
   const isAdmin = role === "admin" || role === "superadmin";
 
   const unitParam = activeUnitId !== null ? activeUnitId : undefined;
@@ -177,6 +190,20 @@ export default function Risks() {
   const [editingNoteContent, setEditingNoteContent] = useState("");
   const [savingNoteId, setSavingNoteId] = useState<number | null>(null);
 
+  useEffect(() => {
+    if (deepLinkAppliedRef.current || !user) return;
+
+    if (deepLinkType === "risk") {
+      setFilterType("risk");
+    }
+
+    if (isCompanyAdmin && deepLinkUnitId !== null) {
+      setUnitId(deepLinkUnitId);
+    }
+
+    deepLinkAppliedRef.current = true;
+  }, [deepLinkType, deepLinkUnitId, isCompanyAdmin, setUnitId, user]);
+
   const editingRisk = editId !== null ? (risks as any[]).find((r: any) => r.id === editId) : null;
   const editingNotes: RiskNote[] = editingRisk?.notes ?? [];
 
@@ -191,6 +218,19 @@ export default function Risks() {
     && (filterStatus === "all" || r.status === filterStatus)
   );
   const displayItems = [...riskFiltered, ...firsatFiltered];
+
+  useEffect(() => {
+    if (deepLinkRiskId === null || isLoading) return;
+
+    const node = riskRefs.current[deepLinkRiskId];
+    if (!node) return;
+
+    const scrollTimer = window.setTimeout(() => {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+
+    return () => window.clearTimeout(scrollTimer);
+  }, [deepLinkRiskId, displayItems.length, isLoading]);
 
   function openCreate(defaultType: string = "risk") {
     setEditId(null);
@@ -411,8 +451,16 @@ export default function Risks() {
             const grade = resolveGrade(item.score, cfg.grades);
             const isRisk = item.type === "risk";
             const noteCount = (item.notes ?? []).length;
+            const isDeepLinkedRisk = deepLinkRiskId === item.id;
             return (
-              <Card key={item.id} className="overflow-hidden">
+              <div
+                key={item.id}
+                ref={(node) => {
+                  riskRefs.current[item.id] = node;
+                }}
+                className={`rounded-xl transition-colors ${isDeepLinkedRisk ? "ring-2 ring-red-400/70 bg-red-500/5" : ""}`}
+              >
+              <Card className="overflow-hidden">
                 <div className="flex">
                   <div className="w-1.5 shrink-0">
                     <div className={`h-full w-1.5 ${isRisk ? "bg-red-500" : "bg-emerald-500"}`} />
@@ -465,6 +513,7 @@ export default function Risks() {
                   </div>
                 </div>
               </Card>
+              </div>
             );
           })}
         </div>

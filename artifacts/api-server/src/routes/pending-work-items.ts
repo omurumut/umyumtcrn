@@ -3,6 +3,7 @@ import {
   db,
   consumptionTable,
   energyActionPlansTable,
+  energyBaselineVariablesTable,
   energyBaselinesTable,
   energyPerformanceResultsTable,
   energyReviewRecordsTable,
@@ -13,6 +14,8 @@ import {
   seuAssessmentItemsTable,
   seuAssessmentsTable,
   unitsTable,
+  variablesTable,
+  variableValuesTable,
   vapProjectsTable,
 } from "@workspace/db";
 import { and, desc, eq, gte, inArray, isNull, lte, ne, type SQL } from "drizzle-orm";
@@ -102,8 +105,64 @@ interface HighRiskWithoutActionCandidate {
   unitName: string | null;
 }
 
+interface BaselineVariableCheckCandidate {
+  id: number;
+  unitId: number | null;
+  unitName: string | null;
+  seuAssessmentItemId: number | null;
+  seuName: string;
+  meterId: number | null;
+  energyUseGroupId: number | null;
+  subUnitId: number | null;
+}
+
+interface BaselineScopeMeter {
+  id: number;
+  unitId: number | null;
+  subUnitId: number | null;
+}
+
+interface BaselineVariableRow {
+  baselineId: number;
+  variableName: string;
+  variableCode: string | null;
+}
+
+interface VariableDefinitionForCheck {
+  id: number;
+  name: string;
+  scopeType: string;
+}
+
+interface VariableValueScope {
+  unitId: number | null;
+  subUnitId: number | null;
+  meterId: number | null;
+}
+
+interface MissingVariableSummary {
+  variableId: number;
+  variableName: string;
+  months: number[];
+}
+
 const ACTION_PLAN_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
 const VAP_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
+const VARIABLE_CODES_IGNORED_IN_PHASE_2F = new Set(["HDD", "CDD"]);
+const MONTH_LABELS: Record<number, string> = {
+  1: "Ocak",
+  2: "Şubat",
+  3: "Mart",
+  4: "Nisan",
+  5: "Mayıs",
+  6: "Haziran",
+  7: "Temmuz",
+  8: "Ağustos",
+  9: "Eylül",
+  10: "Ekim",
+  11: "Kasım",
+  12: "Aralık",
+};
 const severityOrder: Record<PendingWorkItemSeverity, number> = {
   critical: 0,
   warning: 1,
@@ -145,6 +204,41 @@ function getPreviousMonthPeriod(now = new Date()) {
 
 function formatPeriod(year: number, month: number): string {
   return `${year}/${`${month}`.padStart(2, "0")}`;
+}
+
+function getMonitoringMonthLimit(year: number, now = new Date()): number {
+  const currentYear = now.getFullYear();
+  if (year < currentYear) return 12;
+  if (year === currentYear) return now.getMonth() + 1;
+  return 0;
+}
+
+function parseMonthFromPeriodStart(value: string): number | null {
+  const parts = value.split("-");
+  if (parts.length < 2) return null;
+  const month = Number.parseInt(parts[1], 10);
+  return month >= 1 && month <= 12 ? month : null;
+}
+
+function parseUserVariableId(variableCode: string | null): number | null {
+  if (!variableCode?.startsWith("user-")) return null;
+  const variableId = Number.parseInt(variableCode.replace("user-", ""), 10);
+  return Number.isFinite(variableId) ? variableId : null;
+}
+
+function getOnlyValue(values: Array<number | null>): number | null {
+  const uniqueValues = Array.from(new Set(values.filter((value): value is number => value !== null)));
+  return uniqueValues.length === 1 ? uniqueValues[0] : null;
+}
+
+function buildVariableValueKey(variableId: number, month: number, scope: VariableValueScope): string {
+  return [
+    variableId,
+    month,
+    scope.unitId ?? "none",
+    scope.subUnitId ?? "none",
+    scope.meterId ?? "none",
+  ].join(":");
 }
 
 function isIncompleteActionPlan(row: {
@@ -329,6 +423,309 @@ async function appendSeuEnergyPerformanceWorkItems(
         actionUrl: `/performans-gostergeleri?seuItemId=${seuItem.id}&baselineId=${baseline.id}&year=${year}&tab=monitoring`,
       });
     }
+  }
+}
+
+async function getActiveBaselinesForVariableCheck(
+  companyId: number,
+  unitId: number | undefined,
+): Promise<BaselineVariableCheckCandidate[]> {
+  const conditions: SQL[] = [
+    eq(energyBaselinesTable.companyId, companyId),
+    eq(energyBaselinesTable.status, "active"),
+    eq(energyBaselinesTable.isValid, true),
+  ];
+
+  if (unitId !== undefined) {
+    conditions.push(eq(energyBaselinesTable.unitId, unitId));
+  }
+
+  return db
+    .select({
+      id: energyBaselinesTable.id,
+      unitId: energyBaselinesTable.unitId,
+      unitName: unitsTable.name,
+      seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
+      seuName: seuAssessmentItemsTable.name,
+      meterId: seuAssessmentItemsTable.meterId,
+      energyUseGroupId: seuAssessmentItemsTable.energyUseGroupId,
+      subUnitId: seuAssessmentItemsTable.subUnitId,
+    })
+    .from(energyBaselinesTable)
+    .innerJoin(seuAssessmentItemsTable, eq(energyBaselinesTable.seuAssessmentItemId, seuAssessmentItemsTable.id))
+    .leftJoin(unitsTable, eq(energyBaselinesTable.unitId, unitsTable.id))
+    .where(buildWhere(conditions));
+}
+
+async function getMetersForBaselineVariableCheck(
+  companyId: number,
+  baseline: BaselineVariableCheckCandidate,
+): Promise<BaselineScopeMeter[]> {
+  const conditions: SQL[] = [eq(metersTable.companyId, companyId)];
+
+  if (baseline.meterId !== null) {
+    conditions.push(eq(metersTable.id, baseline.meterId));
+  } else if (baseline.energyUseGroupId !== null) {
+    conditions.push(eq(metersTable.energyUseGroupId, baseline.energyUseGroupId));
+    if (baseline.unitId !== null) conditions.push(eq(metersTable.unitId, baseline.unitId));
+  } else if (baseline.subUnitId !== null) {
+    conditions.push(eq(metersTable.subUnitId, baseline.subUnitId));
+  } else if (baseline.unitId !== null) {
+    conditions.push(eq(metersTable.unitId, baseline.unitId));
+  } else {
+    return [];
+  }
+
+  return db
+    .select({
+      id: metersTable.id,
+      unitId: metersTable.unitId,
+      subUnitId: metersTable.subUnitId,
+    })
+    .from(metersTable)
+    .where(buildWhere(conditions));
+}
+
+async function getConsumptionMonthsForMeters(
+  companyId: number,
+  meterIds: number[],
+  year: number,
+  monthLimit: number,
+): Promise<Set<number>> {
+  const months = new Set<number>();
+  if (meterIds.length === 0 || monthLimit === 0) return months;
+
+  const consumptionRows = await db
+    .select({ month: consumptionTable.month })
+    .from(consumptionTable)
+    .where(and(
+      eq(consumptionTable.companyId, companyId),
+      eq(consumptionTable.year, year),
+      inArray(consumptionTable.meterId, meterIds),
+      lte(consumptionTable.month, monthLimit),
+    ));
+
+  for (const row of consumptionRows) {
+    months.add(row.month);
+  }
+
+  return months;
+}
+
+function resolveVariableValueScopes(
+  variable: VariableDefinitionForCheck,
+  baseline: BaselineVariableCheckCandidate,
+  meters: BaselineScopeMeter[],
+): VariableValueScope[] {
+  if (variable.scopeType === "company") {
+    return [{ unitId: null, subUnitId: null, meterId: null }];
+  }
+
+  if (variable.scopeType === "unit") {
+    return baseline.unitId === null ? [] : [{ unitId: baseline.unitId, subUnitId: null, meterId: null }];
+  }
+
+  if (variable.scopeType === "sub_unit") {
+    const subUnitId = baseline.subUnitId ?? getOnlyValue(meters.map((meter) => meter.subUnitId));
+    const unitId = baseline.unitId ?? getOnlyValue(meters.map((meter) => meter.unitId));
+    if (unitId === null || subUnitId === null) return [];
+    return [{ unitId, subUnitId, meterId: null }];
+  }
+
+  if (variable.scopeType === "meter") {
+    const meter = baseline.meterId !== null
+      ? meters.find((candidate) => candidate.id === baseline.meterId)
+      : meters.length === 1
+        ? meters[0]
+        : undefined;
+    if (!meter || meter.unitId === null || meter.subUnitId === null) return [];
+    return [{ unitId: meter.unitId, subUnitId: meter.subUnitId, meterId: meter.id }];
+  }
+
+  return [];
+}
+
+function formatMissingVariableDescription(missingSummaries: MissingVariableSummary[]): string {
+  const sortedSummaries = missingSummaries
+    .map((summary) => ({
+      ...summary,
+      months: [...summary.months].sort((a, b) => a - b),
+    }))
+    .sort((a, b) => a.variableName.localeCompare(b.variableName, "tr"));
+
+  const visibleSummaries = sortedSummaries.slice(0, 4);
+  const hiddenMissingCount = sortedSummaries
+    .slice(4)
+    .reduce((total, summary) => total + summary.months.length, 0);
+
+  const fragments = visibleSummaries.map((summary) => {
+    const visibleMonths = summary.months.slice(0, 4).map((month) => MONTH_LABELS[month] ?? String(month));
+    const hiddenMonths = summary.months.length - visibleMonths.length;
+    const monthLabel = hiddenMonths > 0
+      ? `${visibleMonths.join(", ")} ve ${hiddenMonths} ay daha`
+      : visibleMonths.join(", ");
+    return `${summary.variableName} (${monthLabel})`;
+  });
+
+  if (hiddenMissingCount > 0) {
+    fragments.push(`ve ${hiddenMissingCount} eksik değer daha`);
+  }
+
+  return fragments.join("; ");
+}
+
+async function appendMissingBaselineVariableValueWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+  selectedYear: number,
+  today: Date,
+) {
+  const monthLimit = getMonitoringMonthLimit(selectedYear, today);
+  if (monthLimit === 0) return;
+
+  const baselines = await getActiveBaselinesForVariableCheck(companyId, unitId);
+  if (baselines.length === 0) return;
+
+  const baselineIds = baselines.map((baseline) => baseline.id);
+  const baselineVariables = await db
+    .select({
+      baselineId: energyBaselineVariablesTable.baselineId,
+      variableName: energyBaselineVariablesTable.variableName,
+      variableCode: energyBaselineVariablesTable.variableCode,
+    })
+    .from(energyBaselineVariablesTable)
+    .where(inArray(energyBaselineVariablesTable.baselineId, baselineIds));
+
+  const variableIds = new Set<number>();
+  const variableRowsByBaseline = new Map<number, BaselineVariableRow[]>();
+
+  for (const variableRow of baselineVariables) {
+    const variableCode = variableRow.variableCode ?? variableRow.variableName;
+    if (VARIABLE_CODES_IGNORED_IN_PHASE_2F.has(variableCode)) continue;
+
+    const variableId = parseUserVariableId(variableCode);
+    if (variableId === null) continue;
+
+    const rows = variableRowsByBaseline.get(variableRow.baselineId) ?? [];
+    rows.push(variableRow);
+    variableRowsByBaseline.set(variableRow.baselineId, rows);
+    variableIds.add(variableId);
+  }
+
+  if (variableIds.size === 0) return;
+
+  const variables = await db
+    .select({
+      id: variablesTable.id,
+      name: variablesTable.name,
+      scopeType: variablesTable.scopeType,
+    })
+    .from(variablesTable)
+    .where(and(
+      eq(variablesTable.companyId, companyId),
+      eq(variablesTable.isActive, true),
+      inArray(variablesTable.id, Array.from(variableIds)),
+    ));
+
+  const variableById = new Map<number, VariableDefinitionForCheck>(
+    variables.map((variable) => [variable.id, variable]),
+  );
+  if (variableById.size === 0) return;
+
+  const variableValues = await db
+    .select({
+      variableId: variableValuesTable.variableId,
+      unitId: variableValuesTable.unitId,
+      subUnitId: variableValuesTable.subUnitId,
+      meterId: variableValuesTable.meterId,
+      periodStart: variableValuesTable.periodStart,
+      value: variableValuesTable.value,
+    })
+    .from(variableValuesTable)
+    .where(and(
+      eq(variableValuesTable.companyId, companyId),
+      eq(variableValuesTable.periodType, "monthly"),
+      inArray(variableValuesTable.variableId, Array.from(variableById.keys())),
+      gte(variableValuesTable.periodStart, `${selectedYear}-01`),
+      lte(variableValuesTable.periodStart, `${selectedYear}-12-31`),
+    ));
+
+  const existingValueKeys = new Set<string>();
+  for (const variableValue of variableValues) {
+    if (variableValue.value === null || variableValue.value === undefined) continue;
+    const month = parseMonthFromPeriodStart(variableValue.periodStart);
+    if (month === null || month > monthLimit) continue;
+
+    existingValueKeys.add(buildVariableValueKey(variableValue.variableId, month, {
+      unitId: variableValue.unitId,
+      subUnitId: variableValue.subUnitId,
+      meterId: variableValue.meterId,
+    }));
+  }
+
+  for (const baseline of baselines) {
+    const variableRows = variableRowsByBaseline.get(baseline.id) ?? [];
+    if (variableRows.length === 0) continue;
+
+    const meters = await getMetersForBaselineVariableCheck(companyId, baseline);
+    const meterIds = meters.map((meter) => meter.id);
+    const consumptionMonths = await getConsumptionMonthsForMeters(companyId, meterIds, selectedYear, monthLimit);
+    if (consumptionMonths.size === 0) continue;
+
+    const missingByVariable = new Map<number, MissingVariableSummary>();
+
+    for (const variableRow of variableRows) {
+      const variableId = parseUserVariableId(variableRow.variableCode ?? variableRow.variableName);
+      if (variableId === null) continue;
+
+      const variable = variableById.get(variableId);
+      if (!variable) continue;
+
+      const scopes = resolveVariableValueScopes(variable, baseline, meters);
+      if (scopes.length === 0) continue;
+
+      for (const month of consumptionMonths) {
+        const hasValue = scopes.every((scope) => existingValueKeys.has(buildVariableValueKey(variableId, month, scope)));
+        if (hasValue) continue;
+
+        const summary = missingByVariable.get(variableId) ?? {
+          variableId,
+          variableName: variable.name,
+          months: [],
+        };
+        summary.months.push(month);
+        missingByVariable.set(variableId, summary);
+      }
+    }
+
+    const missingSummaries = Array.from(missingByVariable.values());
+    if (missingSummaries.length === 0) continue;
+
+    const firstMissingVariableId = missingSummaries[0].variableId;
+    const params = new URLSearchParams({
+      tab: "values",
+      year: String(selectedYear),
+      variableId: String(firstMissingVariableId),
+    });
+    if (baseline.unitId !== null) {
+      params.set("unitId", String(baseline.unitId));
+    }
+
+    const unitLabel = baseline.unitName ?? "Şirket geneli";
+    items.push({
+      id: `energy_baseline_missing_variable_values:${baseline.id}:${selectedYear}`,
+      type: "energy_baseline_missing_variable_values",
+      severity: "warning",
+      title: `${selectedYear} yılı EnPG değişken verisi eksik: ${baseline.seuName}`,
+      description: `${unitLabel} birimindeki aktif EnRÇ modeli için eksik değişken değerleri: ${formatMissingVariableDescription(missingSummaries)}.`,
+      sourceModule: "EnRÇ / EnPG İzleme",
+      sourceRecordId: baseline.id,
+      unitId: baseline.unitId,
+      unitName: baseline.unitName,
+      dueDate: null,
+      actionUrl: `/degiskenler?${params.toString()}`,
+    });
   }
 }
 
@@ -882,6 +1279,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     }
 
     await appendSeuEnergyPerformanceWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
+    await appendMissingBaselineVariableValueWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear, today);
     await appendEnergyTargetWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendVapProjectWorkItems(items, sessionCompanyId, effectiveUnitId, todayDateOnly);
     await appendEnergyReviewRecordWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);

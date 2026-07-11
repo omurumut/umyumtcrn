@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/context/AuthContext";
+import { useYear } from "@/context/YearContext";
 import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -108,6 +109,15 @@ interface VariableValue {
 interface SubUnit { id: number; name: string; }
 interface Meter { id: number; name: string; city: string; }
 
+type VariableTabValue = "variables" | "values";
+
+interface ValuesDeepLinkSelection {
+  tab: VariableTabValue | null;
+  year?: number;
+  unitId?: number;
+  variableId?: number;
+}
+
 const EMPTY_VAR_FORM = {
   name: "", code: "", category: "operational", unitLabel: "", variableType: "numeric",
   sourceType: "operation_manual", scopeType: "company", description: "", isActive: true,
@@ -118,6 +128,21 @@ const EMPTY_VAL_FORM = {
   periodStart: "", periodEnd: "", periodType: "monthly",
   value: "", source: "", dataQuality: "good",
 };
+
+function parsePositiveIntParam(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseYearParam(value: string | null): number | undefined {
+  const parsed = parsePositiveIntParam(value);
+  return parsed !== undefined && parsed >= 2000 && parsed <= 2100 ? parsed : undefined;
+}
+
+function isAdminLike(role: string | undefined): boolean {
+  return role === "admin" || role === "kontrol_admin";
+}
 
 // ─── Variables Tab ────────────────────────────────────────────────────────────
 
@@ -370,16 +395,23 @@ function VariablesTab() {
 
 // ─── Values Tab ───────────────────────────────────────────────────────────────
 
-function ValuesTab() {
-  const { token } = useAuth();
+function ValuesTab({ deepLink }: { deepLink: ValuesDeepLinkSelection }) {
+  const { token, user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const canUseUnitFilter = isAdminLike(user?.role);
 
   const [open, setOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY_VAL_FORM });
   const [filterVar, setFilterVar] = useState("all");
+  const [filterYear, setFilterYear] = useState(deepLink.year ? String(deepLink.year) : "");
+  const [filterUnitId, setFilterUnitId] = useState("all");
+  const [highlightedVariableId, setHighlightedVariableId] = useState<number | null>(deepLink.variableId ?? null);
+  const [deepLinkApplied, setDeepLinkApplied] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const highlightedRowRef = useRef<HTMLTableRowElement | null>(null);
 
   const { data: variables } = useQuery<Variable[]>({
     queryKey: ["variables"],
@@ -407,12 +439,13 @@ function ValuesTab() {
     enabled: !!token && (!!form.unitId || !!form.subUnitId),
   });
 
-  const valuesKey = ["variable-values", filterVar];
+  const valuesKey = ["variable-values", filterVar, canUseUnitFilter ? filterUnitId : "all"];
   const { data: values, isLoading } = useQuery<VariableValue[]>({
     queryKey: valuesKey,
     queryFn: () => {
       const p = new URLSearchParams();
       if (filterVar !== "all") p.set("variableId", filterVar);
+      if (canUseUnitFilter && filterUnitId !== "all") p.set("unitId", filterUnitId);
       return apiFetch(token, `/api/variable-values?${p}`);
     },
     enabled: !!token,
@@ -456,8 +489,60 @@ function ValuesTab() {
     (scopeType === "sub_unit" && (!form.unitId || !form.subUnitId)) ||
     (scopeType === "meter"    && (!form.unitId || !form.subUnitId || !form.meterId));
 
+  useEffect(() => {
+    if (deepLinkApplied) return;
+    if (deepLink.variableId !== undefined && variables === undefined) return;
+    if (canUseUnitFilter && deepLink.unitId !== undefined && allUnits === undefined) return;
+
+    if (deepLink.year !== undefined) {
+      setFilterYear(String(deepLink.year));
+    }
+
+    const unitExists = deepLink.unitId !== undefined
+      && canUseUnitFilter
+      && (allUnits ?? []).some((unit: any) => unit.id === deepLink.unitId);
+    if (unitExists) {
+      setFilterUnitId(String(deepLink.unitId));
+    }
+
+    if (deepLink.variableId !== undefined) {
+      const variable = (variables ?? []).find((candidate) => candidate.id === deepLink.variableId);
+      if (variable?.isActive && !variable.isSystemVariable) {
+        const variableId = String(variable.id);
+        setFilterVar(variableId);
+        setHighlightedVariableId(variable.id);
+        setForm((current) => ({
+          ...current,
+          variableId,
+          unitId: unitExists && variable.scopeType !== "company" ? String(deepLink.unitId) : current.unitId,
+        }));
+      } else {
+        setHighlightedVariableId(null);
+      }
+    }
+
+    setDeepLinkApplied(true);
+  }, [allUnits, canUseUnitFilter, deepLink, deepLinkApplied, variables]);
+
+  const activeYearFilter = /^\d{4}$/.test(filterYear.trim()) ? filterYear.trim() : "";
+  const visibleValues = useMemo(
+    () => (values ?? []).filter((value) => {
+      if (activeYearFilter && !value.periodStart.startsWith(`${activeYearFilter}-`)) return false;
+      return true;
+    }),
+    [activeYearFilter, values],
+  );
+
+  useEffect(() => {
+    if (!deepLinkApplied || highlightedVariableId === null) return;
+    const target = highlightedRowRef.current ?? toolbarRef.current;
+    window.setTimeout(() => {
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 0);
+  }, [deepLinkApplied, highlightedVariableId, visibleValues.length]);
+
   function handleExportExcel() {
-    const rows = (values ?? []).map(v => ({
+    const rows = visibleValues.map(v => ({
       "Değişken": v.variableName ?? "",
       "Kod": v.variableCode ?? "",
       "Birim": v.unitName ?? "Şirket",
@@ -478,7 +563,7 @@ function ValuesTab() {
   }
 
   function handleExportCsv() {
-    const rows = (values ?? []).map(v => ({
+    const rows = visibleValues.map(v => ({
       "Değişken": v.variableName ?? "",
       "Kod": v.variableCode ?? "",
       "Birim": v.unitName ?? "Şirket",
@@ -504,7 +589,19 @@ function ValuesTab() {
     URL.revokeObjectURL(url);
   }
 
-  const openAdd = () => { setForm({ ...EMPTY_VAL_FORM }); setEditingId(null); setOpen(true); };
+  const openAdd = () => {
+    const nextForm = { ...EMPTY_VAL_FORM };
+    if (filterVar !== "all") {
+      nextForm.variableId = filterVar;
+      const variable = (variables ?? []).find((candidate) => String(candidate.id) === filterVar);
+      if (canUseUnitFilter && filterUnitId !== "all" && variable?.scopeType !== "company") {
+        nextForm.unitId = filterUnitId;
+      }
+    }
+    setForm(nextForm);
+    setEditingId(null);
+    setOpen(true);
+  };
   const openEdit = (v: VariableValue) => {
     setForm({
       variableId: String(v.variableId), unitId: String(v.unitId ?? ""),
@@ -534,10 +631,30 @@ function ValuesTab() {
             {(variables ?? []).map(v => <SelectItem key={v.id} value={String(v.id)}>{v.name}</SelectItem>)}
           </SelectContent>
         </Select>
+        <span ref={toolbarRef} className="sr-only" />
+        <Input
+          className="w-28 bg-background"
+          inputMode="numeric"
+          maxLength={4}
+          placeholder="Yıl"
+          value={filterYear}
+          onChange={(event) => setFilterYear(event.target.value.replace(/\D/g, "").slice(0, 4))}
+        />
+        {canUseUnitFilter && (
+          <Select value={filterUnitId} onValueChange={setFilterUnitId}>
+            <SelectTrigger className="w-48 bg-background"><SelectValue placeholder="Birim" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tüm Birimler</SelectItem>
+              {(allUnits ?? []).map((unit: any) => (
+                <SelectItem key={unit.id} value={String(unit.id)}>{unit.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <div className="ml-auto flex gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2" disabled={(values ?? []).length === 0}>
+              <Button variant="outline" size="sm" className="gap-2" disabled={visibleValues.length === 0}>
                 <Download className="h-4 w-4" /> Dışa Aktar
               </Button>
             </DropdownMenuTrigger>
@@ -583,13 +700,19 @@ function ValuesTab() {
                     ))}
                   </tr>
                 ))}
-                {!isLoading && (values ?? []).length === 0 && (
+                {!isLoading && visibleValues.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">Değer bulunamadı</td>
                   </tr>
                 )}
-                {(values ?? []).map(v => (
-                  <tr key={v.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
+                {visibleValues.map(v => {
+                  const isHighlighted = highlightedVariableId === v.variableId;
+                  return (
+                  <tr
+                    key={v.id}
+                    ref={isHighlighted ? highlightedRowRef : undefined}
+                    className={`border-b border-border/50 transition-colors ${isHighlighted ? "bg-teal-950/30 ring-1 ring-inset ring-teal-500/60" : "hover:bg-muted/30"}`}
+                  >
                     <td className="px-4 py-3">
                       <div className="font-medium">{v.variableName}</div>
                       {v.variableCode && <div className="text-xs text-muted-foreground">{v.variableCode}</div>}
@@ -625,7 +748,8 @@ function ValuesTab() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -786,6 +910,25 @@ function ValuesTab() {
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Variables() {
+  const { setYear } = useYear();
+  const [deepLink] = useState<ValuesDeepLinkSelection>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab") === "values" ? "values" : null;
+    return {
+      tab,
+      year: parseYearParam(params.get("year")),
+      unitId: parsePositiveIntParam(params.get("unitId")),
+      variableId: parsePositiveIntParam(params.get("variableId")),
+    };
+  });
+  const [activeTab, setActiveTab] = useState<VariableTabValue>(deepLink.tab === "values" ? "values" : "variables");
+
+  useEffect(() => {
+    if (deepLink.year !== undefined) {
+      setYear(deepLink.year);
+    }
+  }, [deepLink.year, setYear]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
@@ -805,7 +948,7 @@ export default function Variables() {
         </span>
       </div>
 
-      <Tabs defaultValue="variables">
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as VariableTabValue)}>
         <TabsList className="bg-muted/50">
           <TabsTrigger value="variables" className="gap-2">
             <Variable className="h-4 w-4" /> Değişkenler
@@ -819,7 +962,7 @@ export default function Variables() {
           <VariablesTab />
         </TabsContent>
         <TabsContent value="values" className="mt-4">
-          <ValuesTab />
+          <ValuesTab deepLink={deepLink} />
         </TabsContent>
       </Tabs>
     </div>
