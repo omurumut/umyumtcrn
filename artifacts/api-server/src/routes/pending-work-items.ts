@@ -9,12 +9,13 @@ import {
   energyTargetProgressTable,
   energyTargetsTable,
   metersTable,
+  risksTable,
   seuAssessmentItemsTable,
   seuAssessmentsTable,
   unitsTable,
   vapProjectsTable,
 } from "@workspace/db";
-import { and, desc, eq, inArray, isNull, lte, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, ne, type SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -90,6 +91,15 @@ interface EnergyReviewRecordSummary {
   id: number;
   unitId: number | null;
   status: string;
+}
+
+interface HighRiskWithoutActionCandidate {
+  id: number;
+  title: string;
+  responseType: string;
+  mitigationPlan: string | null;
+  unitId: number | null;
+  unitName: string | null;
 }
 
 const ACTION_PLAN_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
@@ -539,6 +549,72 @@ async function appendVapProjectWorkItems(
   }
 }
 
+async function getHighRiskWithoutActionCandidates(
+  companyId: number,
+  unitId: number | undefined,
+): Promise<HighRiskWithoutActionCandidate[]> {
+  const conditions: SQL[] = [
+    eq(risksTable.companyId, companyId),
+    eq(risksTable.type, "risk"),
+    ne(risksTable.status, "kapali"),
+    gte(risksTable.score, 15),
+  ];
+
+  if (unitId !== undefined) {
+    conditions.push(eq(risksTable.unitId, unitId));
+  }
+
+  return db
+    .select({
+      id: risksTable.id,
+      title: risksTable.title,
+      responseType: risksTable.responseType,
+      mitigationPlan: risksTable.mitigationPlan,
+      unitId: risksTable.unitId,
+      unitName: unitsTable.name,
+    })
+    .from(risksTable)
+    .leftJoin(unitsTable, eq(risksTable.unitId, unitsTable.id))
+    .where(buildWhere(conditions));
+}
+
+async function appendHighRiskWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+) {
+  const risks = await getHighRiskWithoutActionCandidates(companyId, unitId);
+  if (risks.length === 0) return;
+
+  for (const risk of risks) {
+    const hasActionPlan = risk.responseType === "aksiyon" && !!risk.mitigationPlan?.trim();
+    if (hasActionPlan) continue;
+
+    const params = new URLSearchParams({
+      riskId: String(risk.id),
+      type: "risk",
+    });
+    if (risk.unitId !== null) {
+      params.set("unitId", String(risk.unitId));
+    }
+
+    const unitLabel = risk.unitName ?? "Şirket geneli";
+    items.push({
+      id: `high-risk-missing-action-${risk.id}`,
+      type: "high_risk_missing_action",
+      severity: "critical",
+      title: `Yüksek risk için aksiyon planı yok: ${risk.title}`,
+      description: `${unitLabel} birimindeki yüksek seviyeli risk için aksiyon kararı veya eylem planı tanımlanmamış.`,
+      sourceModule: "Risk & Fırsat",
+      sourceRecordId: risk.id,
+      unitId: risk.unitId,
+      unitName: risk.unitName,
+      dueDate: null,
+      actionUrl: `/riskler?${params.toString()}`,
+    });
+  }
+}
+
 async function getEnergyReviewUnits(
   companyId: number,
   unitId: number | undefined,
@@ -809,6 +885,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     await appendEnergyTargetWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendVapProjectWorkItems(items, sessionCompanyId, effectiveUnitId, todayDateOnly);
     await appendEnergyReviewRecordWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
+    await appendHighRiskWorkItems(items, sessionCompanyId, effectiveUnitId);
 
     items.sort((a, b) => {
       const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
