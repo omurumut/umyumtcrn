@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUnit } from "@/context/UnitContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -85,6 +85,10 @@ export default function VapProjects() {
   const { user, token } = useAuth();
   const queryClient = useQueryClient();
   const [csvLoading, setCsvLoading] = useState(false);
+  const [deepLinkParams] = useState(() => new URLSearchParams(window.location.search));
+  const deepLinkVapProjectId = deepLinkParams.get("vapProjectId")?.trim() || null;
+  const deepLinkActionPlanId = deepLinkParams.get("actionPlanId")?.trim() || null;
+  const projectRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   async function handleCsvExport() {
     setCsvLoading(true);
@@ -123,6 +127,23 @@ export default function VapProjects() {
     { query: { queryKey: getListVapProjectsQueryKey() } },
   );
   const projects = projectsData ?? [];
+  const focusedProjectId = deepLinkVapProjectId
+    ?? (deepLinkActionPlanId
+      ? projects.find((p: any) => p.actionPlanId?.toString() === deepLinkActionPlanId)?.id.toString() ?? null
+      : null);
+
+  useEffect(() => {
+    if (!focusedProjectId || loading) return;
+
+    const node = projectRefs.current[focusedProjectId];
+    if (!node) return;
+
+    const scrollTimer = window.setTimeout(() => {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+
+    return () => window.clearTimeout(scrollTimer);
+  }, [focusedProjectId, loading, projects.length]);
 
   const { data: allActionsData } = useListEnergyActionPlans(
     undefined,
@@ -360,8 +381,18 @@ export default function VapProjects() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {projects.map((p: any) => (
-            <Card key={p.id} className="bg-card/50 border-border/50">
+          {projects.map((p: any) => {
+            const projectId = p.id.toString();
+            const isDeepLinkedProject = focusedProjectId === projectId;
+
+            return (
+              <Card
+                key={p.id}
+                ref={(node) => {
+                  projectRefs.current[projectId] = node;
+                }}
+                className={`bg-card/50 border-border/50 transition-colors ${isDeepLinkedProject ? "border-teal-400/70 bg-teal-500/10 ring-2 ring-teal-400/40" : ""}`}
+              >
               <CardContent className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
@@ -419,8 +450,9 @@ export default function VapProjects() {
                   </div>
                 </div>
               </CardContent>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
 
