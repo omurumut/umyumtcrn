@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +23,7 @@ import {
 import {
   AlertCircle, AlertTriangle, CheckCircle2, Clock, TrendingUp, BarChart2,
   Zap, Target, Activity, Info, ExternalLink, ListChecks, Plus, History, Lock, FileEdit,
+  RotateCcw, Trash2,
 } from "lucide-react";
 import { Link } from "wouter";
 import { useAuth } from "@/context/AuthContext";
@@ -32,6 +33,21 @@ import { useToast } from "@/hooks/use-toast";
 import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
 
 const API_BASE = "/api";
+const DUPLICATE_REVIEW_RECORD_ERROR = "Bu dönem ve kapsam için zaten bir enerji gözden geçirme kaydı var.";
+const DUPLICATE_REVIEW_RECORD_HELP =
+  "Bu yıl, dönem ve kapsam için zaten bir gözden geçirme kaydı oluşturulmuş. Mevcut kaydı düzenleyebilir, tamamlanmışsa admin olarak taslağa geri alabilir veya revizyon oluşturabilirsiniz.";
+const ENERGY_REVIEW_TAB_VALUES = ["overview", "sources", "enpi", "units", "actions", "records"] as const;
+type EnergyReviewTab = typeof ENERGY_REVIEW_TAB_VALUES[number];
+
+function parseEnergyReviewTab(value: string | null): EnergyReviewTab {
+  return ENERGY_REVIEW_TAB_VALUES.includes(value as EnergyReviewTab) ? (value as EnergyReviewTab) : "overview";
+}
+
+function parseDeepLinkInt(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 async function apiFetch<T>(url: string, token: string | null): Promise<T> {
   const res = await fetch(url, {
@@ -60,9 +76,16 @@ async function apiMutate<T>(token: string | null, method: string, url: string, b
       const errBody = await res.json();
       msg = errBody?.error ?? errBody?.message ?? msg;
     } catch { /* ignore */ }
-    throw new Error(msg);
+    throw Object.assign(new Error(msg), { status: res.status });
   }
   return res.status === 204 ? (null as T) : res.json();
+}
+
+function getReviewRecordMutationErrorMessage(err: Error & { status?: number }) {
+  if (err.status === 409 && err.message === DUPLICATE_REVIEW_RECORD_ERROR) {
+    return DUPLICATE_REVIEW_RECORD_HELP;
+  }
+  return err.message;
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -260,6 +283,9 @@ interface EnergyReviewRecordItem {
   revisionNo: number;
   previousRevisionId: number | null;
   generalNotes: string | null;
+  deletedAt: string | null;
+  deletedByUserId: number | null;
+  deleteReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -469,12 +495,20 @@ function LoadingRows({ cols }: { cols: number }) {
 export default function EnergyReview() {
   const { user, token } = useAuth();
   const { unitId: ctxUnitId } = useUnit();
-  const { year } = useYear();
+  const { year, setYear } = useYear();
+  const [deepLinkParams] = useState(() => new URLSearchParams(window.location.search));
+  const deepLinkYear = parseDeepLinkInt(deepLinkParams.get("year"));
+  const deepLinkUnitId = parseDeepLinkInt(deepLinkParams.get("unitId"));
+  const deepLinkReviewRecordId = deepLinkParams.get("reviewRecordId")?.trim() || null;
+  const reviewRecordRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
-  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const isCompanyAdmin = user?.role === "admin" || user?.role === "kontrol_admin";
+  const isAdmin = isCompanyAdmin || user?.role === "superadmin";
 
   // Admin kullanıcı için lokal birim filtresi (context'ten bağımsız seçim)
   const [selectedUnitId, setSelectedUnitId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<EnergyReviewTab>(() => parseEnergyReviewTab(deepLinkParams.get("tab")));
+  const [deepLinkApplied, setDeepLinkApplied] = useState(false);
 
   // ÖEK & EnPG sekmesi filtreleri
   const [enpiFilterState, setEnpiFilterState] = useState("all");
@@ -501,9 +535,27 @@ export default function EnergyReview() {
   const [reviewEditingId, setReviewEditingId] = useState<number | null>(null);
   const [reviewForm, setReviewForm] = useState<ReviewRecordForm>(() => emptyReviewForm(year, user?.unitId ?? null));
   const [reviewDetailId, setReviewDetailId] = useState<number | null>(null);
+  const [reviewDeleteId, setReviewDeleteId] = useState<number | null>(null);
+  const [reviewDeleteReason, setReviewDeleteReason] = useState("");
 
   // Efektif birim: admin → local state; standart kullanıcı → context
   const effectiveUnitId: number | null = isAdmin ? selectedUnitId : (user?.unitId ?? null);
+
+  useEffect(() => {
+    if (deepLinkApplied || !user) return;
+
+    setActiveTab(parseEnergyReviewTab(deepLinkParams.get("tab")));
+
+    if (deepLinkYear !== null) {
+      setYear(deepLinkYear);
+    }
+
+    if (isCompanyAdmin && deepLinkUnitId !== null) {
+      setSelectedUnitId(deepLinkUnitId);
+    }
+
+    setDeepLinkApplied(true);
+  }, [deepLinkApplied, deepLinkParams, deepLinkUnitId, deepLinkYear, isCompanyAdmin, setYear, user]);
 
   function buildParams(extra?: Record<string, string | number | undefined>) {
     const p = new URLSearchParams();
@@ -549,10 +601,11 @@ export default function EnergyReview() {
   });
 
   const reviewRecordsQ = useQuery<EnergyReviewRecordItem[]>({
-    queryKey: ["energy-review-records", effectiveUnitId],
+    queryKey: ["energy-review-records", effectiveUnitId, deepLinkYear !== null ? year : "all"],
     queryFn: () => {
       const p = new URLSearchParams();
       if (isAdmin && effectiveUnitId !== null) p.set("unitId", String(effectiveUnitId));
+      if (deepLinkYear !== null) p.set("year", String(year));
       return apiFetch(`${API_BASE}/energy-review-records?${p.toString()}`, token);
     },
   });
@@ -573,7 +626,11 @@ export default function EnergyReview() {
       toast({ title: "Gözden geçirme kaydı oluşturuldu" });
       setReviewFormOpen(false);
     },
-    onError: (err: Error) => toast({ title: "Hata", description: err.message, variant: "destructive" }),
+    onError: (err: Error & { status?: number }) => toast({
+      title: "Hata",
+      description: getReviewRecordMutationErrorMessage(err),
+      variant: "destructive",
+    }),
   });
 
   const updateReviewMut = useMutation({
@@ -593,7 +650,11 @@ export default function EnergyReview() {
       setReviewFormOpen(false);
       setReviewEditingId(null);
     },
-    onError: (err: Error) => toast({ title: "Hata", description: err.message, variant: "destructive" }),
+    onError: (err: Error & { status?: number }) => toast({
+      title: "Hata",
+      description: getReviewRecordMutationErrorMessage(err),
+      variant: "destructive",
+    }),
   });
 
   const completeReviewMut = useMutation({
@@ -603,6 +664,20 @@ export default function EnergyReview() {
       toast({ title: "Kayıt tamamlandı ve kilitlendi" });
     },
     onError: (err: Error) => toast({ title: "Hata", description: err.message, variant: "destructive" }),
+  });
+
+  const reopenReviewMut = useMutation({
+    mutationFn: (id: number) => apiMutate<EnergyReviewRecordItem>(token, "POST", `${API_BASE}/energy-review-records/${id}/reopen`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["energy-review-records"] });
+      toast({ title: "Kayıt taslağa geri alındı" });
+      setReviewDetailId(null);
+    },
+    onError: (err: Error & { status?: number }) => toast({
+      title: "Hata",
+      description: getReviewRecordMutationErrorMessage(err),
+      variant: "destructive",
+    }),
   });
 
   const reviseReviewMut = useMutation({
@@ -615,6 +690,27 @@ export default function EnergyReview() {
     onError: (err: Error) => toast({ title: "Hata", description: err.message, variant: "destructive" }),
   });
 
+  const deleteReviewMut = useMutation({
+    mutationFn: ({ id, deleteReason }: { id: number; deleteReason: string }) => apiMutate<EnergyReviewRecordItem>(
+      token,
+      "DELETE",
+      `${API_BASE}/energy-review-records/${id}`,
+      { deleteReason: deleteReason.trim() || undefined },
+    ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["energy-review-records"] });
+      toast({ title: "Kayıt kaldırıldı" });
+      setReviewDeleteId(null);
+      setReviewDeleteReason("");
+      setReviewDetailId(null);
+    },
+    onError: (err: Error & { status?: number }) => toast({
+      title: "Hata",
+      description: getReviewRecordMutationErrorMessage(err),
+      variant: "destructive",
+    }),
+  });
+
   const ov = overviewQ.data;
   const sources = sourceQ.data ?? [];
   const enpiList = enpiQ.data ?? [];
@@ -622,6 +718,19 @@ export default function EnergyReview() {
   const taList = taSummaryQ.data ?? [];
   const reviewRecords = reviewRecordsQ.data ?? [];
   const reviewDetailRecord = reviewRecords.find((r) => r.id === reviewDetailId) ?? null;
+
+  useEffect(() => {
+    if (!deepLinkReviewRecordId || activeTab !== "records" || reviewRecordsQ.isLoading) return;
+
+    const node = reviewRecordRefs.current[deepLinkReviewRecordId];
+    if (!node) return;
+
+    const scrollTimer = window.setTimeout(() => {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+
+    return () => window.clearTimeout(scrollTimer);
+  }, [activeTab, deepLinkReviewRecordId, reviewRecords.length, reviewRecordsQ.isLoading]);
 
   function openCreateReview() {
     setReviewEditingId(null);
@@ -735,7 +844,7 @@ export default function EnergyReview() {
       </div>
 
       {/* ── Sekmeler ── */}
-      <Tabs defaultValue="overview">
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as EnergyReviewTab)}>
         <TabsList className="bg-muted/30">
           <TabsTrigger value="overview">Genel Performans</TabsTrigger>
           <TabsTrigger value="sources">Enerji Kaynakları</TabsTrigger>
@@ -1784,8 +1893,19 @@ export default function EnergyReview() {
                       </TableCell>
                     </TableRow>
                   )}
-                  {reviewRecords.map((rec) => (
-                    <TableRow key={rec.id} className="cursor-pointer" onClick={() => setReviewDetailId(rec.id)}>
+                  {reviewRecords.map((rec) => {
+                    const recordId = String(rec.id);
+                    const isDeepLinkedReviewRecord = deepLinkReviewRecordId === recordId;
+
+                    return (
+                    <TableRow
+                      key={rec.id}
+                      ref={(node) => {
+                        reviewRecordRefs.current[recordId] = node;
+                      }}
+                      className={`cursor-pointer transition-colors ${isDeepLinkedReviewRecord ? "bg-teal-500/10 ring-1 ring-inset ring-teal-400/50" : ""}`}
+                      onClick={() => setReviewDetailId(rec.id)}
+                    >
                       <TableCell className="font-medium">{rec.reviewName}</TableCell>
                       <TableCell>{rec.reviewYear}</TableCell>
                       <TableCell>{REVIEW_PERIOD_LABELS[rec.periodType] ?? rec.periodType}</TableCell>
@@ -1815,13 +1935,40 @@ export default function EnergyReview() {
                               <FileEdit className="h-3.5 w-3.5" />
                             </Button>
                           )}
-                          {rec.status === "completed" && (
+                          {isAdmin && rec.status === "completed" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              title="Taslağa Geri Al"
+                              onClick={() => reopenReviewMut.mutate(rec.id)}
+                              disabled={reopenReviewMut.isPending}
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                          {isAdmin && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-destructive hover:text-destructive"
+                              title="Kaydı Kaldır"
+                              onClick={() => {
+                                setReviewDeleteId(rec.id);
+                                setReviewDeleteReason("");
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                          {rec.status === "completed" && !isAdmin && (
                             <Lock className="h-3.5 w-3.5 text-muted-foreground self-center mr-1" />
                           )}
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </CardContent>
@@ -2008,6 +2155,80 @@ export default function EnergyReview() {
                 Revize Et
               </Button>
             )}
+            {isAdmin && reviewDetailRecord?.status === "completed" && (
+              <Button
+                variant="outline"
+                onClick={() => reopenReviewMut.mutate(reviewDetailRecord.id)}
+                disabled={reopenReviewMut.isPending}
+              >
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                Taslağa Geri Al
+              </Button>
+            )}
+            {isAdmin && reviewDetailRecord && (
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  setReviewDeleteId(reviewDetailRecord.id);
+                  setReviewDeleteReason("");
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                Kaydı Kaldır
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={reviewDeleteId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReviewDeleteId(null);
+            setReviewDeleteReason("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Kaydı Kaldır</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Bu kayıt listeden kaldırılacak. Veritabanından fiziksel olarak silinmeyecek ve denetim izi korunacaktır.
+            </p>
+            <div className="space-y-2">
+              <Label>Silme nedeni (opsiyonel, önerilir)</Label>
+              <Textarea
+                value={reviewDeleteReason}
+                onChange={(e) => setReviewDeleteReason(e.target.value)}
+                placeholder="Örn. deneme amaçlı oluşturulan kayıt"
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setReviewDeleteId(null);
+                setReviewDeleteReason("");
+              }}
+            >
+              İptal
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (reviewDeleteId !== null) {
+                  deleteReviewMut.mutate({ id: reviewDeleteId, deleteReason: reviewDeleteReason });
+                }
+              }}
+              disabled={deleteReviewMut.isPending}
+            >
+              Kaydı Kaldır
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1,15 +1,56 @@
 import { Router } from "express";
 import { db, energyReviewRecordsTable, unitsTable, usersTable } from "@workspace/db";
-import { eq, and, SQL, desc } from "drizzle-orm";
+import { eq, and, SQL, desc, isNull, ne } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
 const PERIOD_TYPES = ["annual", "semi_annual", "custom"];
 const SCOPE_TYPES = ["company", "unit"];
+const DUPLICATE_REVIEW_RECORD_ERROR = "Bu dönem ve kapsam için zaten bir enerji gözden geçirme kaydı var.";
 
 function isPrivileged(role: string) {
-  return role === "admin" || role === "superadmin";
+  return role === "admin" || role === "kontrol_admin" || role === "superadmin";
+}
+
+function shouldIncludeDeleted(role: string, includeDeleted: unknown) {
+  return isPrivileged(role) && includeDeleted === "true";
+}
+
+async function hasActiveDuplicateReviewRecord(params: {
+  companyId: number;
+  reviewYear: number;
+  periodType: string;
+  scopeType: string;
+  unitId: number | null;
+  excludeId?: number;
+}) {
+  const conditions: SQL[] = [
+    eq(energyReviewRecordsTable.companyId, params.companyId),
+    eq(energyReviewRecordsTable.reviewYear, params.reviewYear),
+    eq(energyReviewRecordsTable.periodType, params.periodType),
+    eq(energyReviewRecordsTable.scopeType, params.scopeType),
+    isNull(energyReviewRecordsTable.deletedAt),
+  ];
+
+  if (params.scopeType === "company") {
+    conditions.push(isNull(energyReviewRecordsTable.unitId));
+  } else {
+    if (params.unitId === null) return false;
+    conditions.push(eq(energyReviewRecordsTable.unitId, params.unitId));
+  }
+
+  if (params.excludeId !== undefined) {
+    conditions.push(ne(energyReviewRecordsTable.id, params.excludeId));
+  }
+
+  const [duplicate] = await db
+    .select({ id: energyReviewRecordsTable.id })
+    .from(energyReviewRecordsTable)
+    .where(and(...conditions))
+    .limit(1);
+
+  return duplicate !== undefined;
 }
 
 function validateDates(periodStart: string, periodEnd: string, reviewYear: number): string | null {
@@ -33,6 +74,11 @@ router.get("/energy-review-records", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const conditions: SQL[] = [eq(energyReviewRecordsTable.companyId, sessionCompanyId)];
+    const includeDeleted = shouldIncludeDeleted(role, req.query.includeDeleted);
+
+    if (!includeDeleted) {
+      conditions.push(isNull(energyReviewRecordsTable.deletedAt));
+    }
 
     if (!isPrivileged(role)) {
       if (sessionUnitId === null) {
@@ -101,6 +147,11 @@ router.get("/energy-review-records/:id", requireAuth, async (req, res) => {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
+    const includeDeleted = shouldIncludeDeleted(role, req.query.includeDeleted);
+    if (existing.deletedAt && !includeDeleted) {
+      res.status(404).json({ error: "BulunamadÄ±" });
+      return;
+    }
 
     res.json(existing);
   } catch (err) {
@@ -167,6 +218,18 @@ router.post("/energy-review-records", requireAuth, async (req, res) => {
       return;
     }
 
+    const hasDuplicate = await hasActiveDuplicateReviewRecord({
+      companyId: sessionCompanyId,
+      reviewYear: parsedYear,
+      periodType: resolvedPeriodType,
+      scopeType: resolvedScopeType,
+      unitId: resolvedUnitId,
+    });
+    if (hasDuplicate) {
+      res.status(409).json({ error: DUPLICATE_REVIEW_RECORD_ERROR });
+      return;
+    }
+
     const [item] = await db.insert(energyReviewRecordsTable).values({
       companyId: sessionCompanyId,
       unitId: resolvedUnitId,
@@ -208,6 +271,10 @@ router.patch("/energy-review-records/:id", requireAuth, async (req, res) => {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
+    if (existing.deletedAt) {
+      res.status(404).json({ error: "BulunamadÄ±" });
+      return;
+    }
     if (existing.status !== "draft") {
       res.status(409).json({ error: "Yalnızca taslak kayıtlar düzenlenebilir" });
       return;
@@ -219,9 +286,12 @@ router.patch("/energy-review-records/:id", requireAuth, async (req, res) => {
     } = req.body;
 
     const updates: Record<string, unknown> = {};
+    let nextScopeType = existing.scopeType;
+    let nextUnitId = existing.unitId;
+    const nextPeriodType = periodType !== undefined && PERIOD_TYPES.includes(periodType) ? periodType : existing.periodType;
 
     if (reviewName !== undefined) updates.reviewName = reviewName;
-    if (periodType !== undefined && PERIOD_TYPES.includes(periodType)) updates.periodType = periodType;
+    if (periodType !== undefined && PERIOD_TYPES.includes(periodType)) updates.periodType = nextPeriodType;
     if (generalNotes !== undefined) updates.generalNotes = generalNotes || null;
 
     // scopeType / unitId sadece admin+ tarafından değiştirilebilir
@@ -240,9 +310,13 @@ router.patch("/energy-review-records/:id", requireAuth, async (req, res) => {
           }
           updates.scopeType = "unit";
           updates.unitId = targetUnitId;
+          nextScopeType = "unit";
+          nextUnitId = targetUnitId;
         } else {
           updates.scopeType = "company";
           updates.unitId = null;
+          nextScopeType = "company";
+          nextUnitId = null;
         }
       } else if (unitId !== undefined && existing.scopeType === "unit") {
         const parsedUnitId = parseInt(unitId);
@@ -252,6 +326,7 @@ router.patch("/energy-review-records/:id", requireAuth, async (req, res) => {
           return;
         }
         updates.unitId = parsedUnitId;
+        nextUnitId = parsedUnitId;
       }
     }
 
@@ -267,6 +342,27 @@ router.patch("/energy-review-records/:id", requireAuth, async (req, res) => {
       updates.reviewYear = nextYear;
       updates.periodStart = nextStart;
       updates.periodEnd = nextEnd;
+    }
+
+    const identityChanged =
+      nextYear !== existing.reviewYear ||
+      nextPeriodType !== existing.periodType ||
+      nextScopeType !== existing.scopeType ||
+      nextUnitId !== existing.unitId;
+
+    if (identityChanged) {
+      const hasDuplicate = await hasActiveDuplicateReviewRecord({
+        companyId: sessionCompanyId,
+        reviewYear: nextYear,
+        periodType: nextPeriodType,
+        scopeType: nextScopeType,
+        unitId: nextUnitId,
+        excludeId: existing.id,
+      });
+      if (hasDuplicate) {
+        res.status(409).json({ error: DUPLICATE_REVIEW_RECORD_ERROR });
+        return;
+      }
     }
 
     updates.updatedAt = new Date();
@@ -297,6 +393,10 @@ router.post("/energy-review-records/:id/complete", requireAuth, async (req, res)
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
+    if (existing.deletedAt) {
+      res.status(404).json({ error: "Bulunamadı" });
+      return;
+    }
     if (existing.status !== "draft") {
       res.status(409).json({ error: "Yalnızca taslak kayıtlar tamamlanabilir" });
       return;
@@ -317,6 +417,42 @@ router.post("/energy-review-records/:id/complete", requireAuth, async (req, res)
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /api/energy-review-records/:id/reopen
+router.post("/energy-review-records/:id/reopen", requireAuth, async (req, res) => {
+  try {
+    const { role, companyId: sessionCompanyId } = req.user!;
+    if (!isPrivileged(role)) {
+      res.status(403).json({ error: "Yetki yok" });
+      return;
+    }
+
+    const id = parseInt(req.params.id as string);
+    if (isNaN(id)) { res.status(400).json({ error: "Geçersiz id" }); return; }
+
+    const [existing] = await db.select().from(energyReviewRecordsTable).where(eq(energyReviewRecordsTable.id, id));
+    if (!existing || existing.companyId !== sessionCompanyId || existing.deletedAt) {
+      res.status(404).json({ error: "Bulunamadı" });
+      return;
+    }
+    if (existing.status !== "completed") {
+      res.status(409).json({ error: "Yalnızca tamamlanmış kayıtlar taslağa geri alınabilir" });
+      return;
+    }
+
+    const [item] = await db.update(energyReviewRecordsTable).set({
+      status: "draft",
+      completedByUserId: null,
+      completedAt: null,
+      updatedAt: new Date(),
+    }).where(eq(energyReviewRecordsTable.id, id)).returning();
+
+    res.json(item);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
 // POST /api/energy-review-records/:id/revise
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/energy-review-records/:id/revise", requireAuth, async (req, res) => {
@@ -332,6 +468,10 @@ router.post("/energy-review-records/:id/revise", requireAuth, async (req, res) =
     }
     if (!isPrivileged(role) && existing.unitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" });
+      return;
+    }
+    if (existing.deletedAt) {
+      res.status(404).json({ error: "Bulunamadı" });
       return;
     }
     if (existing.status !== "completed") {
@@ -361,6 +501,43 @@ router.post("/energy-review-records/:id/revise", requireAuth, async (req, res) =
     }).returning();
 
     res.status(201).json({ revisedRecord: revised, newRecord: newDraft });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatası" });
+  }
+});
+
+// DELETE /api/energy-review-records/:id
+router.delete("/energy-review-records/:id", requireAuth, async (req, res) => {
+  try {
+    const { userId, role, companyId: sessionCompanyId } = req.user!;
+    if (!isPrivileged(role)) {
+      res.status(403).json({ error: "Yetki yok" });
+      return;
+    }
+
+    const id = parseInt(req.params.id as string);
+    if (isNaN(id)) { res.status(400).json({ error: "Geçersiz id" }); return; }
+
+    const [existing] = await db.select().from(energyReviewRecordsTable).where(eq(energyReviewRecordsTable.id, id));
+    if (!existing || existing.companyId !== sessionCompanyId) {
+      res.status(404).json({ error: "Bulunamadı" });
+      return;
+    }
+    if (existing.deletedAt) {
+      res.status(409).json({ error: "Kayıt zaten kaldırılmış" });
+      return;
+    }
+
+    const rawReason = typeof req.body?.deleteReason === "string" ? req.body.deleteReason.trim() : "";
+    const [item] = await db.update(energyReviewRecordsTable).set({
+      deletedAt: new Date(),
+      deletedByUserId: userId,
+      deleteReason: rawReason || null,
+      updatedAt: new Date(),
+    }).where(eq(energyReviewRecordsTable.id, id)).returning();
+
+    res.json(item);
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });

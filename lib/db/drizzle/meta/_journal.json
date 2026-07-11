@@ -127,6 +127,13 @@
       "when": 1783500000000,
       "tag": "0018_energy_review_records",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783600000000,
+      "tag": "0019_energy_review_record_soft_delete",
+      "breakpoints": true
     }
   ]
 }

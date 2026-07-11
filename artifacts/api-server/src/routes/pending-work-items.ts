@@ -14,7 +14,7 @@ import {
   unitsTable,
   vapProjectsTable,
 } from "@workspace/db";
-import { and, desc, eq, inArray, lte, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, type SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -580,6 +580,7 @@ async function getEnergyReviewRecordsByUnit(
       eq(energyReviewRecordsTable.companyId, companyId),
       eq(energyReviewRecordsTable.reviewYear, year),
       eq(energyReviewRecordsTable.scopeType, "unit"),
+      isNull(energyReviewRecordsTable.deletedAt),
       inArray(energyReviewRecordsTable.unitId, unitIds),
       inArray(energyReviewRecordsTable.status, ["draft", "completed"]),
     ))

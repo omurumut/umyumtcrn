@@ -475,12 +475,16 @@ export const energyReviewRecordsTable = pgTable("energy_review_records", {
   revisionNo: integer("revision_no").notNull().default(1),
   previousRevisionId: integer("previous_revision_id").references((): AnyPgColumn => energyReviewRecordsTable.id, { onDelete: "no action" }),
   generalNotes: text("general_notes"),
+  deletedAt: timestamp("deleted_at"),
+  deletedByUserId: integer("deleted_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  deleteReason: text("delete_reason"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   companyIdIdx: index("energy_review_records_company_id_idx").on(table.companyId),
   companyYearIdx: index("energy_review_records_company_year_idx").on(table.companyId, table.reviewYear),
   companyUnitIdx: index("energy_review_records_company_unit_idx").on(table.companyId, table.unitId),
+  deletedAtIdx: index("energy_review_records_deleted_at_idx").on(table.deletedAt),
   previousRevisionIdx: index("energy_review_records_previous_revision_idx").on(table.previousRevisionId),
 }));
 
