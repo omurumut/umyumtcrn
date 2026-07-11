@@ -5,11 +5,13 @@ import {
   energyActionPlansTable,
   energyBaselinesTable,
   energyPerformanceResultsTable,
+  energyTargetProgressTable,
   energyTargetsTable,
   metersTable,
   seuAssessmentItemsTable,
   seuAssessmentsTable,
   unitsTable,
+  vapProjectsTable,
 } from "@workspace/db";
 import { and, desc, eq, inArray, lte, type SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
@@ -54,7 +56,32 @@ interface ActiveEnergyBaseline {
   seuAssessmentItemId: number | null;
 }
 
+interface ActiveEnergyTarget {
+  id: number;
+  name: string;
+  targetYear: number;
+  actualValue: number | null;
+  status: string | null;
+  unitId: number | null;
+  unitName: string | null;
+}
+
+interface ScopedVapProject {
+  id: number;
+  actionPlanId: number;
+  projectTitle: string;
+  status: string;
+  annualEnergySavingValue: number | null;
+  annualCostSaving: number | null;
+  co2ReductionTon: number | null;
+  endDate: string | null;
+  actionPlanDueDate: string | null;
+  unitId: number | null;
+  unitName: string | null;
+}
+
 const ACTION_PLAN_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
+const VAP_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
 const severityOrder: Record<PendingWorkItemSeverity, number> = {
   critical: 0,
   warning: 1,
@@ -283,6 +310,223 @@ async function appendSeuEnergyPerformanceWorkItems(
   }
 }
 
+async function getScopedEnergyTargets(
+  companyId: number,
+  unitId: number | undefined,
+): Promise<ActiveEnergyTarget[]> {
+  const conditions: SQL[] = [
+    eq(energyTargetsTable.companyId, companyId),
+  ];
+
+  if (unitId !== undefined) {
+    conditions.push(eq(energyTargetsTable.unitId, unitId));
+  }
+
+  return db
+    .select({
+      id: energyTargetsTable.id,
+      name: energyTargetsTable.name,
+      targetYear: energyTargetsTable.targetYear,
+      actualValue: energyTargetsTable.actualValue,
+      status: energyTargetsTable.status,
+      unitId: energyTargetsTable.unitId,
+      unitName: unitsTable.name,
+    })
+    .from(energyTargetsTable)
+    .leftJoin(unitsTable, eq(energyTargetsTable.unitId, unitsTable.id))
+    .where(buildWhere(conditions));
+}
+
+async function getTargetIdsWithActionPlans(
+  companyId: number,
+  targetIds: number[],
+): Promise<Set<number>> {
+  const targetIdsWithActionPlans = new Set<number>();
+  if (targetIds.length === 0) return targetIdsWithActionPlans;
+
+  const actionPlans = await db
+    .select({
+      targetId: energyActionPlansTable.targetId,
+    })
+    .from(energyActionPlansTable)
+    .where(and(
+      eq(energyActionPlansTable.companyId, companyId),
+      inArray(energyActionPlansTable.targetId, targetIds),
+    ));
+
+  for (const actionPlan of actionPlans) {
+    targetIdsWithActionPlans.add(actionPlan.targetId);
+  }
+
+  return targetIdsWithActionPlans;
+}
+
+async function getProgressYearsByTarget(
+  companyId: number,
+  targetIds: number[],
+): Promise<Map<number, Set<number>>> {
+  const progressYearsByTarget = new Map<number, Set<number>>();
+  if (targetIds.length === 0) return progressYearsByTarget;
+
+  const progressRows = await db
+    .select({
+      targetId: energyTargetProgressTable.targetId,
+      periodYear: energyTargetProgressTable.periodYear,
+    })
+    .from(energyTargetProgressTable)
+    .where(and(
+      eq(energyTargetProgressTable.companyId, companyId),
+      inArray(energyTargetProgressTable.targetId, targetIds),
+    ));
+
+  for (const progressRow of progressRows) {
+    const years = progressYearsByTarget.get(progressRow.targetId) ?? new Set<number>();
+    years.add(progressRow.periodYear);
+    progressYearsByTarget.set(progressRow.targetId, years);
+  }
+
+  return progressYearsByTarget;
+}
+
+async function appendEnergyTargetWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+  selectedYear: number,
+) {
+  const targets = await getScopedEnergyTargets(companyId, unitId);
+  if (targets.length === 0) return;
+
+  const targetIds = targets.map((target) => target.id);
+  const targetIdsWithActionPlans = await getTargetIdsWithActionPlans(companyId, targetIds);
+  const progressYearsByTarget = await getProgressYearsByTarget(companyId, targetIds);
+
+  for (const target of targets) {
+    const unitLabel = target.unitName ?? "Şirket geneli";
+    const isDraftOrCancelled = target.status === "draft" || target.status === "cancelled";
+
+    if (target.status === "active" && !targetIdsWithActionPlans.has(target.id)) {
+      items.push({
+        id: `energy-target-missing-action-plan-${target.id}`,
+        type: "energy_target_missing_action_plan",
+        severity: "warning",
+        title: `Enerji hedefi için aksiyon planı yok: ${target.name}`,
+        description: `${unitLabel} birimindeki aktif enerji hedefi için tanımlı aksiyon planı bulunmuyor.`,
+        sourceModule: "Enerji Hedefleri",
+        sourceRecordId: target.id,
+        unitId: target.unitId,
+        unitName: target.unitName,
+        dueDate: null,
+        actionUrl: `/hedefler?targetId=${target.id}&tab=actions`,
+      });
+    }
+
+    const hasTargetYearProgress = progressYearsByTarget.get(target.id)?.has(target.targetYear) ?? false;
+    if (!isDraftOrCancelled && target.targetYear < selectedYear && target.actualValue === null && !hasTargetYearProgress) {
+      items.push({
+        id: `energy-target-missing-result-evaluation-${target.targetYear}-${target.id}`,
+        type: "energy_target_missing_result_evaluation",
+        severity: "warning",
+        title: `${target.targetYear} yılı hedef sonucu değerlendirilmemiş: ${target.name}`,
+        description: "Hedef dönemi tamamlanmış ancak gerçekleşme/değerlendirme kaydı bulunmuyor.",
+        sourceModule: "Enerji Hedefleri",
+        sourceRecordId: target.id,
+        unitId: target.unitId,
+        unitName: target.unitName,
+        dueDate: null,
+        actionUrl: `/hedefler?targetId=${target.id}&tab=progress&year=${target.targetYear}`,
+      });
+    }
+  }
+}
+
+async function getScopedVapProjects(
+  companyId: number,
+  unitId: number | undefined,
+): Promise<ScopedVapProject[]> {
+  const conditions: SQL[] = [
+    eq(vapProjectsTable.companyId, companyId),
+    eq(energyActionPlansTable.isVap, true),
+  ];
+
+  if (unitId !== undefined) {
+    conditions.push(eq(energyTargetsTable.unitId, unitId));
+  }
+
+  return db
+    .select({
+      id: vapProjectsTable.id,
+      actionPlanId: vapProjectsTable.actionPlanId,
+      projectTitle: vapProjectsTable.projectTitle,
+      status: vapProjectsTable.status,
+      annualEnergySavingValue: vapProjectsTable.annualEnergySavingValue,
+      annualCostSaving: vapProjectsTable.annualCostSaving,
+      co2ReductionTon: vapProjectsTable.co2ReductionTon,
+      endDate: vapProjectsTable.endDate,
+      actionPlanDueDate: energyActionPlansTable.dueDate,
+      unitId: energyTargetsTable.unitId,
+      unitName: unitsTable.name,
+    })
+    .from(vapProjectsTable)
+    .innerJoin(energyActionPlansTable, eq(vapProjectsTable.actionPlanId, energyActionPlansTable.id))
+    .innerJoin(energyTargetsTable, eq(energyActionPlansTable.targetId, energyTargetsTable.id))
+    .leftJoin(unitsTable, eq(energyTargetsTable.unitId, unitsTable.id))
+    .where(buildWhere(conditions));
+}
+
+async function appendVapProjectWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+  todayDateOnly: string,
+) {
+  const vapProjects = await getScopedVapProjects(companyId, unitId);
+  if (vapProjects.length === 0) return;
+
+  for (const project of vapProjects) {
+    const unitLabel = project.unitName ?? "Şirket geneli";
+    const actionUrl = `/vap-projeler?vapProjectId=${project.id}&actionPlanId=${project.actionPlanId}`;
+    const dueDate = normalizeDateOnly(project.endDate) ?? normalizeDateOnly(project.actionPlanDueDate);
+
+    if (!VAP_COMPLETED_STATUSES.has(project.status) && dueDate !== null && dueDate < todayDateOnly) {
+      items.push({
+        id: `vap-project-overdue-${project.id}`,
+        type: "vap_project_overdue",
+        severity: "critical",
+        title: `VAP projesinin termin tarihi geçti: ${project.projectTitle}`,
+        description: `${unitLabel} birimindeki VAP projesinin termin tarihi geçmiş ancak proje tamamlanmamış.`,
+        sourceModule: "Verimlilik Artırıcı Projeler",
+        sourceRecordId: project.id,
+        unitId: project.unitId,
+        unitName: project.unitName,
+        dueDate,
+        actionUrl,
+      });
+    }
+
+    const hasSavingsInfo =
+      project.annualEnergySavingValue !== null ||
+      project.annualCostSaving !== null ||
+      project.co2ReductionTon !== null;
+
+    if (project.status === "completed" && !hasSavingsInfo) {
+      items.push({
+        id: `vap-project-missing-savings-result-${project.id}`,
+        type: "vap_project_missing_savings_result",
+        severity: "warning",
+        title: `Tamamlanan VAP için tasarruf bilgisi eksik: ${project.projectTitle}`,
+        description: "VAP projesi tamamlanmış görünüyor ancak enerji, maliyet veya emisyon tasarrufu bilgisi girilmemiş.",
+        sourceModule: "Verimlilik Artırıcı Projeler",
+        sourceRecordId: project.id,
+        unitId: project.unitId,
+        unitName: project.unitName,
+        dueDate: null,
+        actionUrl,
+      });
+    }
+  }
+}
+
 // GET /api/pending-work-items
 router.get("/pending-work-items", requireAuth, async (req, res) => {
   try {
@@ -434,6 +678,8 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     }
 
     await appendSeuEnergyPerformanceWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
+    await appendEnergyTargetWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
+    await appendVapProjectWorkItems(items, sessionCompanyId, effectiveUnitId, todayDateOnly);
 
     items.sort((a, b) => {
       const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
