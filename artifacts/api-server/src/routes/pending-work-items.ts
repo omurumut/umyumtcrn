@@ -5,6 +5,7 @@ import {
   energyActionPlansTable,
   energyBaselinesTable,
   energyPerformanceResultsTable,
+  energyReviewRecordsTable,
   energyTargetProgressTable,
   energyTargetsTable,
   metersTable,
@@ -78,6 +79,17 @@ interface ScopedVapProject {
   actionPlanDueDate: string | null;
   unitId: number | null;
   unitName: string | null;
+}
+
+interface EnergyReviewUnit {
+  id: number;
+  name: string;
+}
+
+interface EnergyReviewRecordSummary {
+  id: number;
+  unitId: number | null;
+  status: string;
 }
 
 const ACTION_PLAN_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
@@ -527,6 +539,121 @@ async function appendVapProjectWorkItems(
   }
 }
 
+async function getEnergyReviewUnits(
+  companyId: number,
+  unitId: number | undefined,
+): Promise<EnergyReviewUnit[]> {
+  const conditions: SQL[] = [
+    eq(unitsTable.companyId, companyId),
+    eq(unitsTable.active, true),
+  ];
+
+  if (unitId !== undefined) {
+    conditions.push(eq(unitsTable.id, unitId));
+  }
+
+  return db
+    .select({
+      id: unitsTable.id,
+      name: unitsTable.name,
+    })
+    .from(unitsTable)
+    .where(buildWhere(conditions));
+}
+
+async function getEnergyReviewRecordsByUnit(
+  companyId: number,
+  unitIds: number[],
+  year: number,
+): Promise<Map<number, EnergyReviewRecordSummary[]>> {
+  const recordsByUnit = new Map<number, EnergyReviewRecordSummary[]>();
+  if (unitIds.length === 0) return recordsByUnit;
+
+  const records = await db
+    .select({
+      id: energyReviewRecordsTable.id,
+      unitId: energyReviewRecordsTable.unitId,
+      status: energyReviewRecordsTable.status,
+    })
+    .from(energyReviewRecordsTable)
+    .where(and(
+      eq(energyReviewRecordsTable.companyId, companyId),
+      eq(energyReviewRecordsTable.reviewYear, year),
+      eq(energyReviewRecordsTable.scopeType, "unit"),
+      inArray(energyReviewRecordsTable.unitId, unitIds),
+      inArray(energyReviewRecordsTable.status, ["draft", "completed"]),
+    ))
+    .orderBy(desc(energyReviewRecordsTable.updatedAt), desc(energyReviewRecordsTable.id));
+
+  for (const record of records) {
+    if (record.unitId === null) continue;
+
+    const unitRecords = recordsByUnit.get(record.unitId) ?? [];
+    unitRecords.push(record);
+    recordsByUnit.set(record.unitId, unitRecords);
+  }
+
+  return recordsByUnit;
+}
+
+async function appendEnergyReviewRecordWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+  selectedYear: number,
+) {
+  const units = await getEnergyReviewUnits(companyId, unitId);
+  if (units.length === 0) return;
+
+  const unitIds = units.map((unit) => unit.id);
+  const recordsByUnit = await getEnergyReviewRecordsByUnit(companyId, unitIds, selectedYear);
+
+  for (const unit of units) {
+    const records = recordsByUnit.get(unit.id) ?? [];
+    const hasCompletedRecord = records.some((record) => record.status === "completed");
+    if (hasCompletedRecord) continue;
+
+    const draftRecord = records.find((record) => record.status === "draft");
+    const params = new URLSearchParams({
+      tab: "records",
+      year: String(selectedYear),
+      unitId: String(unit.id),
+    });
+
+    if (draftRecord) {
+      params.set("reviewRecordId", String(draftRecord.id));
+      items.push({
+        id: `energy-review-record-draft-${selectedYear}-${unit.id}-${draftRecord.id}`,
+        type: "energy_review_record_draft",
+        severity: "warning",
+        title: `${selectedYear} yılı enerji gözden geçirme kaydı taslak durumda: ${unit.name}`,
+        description: `${unit.name} birimi için ${selectedYear} yılı enerji gözden geçirme kaydı tamamlanmamış.`,
+        sourceModule: "Enerji Gözden Geçirme",
+        sourceRecordId: draftRecord.id,
+        unitId: unit.id,
+        unitName: unit.name,
+        dueDate: null,
+        actionUrl: `/enerji-gozden-gecirme?${params.toString()}`,
+      });
+      continue;
+    }
+
+    items.push({
+      id: `energy-review-record-missing-${selectedYear}-${unit.id}`,
+      type: "energy_review_record_missing",
+      severity: "warning",
+      title: `${selectedYear} yılı enerji gözden geçirme kaydı yok: ${unit.name}`,
+      description: `${unit.name} birimi için ${selectedYear} yılına ait enerji gözden geçirme kaydı oluşturulmamış.`,
+      sourceModule: "Enerji Gözden Geçirme",
+      sourceRecordId: null,
+      unitId: unit.id,
+      unitName: unit.name,
+      dueDate: null,
+      actionUrl: `/enerji-gozden-gecirme?${params.toString()}`,
+    });
+  }
+}
+
 // GET /api/pending-work-items
 router.get("/pending-work-items", requireAuth, async (req, res) => {
   try {
@@ -680,6 +807,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     await appendSeuEnergyPerformanceWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendEnergyTargetWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendVapProjectWorkItems(items, sessionCompanyId, effectiveUnitId, todayDateOnly);
+    await appendEnergyReviewRecordWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
 
     items.sort((a, b) => {
       const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
