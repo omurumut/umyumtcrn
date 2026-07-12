@@ -89,6 +89,12 @@ const apiMutate = (token: string | null, method: string, url: string, body?: unk
   fetch(url, { method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
     .then(r => r.ok ? (r.status === 204 ? null : r.json()) : r.json().then((e: any) => { throw new Error(e.error); }));
 
+function parsePositiveInt(value: string | null): number | null {
+  if (!value?.trim()) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 export default function Meters() {
   const { user, token } = useAuth();
   const { toast } = useToast();
@@ -102,18 +108,44 @@ export default function Meters() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ success: number; errors: string[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const meterRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const deepLinkUnitAppliedRef = useRef(false);
+  const deepLinkMeterScrollRef = useRef(false);
+
+  const [deepLinkParams] = useState(() => {
+    if (typeof window === "undefined") return { unitId: null, meterId: null };
+    const params = new URLSearchParams(window.location.search);
+    return {
+      unitId: parsePositiveInt(params.get("unitId")),
+      meterId: parsePositiveInt(params.get("meterId")),
+    };
+  });
 
   // Hızlı grup oluşturma modali
   const [quickGroupOpen, setQuickGroupOpen] = useState(false);
   const [quickGroupForm, setQuickGroupForm] = useState<QuickGroupForm>(EMPTY_QUICK_GROUP);
 
-  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const isAdmin = user?.role === "admin" || user?.role === "kontrol_admin" || user?.role === "superadmin";
   const isSuperAdmin = user?.role === "superadmin";
   const effectiveUnitId = isAdmin ? undefined : (user?.unitId ?? undefined);
   const { companyId } = useCompany();
 
   const { data: allUnits } = useListUnits({}, { query: { queryKey: getListUnitsQueryKey({}) } });
   const [selectedAdminUnit, setSelectedAdminUnit] = useState<string>("");
+
+  useEffect(() => {
+    if (deepLinkUnitAppliedRef.current || !user) return;
+    if (!isAdmin) {
+      deepLinkUnitAppliedRef.current = true;
+      return;
+    }
+    if (!allUnits) return;
+
+    if (deepLinkParams.unitId !== null && (allUnits as any[]).some(unit => unit.id === deepLinkParams.unitId)) {
+      setSelectedAdminUnit(String(deepLinkParams.unitId));
+    }
+    deepLinkUnitAppliedRef.current = true;
+  }, [allUnits, deepLinkParams.unitId, isAdmin, user]);
 
   const workingUnitId = isAdmin ? (selectedAdminUnit ? parseInt(selectedAdminUnit) : undefined) : effectiveUnitId;
   const effectiveCompanyId = isSuperAdmin && !workingUnitId ? companyId : undefined;
@@ -381,6 +413,19 @@ export default function Meters() {
 
   const filteredMeters = meters ?? [];
 
+  useEffect(() => {
+    if (deepLinkMeterScrollRef.current || deepLinkParams.meterId === null || isLoading || !meters) return;
+
+    const target = filteredMeters.find(m => Number(m.id) === deepLinkParams.meterId);
+    deepLinkMeterScrollRef.current = true;
+    if (!target) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      meterRefs.current[deepLinkParams.meterId!]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [deepLinkParams.meterId, filteredMeters, isLoading, meters]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -448,8 +493,13 @@ export default function Meters() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredMeters.map((m: any) => (
-            <Card key={m.id} className="group">
-              <CardContent className="p-5">
+            <div
+              key={m.id}
+              ref={element => { meterRefs.current[m.id] = element; }}
+              className={deepLinkParams.meterId === Number(m.id) ? "rounded-lg ring-2 ring-primary/70 ring-offset-2 ring-offset-background" : ""}
+            >
+              <Card className="group">
+                <CardContent className="p-5">
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex-1 min-w-0 mr-2">
                     <h3 className="font-semibold text-sm truncate">{m.name}</h3>
@@ -497,8 +547,9 @@ export default function Meters() {
                   </div>
                 </div>
                 {m.description && <p className="text-xs text-muted-foreground mt-2 truncate">{m.description}</p>}
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            </div>
           ))}
         </div>
       )}

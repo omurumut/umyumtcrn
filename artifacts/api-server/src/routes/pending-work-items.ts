@@ -122,6 +122,8 @@ interface BaselineScopeMeter {
   name: string;
   unitId: number | null;
   subUnitId: number | null;
+  city: string | null;
+  unitName: string | null;
 }
 
 interface BaselineVariableRow {
@@ -532,8 +534,11 @@ async function getMetersForBaselineVariableCheck(
       name: metersTable.name,
       unitId: metersTable.unitId,
       subUnitId: metersTable.subUnitId,
+      city: metersTable.city,
+      unitName: unitsTable.name,
     })
     .from(metersTable)
+    .leftJoin(unitsTable, eq(metersTable.unitId, unitsTable.id))
     .where(buildWhere(conditions));
 }
 
@@ -914,6 +919,65 @@ async function appendMissingHddCddWorkItems(
       dueDate: null,
       actionUrl: `/tuketim?${params.toString()}`,
     });
+  }
+}
+
+async function appendMissingMeterWeatherLocationWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+) {
+  const baselines = await getActiveBaselinesForVariableCheck(companyId, unitId);
+  if (baselines.length === 0) return;
+
+  const baselineIds = baselines.map((baseline) => baseline.id);
+  const baselineVariables = await db
+    .select({
+      baselineId: energyBaselineVariablesTable.baselineId,
+      variableName: energyBaselineVariablesTable.variableName,
+      variableCode: energyBaselineVariablesTable.variableCode,
+    })
+    .from(energyBaselineVariablesTable)
+    .where(inArray(energyBaselineVariablesTable.baselineId, baselineIds));
+
+  const climateBaselineIds = new Set<number>();
+  for (const variableRow of baselineVariables) {
+    if (normalizeHddCddVariableCode(variableRow.variableCode ?? variableRow.variableName) !== null) {
+      climateBaselineIds.add(variableRow.baselineId);
+    }
+  }
+
+  if (climateBaselineIds.size === 0) return;
+
+  const reportedMeterIds = new Set<number>();
+  for (const baseline of baselines) {
+    if (!climateBaselineIds.has(baseline.id)) continue;
+
+    const meters = await getMetersForBaselineVariableCheck(companyId, baseline);
+    for (const meter of meters) {
+      if (reportedMeterIds.has(meter.id) || (meter.city !== null && meter.city.trim() !== "")) continue;
+
+      const resolvedUnitId = meter.unitId ?? baseline.unitId;
+      const resolvedUnitName = meter.unitName ?? baseline.unitName;
+      const params = new URLSearchParams();
+      if (resolvedUnitId !== null) params.set("unitId", String(resolvedUnitId));
+      params.set("meterId", String(meter.id));
+
+      items.push({
+        id: `meter_weather_location_missing:${meter.id}`,
+        type: "meter_weather_location_missing",
+        severity: "warning",
+        title: `HDD/CDD için sayaç lokasyonu eksik: ${meter.name}`,
+        description: `${resolvedUnitName ?? "Şirket geneli"} birimindeki ${meter.name} sayacı için HDD/CDD otomatik üretiminde kullanılacak il/lokasyon bilgisi bulunmuyor.`,
+        sourceModule: "Sayaç Yapılandırması / MGM",
+        sourceRecordId: meter.id,
+        unitId: resolvedUnitId,
+        unitName: resolvedUnitName,
+        dueDate: null,
+        actionUrl: `/sayaclar?${params.toString()}`,
+      });
+      reportedMeterIds.add(meter.id);
+    }
   }
 }
 
@@ -1588,6 +1652,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     await appendSeuEnergyPerformanceWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendMissingBaselineVariableValueWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear, today);
     await appendMissingHddCddWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear, today);
+    await appendMissingMeterWeatherLocationWorkItems(items, sessionCompanyId, effectiveUnitId);
     await appendEnergyTargetWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendVapProjectWorkItems(items, sessionCompanyId, effectiveUnitId, todayDateOnly);
     await appendEnergyReviewRecordWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);

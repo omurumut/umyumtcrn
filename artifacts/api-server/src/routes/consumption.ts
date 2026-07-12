@@ -1,13 +1,124 @@
 import { Router } from "express";
-import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable } from "@workspace/db";
-import { eq, and, ne, sql } from "drizzle-orm";
-import { requireAuth, requireAdmin } from "../middlewares/auth.js";
+import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable, energySourcesTable } from "@workspace/db";
+import { eq, and, ne, sql, SQL } from "drizzle-orm";
+import { requireAuth } from "../middlewares/auth.js";
 import { parseIlIlce } from "../services/mgm-stations-data.js";
 import { toStationKey, lookupOfficialByStationKey, lookupOfficialWeatherDegreeDay, lookupStationKeyByLocation } from "../services/mgm-sync.js";
 
 const router = Router();
 
-// ── MGM Resmi HDD/CDD lookup — YALNIZCA resmi weather_degree_days ─
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function isPrivileged(role: string) {
+  return isCompanyAdmin(role) || isSuperAdmin(role);
+}
+
+class BadRequestError extends Error {}
+
+function parsePositiveInteger(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === "string") {
+    if (!/^[1-9]\d*$/.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function invalidId(field: string): never {
+  throw new BadRequestError(`Gecersiz ${field}`);
+}
+
+function parseOptionalId(value: unknown, field = "id"): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  return parsePositiveInteger(value) ?? invalidId(field);
+}
+
+function parseRequiredId(value: unknown, field = "id"): number | null {
+  if (value === undefined || value === null) return null;
+  return parsePositiveInteger(value) ?? invalidId(field);
+}
+
+function parsePathId(value: unknown, field = "id"): number {
+  return parsePositiveInteger(value) ?? invalidId(field);
+}
+
+function isBadRequestError(err: unknown): err is BadRequestError {
+  return err instanceof BadRequestError;
+}
+
+function firstPresent(...values: unknown[]) {
+  return values.find(value => value !== undefined && value !== null);
+}
+
+function scopedConsumptionCondition(id: number, role: string, companyId: number) {
+  return isSuperAdmin(role)
+    ? eq(consumptionTable.id, id)
+    : and(eq(consumptionTable.id, id), eq(consumptionTable.companyId, companyId));
+}
+
+async function getScopedMeter(params: {
+  meterId: number;
+  role: string;
+  sessionCompanyId: number;
+  sessionUnitId: number | null;
+}) {
+  const { meterId, role, sessionCompanyId, sessionUnitId } = params;
+  const conditions: SQL[] = [eq(metersTable.id, meterId)];
+  if (!isSuperAdmin(role)) conditions.push(eq(metersTable.companyId, sessionCompanyId));
+
+  const [meter] = await db.select().from(metersTable).where(and(...conditions));
+  if (!meter) return { status: 404, error: "Sayaç bulunamadı" };
+  if (!isPrivileged(role)) {
+    if (sessionUnitId === null) return { status: 403, error: "Yetki yok" };
+    if (meter.unitId !== sessionUnitId) return { status: 403, error: "Yetki yok" };
+  }
+  return { meter };
+}
+
+async function validateMeterRelations(params: {
+  companyId: number;
+  meter: typeof metersTable.$inferSelect;
+  requestedUnitId?: number;
+  requestedSubUnitId?: number;
+  requestedEnergySourceId?: number;
+}) {
+  const { companyId, meter, requestedUnitId, requestedSubUnitId, requestedEnergySourceId } = params;
+  const effectiveUnitId = requestedUnitId ?? meter.unitId;
+
+  if (meter.companyId !== companyId) return "Geçersiz sayaç";
+
+  if (requestedUnitId !== undefined && meter.unitId !== requestedUnitId) {
+    return "Sayaç seçilen birime ait değil";
+  }
+
+  if (requestedSubUnitId !== undefined) {
+    const [subUnit] = await db.select({ companyId: subUnitsTable.companyId, unitId: subUnitsTable.unitId })
+      .from(subUnitsTable).where(eq(subUnitsTable.id, requestedSubUnitId));
+    if (!subUnit || subUnit.companyId !== companyId) return "Geçersiz alt birim";
+    if (effectiveUnitId !== null && subUnit.unitId !== effectiveUnitId) return "Alt birim bu birime ait değil";
+    if (meter.subUnitId !== requestedSubUnitId) return "Sayaç seçilen alt birime ait değil";
+  }
+
+  if (requestedEnergySourceId !== undefined) {
+    const [energySource] = await db.select({ companyId: energySourcesTable.companyId, unitId: energySourcesTable.unitId })
+      .from(energySourcesTable).where(eq(energySourcesTable.id, requestedEnergySourceId));
+    if (!energySource || energySource.companyId !== companyId) return "Geçersiz enerji kaynağı";
+    if (effectiveUnitId !== null && energySource.unitId !== effectiveUnitId) return "Enerji kaynağı bu birime ait değil";
+    if (meter.energySourceId !== requestedEnergySourceId) return "Sayaç seçilen enerji kaynağına ait değil";
+  }
+
+  return null;
+}
+
 interface MgmLookupResult {
   hdd: number;
   cdd: number;
@@ -20,7 +131,6 @@ async function autoLookupHddCdd(location: string, year: number, month: number): 
   try {
     const { il, ilce } = parseIlIlce(location);
 
-    // 1. mgm_station_mappings: ilçe bazlı eşleşme
     if (ilce) {
       const mapping = await lookupStationKeyByLocation(il, ilce);
       if (mapping) {
@@ -37,7 +147,6 @@ async function autoLookupHddCdd(location: string, year: number, month: number): 
       }
     }
 
-    // 2. mgm_station_mappings: il merkezi eşleşmesi
     const mappingByIl = await lookupStationKeyByLocation(il, null);
     if (mappingByIl) {
       const data = await lookupOfficialByStationKey(mappingByIl.stationKey, year, month);
@@ -55,7 +164,6 @@ async function autoLookupHddCdd(location: string, year: number, month: number): 
       }
     }
 
-    // 3. station_key slug fallback (eski kayıtlar / Van 2024 demo verisi)
     if (ilce) {
       const sk = toStationKey(il, ilce);
       const official = await lookupOfficialByStationKey(sk, year, month);
@@ -85,7 +193,6 @@ async function autoLookupHddCdd(location: string, year: number, month: number): 
       };
     }
 
-    // 4. Province text match (eski kayıtlar için geriye uyum)
     const officialByProv = await lookupOfficialWeatherDegreeDay(il, year, month);
     if (officialByProv) {
       const note = ilce
@@ -100,22 +207,51 @@ async function autoLookupHddCdd(location: string, year: number, month: number): 
       };
     }
 
-    // Resmi MGM verisi bulunamadı — Open-Meteo/sentetik fallback YOK
     return null;
   } catch {
     return null;
   }
 }
 
-// GET /api/consumption
 router.get("/consumption", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const meterId = req.query.meterId ? parseInt(req.query.meterId as string) : undefined;
-    const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    const month = req.query.month ? parseInt(req.query.month as string) : undefined;
+    const meterId = parseOptionalId(req.query.meterId, "meterId");
+    const unitId = parseOptionalId(req.query.unitId, "unitId");
+    const subUnitId = parseOptionalId(req.query.subUnitId, "subUnitId");
+    const energySourceId = parseOptionalId(req.query.energySourceId, "energySourceId");
+    const companyId = parseOptionalId(req.query.companyId, "companyId");
+    const year = parseOptionalId(req.query.year, "year");
+    const month = parseOptionalId(req.query.month, "month");
+    const conditions: SQL[] = [];
 
-    const rows = await db
+    if (isSuperAdmin(role)) {
+      if (companyId !== undefined) {
+        conditions.push(eq(consumptionTable.companyId, companyId));
+        conditions.push(eq(metersTable.companyId, companyId));
+      }
+      if (unitId !== undefined) conditions.push(eq(metersTable.unitId, unitId));
+    } else {
+      conditions.push(eq(consumptionTable.companyId, sessionCompanyId));
+      conditions.push(eq(metersTable.companyId, sessionCompanyId));
+      if (!isPrivileged(role)) {
+        if (sessionUnitId === null) {
+          res.json([]);
+          return;
+        }
+        conditions.push(eq(metersTable.unitId, sessionUnitId));
+      } else if (unitId !== undefined) {
+        conditions.push(eq(metersTable.unitId, unitId));
+      }
+    }
+
+    if (meterId !== undefined) conditions.push(eq(consumptionTable.meterId, meterId));
+    if (subUnitId !== undefined) conditions.push(eq(metersTable.subUnitId, subUnitId));
+    if (energySourceId !== undefined) conditions.push(eq(metersTable.energySourceId, energySourceId));
+    if (year !== undefined) conditions.push(eq(consumptionTable.year, year));
+    if (month !== undefined) conditions.push(eq(consumptionTable.month, month));
+
+    const query = db
       .select({
         id: consumptionTable.id,
         companyId: consumptionTable.companyId,
@@ -123,6 +259,8 @@ router.get("/consumption", requireAuth, async (req, res) => {
         meterName: metersTable.name,
         meterUnitId: metersTable.unitId,
         meterCompanyId: metersTable.companyId,
+        meterSubUnitId: metersTable.subUnitId,
+        meterEnergySourceId: metersTable.energySourceId,
         meterType: metersTable.type,
         energyUseGroupId: metersTable.energyUseGroupId,
         energyUseGroupName: energyUseGroupsTable.name,
@@ -140,52 +278,62 @@ router.get("/consumption", requireAuth, async (req, res) => {
       })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-      .leftJoin(energyUseGroupsTable, eq(metersTable.energyUseGroupId, energyUseGroupsTable.id))
-      .orderBy(consumptionTable.year, consumptionTable.month);
+      .leftJoin(energyUseGroupsTable, eq(metersTable.energyUseGroupId, energyUseGroupsTable.id));
 
-    const filtered = rows.filter(r => {
-      if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && r.meterUnitId !== sessionUnitId) return false;
-      if (role === "admin" && r.meterCompanyId !== sessionCompanyId) return false;
-      if (meterId !== undefined && r.meterId !== meterId) return false;
-      if (year !== undefined && r.year !== year) return false;
-      if (month !== undefined && r.month !== month) return false;
-      return true;
-    });
+    const rows = conditions.length > 0
+      ? await query.where(and(...conditions)).orderBy(consumptionTable.year, consumptionTable.month)
+      : await query.orderBy(consumptionTable.year, consumptionTable.month);
 
-    res.json(filtered.map(({ meterUnitId, meterCompanyId, ...r }) => r));
+    res.json(rows.map(({ meterUnitId, meterCompanyId, meterSubUnitId, meterEnergySourceId, ...r }) => r));
   } catch (err) {
+    if (isBadRequestError(err)) {
+      res.status(400).json({ error: err.message }); return;
+    }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 
-// POST /api/consumption
 router.post("/consumption", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const { meterId, year, month, kwh, tep, co2, hdd, cdd, notes } = req.body;
-    if (!meterId || !year || !month) {
+    const { meterId, year, month, kwh, tep, co2, hdd, cdd, notes, unitId, subUnitId, energySourceId } = req.body;
+    const parsedMeterId = parseRequiredId(meterId, "meterId");
+    if (!parsedMeterId || year === undefined || year === null || month === undefined || month === null) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
     }
+    const yr = parseRequiredId(year, "year");
+    const mo = parseRequiredId(month, "month");
+    if (!yr || !mo || mo < 1 || mo > 12) {
+      res.status(400).json({ error: "GeÃ§ersiz yÄ±l/ay deÄŸeri" }); return;
+    }
 
-    const [meter] = await db.select().from(metersTable).where(eq(metersTable.id, parseInt(meterId)));
-    if (!meter) { res.status(404).json({ error: "Sayaç bulunamadı" }); return; }
-
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && meter.unitId !== sessionUnitId) {
+    const requestedUnitId = parseOptionalId(unitId, "unitId");
+    if (!isPrivileged(role) && requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    if (role === "admin" && meter.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu sayaca tüketim girme yetkiniz yok" }); return;
+
+    const meterResult = await getScopedMeter({ meterId: parsedMeterId, role, sessionCompanyId, sessionUnitId });
+    if (!meterResult.meter) {
+      res.status(meterResult.status ?? 403).json({ error: meterResult.error ?? "Yetki yok" }); return;
+    }
+    const meter = meterResult.meter;
+
+    const relationError = await validateMeterRelations({
+      companyId: meter.companyId,
+      meter,
+      requestedUnitId,
+      requestedSubUnitId: parseOptionalId(subUnitId, "subUnitId"),
+      requestedEnergySourceId: parseOptionalId(energySourceId, "energySourceId"),
+    });
+    if (relationError) {
+      res.status(400).json({ error: relationError }); return;
     }
 
     const kwhVal = parseFloat(kwh) || 0;
     const tepVal = tep !== undefined ? parseFloat(tep) : kwhVal * 0.000086;
     const co2Val = co2 !== undefined ? parseFloat(co2) : kwhVal * 0.4;
 
-    const yr = parseInt(year);
-    const mo = parseInt(month);
-
-    // Dönem bazlı duplicate kontrolü
     const [dupCheck] = await db
       .select({ id: consumptionTable.id })
       .from(consumptionTable)
@@ -199,7 +347,6 @@ router.post("/consumption", requireAuth, async (req, res) => {
       res.status(409).json({ error: `Bu sayaç ve dönem (${yr}/${mo}) için kayıt zaten mevcut` }); return;
     }
 
-    // HDD/CDD: kullanıcı manuel girdiyse kullan, yoksa YALNIZCA resmi MGM havuzundan çek
     let hddVal: number | null = null;
     let cddVal: number | null = null;
     let weatherStationName: string | null = null;
@@ -213,7 +360,6 @@ router.post("/consumption", requireAuth, async (req, res) => {
       cddVal = parseFloat(cdd);
     }
 
-    // Otomatik çekme: hem hdd hem cdd boşsa — YALNIZCA resmi MGM
     if (hddVal === null && cddVal === null && meter.city) {
       const mgmResult = await autoLookupHddCdd(meter.city, yr, mo);
       if (mgmResult) {
@@ -223,7 +369,6 @@ router.post("/consumption", requireAuth, async (req, res) => {
         weatherStationNote = mgmResult.stationNote;
         weatherDataMethod = mgmResult.dataMethod;
       } else {
-        // Resmi MGM verisi yok — Open-Meteo/sentetik fallback KULLANILMIYOR
         weatherDataMethod = "no_official_data";
         weatherStationNote = `Bu dönem (${yr}/${mo}) ve lokasyon ("${meter.city}") için resmi MGM HDD/CDD verisi bulunamadı. Veri senkronizasyonu için yöneticinize başvurun.`;
       }
@@ -250,16 +395,21 @@ router.post("/consumption", requireAuth, async (req, res) => {
       weatherDataMethod,
     });
   } catch (err) {
+    if (isBadRequestError(err)) {
+      res.status(400).json({ error: err.message }); return;
+    }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 
-// PATCH /api/consumption/:id
 router.patch("/consumption/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
+    const id = parsePathId(req.params.id, "consumption id");
+    if (!isPrivileged(role) && sessionUnitId === null) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
 
     const [existing] = await db
       .select({
@@ -272,49 +422,87 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
       })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-      .where(eq(consumptionTable.id, id));
+      .where(scopedConsumptionCondition(id, role, sessionCompanyId));
     if (!existing) { res.status(404).json({ error: "Kayıt bulunamadı" }); return; }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.meterUnitId !== sessionUnitId) {
+    if (!isSuperAdmin(role) && existing.meterCompanyId !== sessionCompanyId) {
+      res.status(404).json({ error: "Kayıt bulunamadı" }); return;
+    }
+    if (!isPrivileged(role) && existing.meterUnitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    if (role === "admin" && existing.meterCompanyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu kaydı düzenleme yetkiniz yok" }); return;
+
+    const { meterId, year, month, kwh, tep, co2, hdd, cdd, notes, unitId, subUnitId, energySourceId } = req.body;
+    const finalMeterId = meterId !== undefined ? parseRequiredId(meterId, "meterId") : existing.meterId;
+    if (!finalMeterId) {
+      res.status(400).json({ error: "Geçersiz sayaç" }); return;
+    }
+    const finalYear = year !== undefined ? parseRequiredId(year, "year") : existing.year;
+    const finalMonth = month !== undefined ? parseRequiredId(month, "month") : existing.month;
+    if (!finalYear || !finalMonth || finalMonth < 1 || finalMonth > 12) {
+      res.status(400).json({ error: "Geçersiz yıl/ay değeri" }); return;
     }
 
-    const { kwh, tep, co2, hdd, cdd, notes } = req.body;
-
-    // Dönem bazlı duplicate kontrolü (kendi kaydı hariç)
-    if (existing.meterId && existing.year && existing.month) {
-      const [dupCheck] = await db
-        .select({ id: consumptionTable.id })
-        .from(consumptionTable)
-        .where(and(
-          eq(consumptionTable.companyId, existing.companyId!),
-          eq(consumptionTable.meterId, existing.meterId),
-          eq(consumptionTable.year, existing.year),
-          eq(consumptionTable.month, existing.month),
-          ne(consumptionTable.id, id)
-        ));
-      if (dupCheck) {
-        res.status(409).json({ error: `Bu sayaç ve dönem (${existing.year}/${existing.month}) için başka bir kayıt zaten mevcut` }); return;
-      }
+    const requestedUnitId = parseOptionalId(unitId, "unitId");
+    if (!isPrivileged(role) && requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
+      res.status(403).json({ error: "Yetki yok" }); return;
     }
+
+    const meterResult = await getScopedMeter({ meterId: finalMeterId, role, sessionCompanyId, sessionUnitId });
+    if (!meterResult.meter) {
+      res.status(meterResult.status ?? 403).json({ error: meterResult.error ?? "Yetki yok" }); return;
+    }
+    const finalMeter = meterResult.meter;
+
+    const relationError = await validateMeterRelations({
+      companyId: finalMeter.companyId,
+      meter: finalMeter,
+      requestedUnitId,
+      requestedSubUnitId: parseOptionalId(subUnitId, "subUnitId"),
+      requestedEnergySourceId: parseOptionalId(energySourceId, "energySourceId"),
+    });
+    if (relationError) {
+      res.status(400).json({ error: relationError }); return;
+    }
+
+    const [dupCheck] = await db
+      .select({ id: consumptionTable.id })
+      .from(consumptionTable)
+      .where(and(
+        eq(consumptionTable.companyId, finalMeter.companyId),
+        eq(consumptionTable.meterId, finalMeter.id),
+        eq(consumptionTable.year, finalYear),
+        eq(consumptionTable.month, finalMonth),
+        ne(consumptionTable.id, id)
+      ));
+    if (dupCheck) {
+      res.status(409).json({ error: `Bu sayaç ve dönem (${finalYear}/${finalMonth}) için başka bir kayıt zaten mevcut` }); return;
+    }
+
     const updates: Record<string, unknown> = {};
+    if (meterId !== undefined) {
+      updates.meterId = finalMeter.id;
+      updates.companyId = finalMeter.companyId;
+    }
+    if (year !== undefined) updates.year = finalYear;
+    if (month !== undefined) updates.month = finalMonth;
     if (kwh !== undefined) updates.kwh = parseFloat(kwh);
     if (tep !== undefined) updates.tep = parseFloat(tep);
     if (co2 !== undefined) updates.co2 = parseFloat(co2);
     if (hdd !== undefined) updates.hdd = parseFloat(hdd);
     if (cdd !== undefined) updates.cdd = parseFloat(cdd);
     if (notes !== undefined) updates.notes = notes;
-    const [record] = await db.update(consumptionTable).set(updates).where(eq(consumptionTable.id, id)).returning();
+
+    const [record] = await db.update(consumptionTable).set(updates).where(scopedConsumptionCondition(id, role, sessionCompanyId)).returning();
     res.json(record);
   } catch (err) {
+    if (isBadRequestError(err)) {
+      res.status(400).json({ error: err.message }); return;
+    }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 
-// POST /api/consumption/batch — toplu içe aktarma
 router.post("/consumption/batch", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
@@ -325,8 +513,20 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
     if (rows.length > 5000) {
       res.status(400).json({ error: "En fazla 5000 satır içe aktarılabilir" }); return;
     }
+    if (!isPrivileged(role) && sessionUnitId === null) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
 
-    const allMeters = await db.select().from(metersTable).where(eq(metersTable.companyId, sessionCompanyId));
+    const meterConditions: SQL[] = [];
+    if (!isSuperAdmin(role)) meterConditions.push(eq(metersTable.companyId, sessionCompanyId));
+    if (!isPrivileged(role) && sessionUnitId !== null) meterConditions.push(eq(metersTable.unitId, sessionUnitId));
+    const importCompanyId = isSuperAdmin(role)
+      ? parseOptionalId(req.body?.companyId, "companyId")
+      : undefined;
+    if (importCompanyId !== undefined) meterConditions.push(eq(metersTable.companyId, importCompanyId));
+    const allMeters = meterConditions.length > 0
+      ? await db.select().from(metersTable).where(and(...meterConditions))
+      : await db.select().from(metersTable);
 
     let imported = 0;
     const errors: { row: number; message: string }[] = [];
@@ -334,21 +534,47 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
     for (const [i, row] of rows.entries()) {
       const rowNum = i + 1;
       try {
-        const meter = allMeters.find(m => {
-          if (row.meterId) return m.id === parseInt(String(row.meterId));
-          if (row.meterName) return m.name.toLowerCase().trim() === String(row.meterName).toLowerCase().trim();
-          return false;
-        });
+        const rowMeterId = parseOptionalId(row.meterId, "meterId");
+        let meter: typeof metersTable.$inferSelect | undefined;
+        if (rowMeterId !== undefined) {
+          meter = allMeters.find(m => m.id === rowMeterId);
+        } else if (row.meterName) {
+          const normalizedMeterName = String(row.meterName).toLowerCase().trim();
+          const matchingMeters = allMeters.filter(m => m.name.toLowerCase().trim() === normalizedMeterName);
+          const matchingCompanyIds = new Set(matchingMeters.map(m => m.companyId));
+          if (isSuperAdmin(role) && importCompanyId === undefined && matchingCompanyIds.size > 1) {
+            errors.push({
+              row: rowNum,
+              message: "Sayaç adı birden fazla şirkette eşleşiyor. companyId veya meterId belirtin.",
+            });
+            continue;
+          }
+          meter = matchingMeters[0];
+        }
         if (!meter) {
-          errors.push({ row: rowNum, message: `Sayaç bulunamadı: "${row.meterName ?? row.meterId}"` });
+          errors.push({ row: rowNum, message: "Sayaç bulunamadı" });
           continue;
         }
-        if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && meter.unitId !== sessionUnitId) {
+
+        const requestedUnitId = parseOptionalId(firstPresent(row.unitId, row.unitid, row.unit_id), "unitId");
+        if (!isPrivileged(role) && requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
           errors.push({ row: rowNum, message: "Bu sayaç için yetkiniz yok" });
           continue;
         }
-        const year = parseInt(String(row.year));
-        const month = parseInt(String(row.month));
+        const relationError = await validateMeterRelations({
+          companyId: meter.companyId,
+          meter,
+          requestedUnitId,
+          requestedSubUnitId: parseOptionalId(firstPresent(row.subUnitId, row.subunitid, row.sub_unit_id), "subUnitId"),
+          requestedEnergySourceId: parseOptionalId(firstPresent(row.energySourceId, row.energysourceid, row.energy_source_id), "energySourceId"),
+        });
+        if (relationError) {
+          errors.push({ row: rowNum, message: "Geçersiz sayaç ilişkisi" });
+          continue;
+        }
+
+        const year = parseRequiredId(row.year, "year");
+        const month = parseRequiredId(row.month, "month");
         if (!year || !month || month < 1 || month > 12) {
           errors.push({ row: rowNum, message: "Geçersiz yıl/ay değeri" });
           continue;
@@ -362,17 +588,14 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
         let hddVal: number | null = row.hdd !== undefined && row.hdd !== "" ? parseFloat(String(row.hdd)) : null;
         let cddVal: number | null = row.cdd !== undefined && row.cdd !== "" ? parseFloat(String(row.cdd)) : null;
 
-        // Batch'te de HDD/CDD boşsa YALNIZCA resmi MGM'den çek
         if (hddVal === null && cddVal === null && meter.city) {
           const mgmResult = await autoLookupHddCdd(meter.city, year, month);
           if (mgmResult) {
             hddVal = mgmResult.hdd;
             cddVal = mgmResult.cdd;
           }
-          // Resmi veri yoksa null bırak — sentetik/Open-Meteo fallback yok
         }
 
-        // Dönem bazlı duplicate kontrolü (batch)
         const [batchDup] = await db
           .select({ id: consumptionTable.id })
           .from(consumptionTable)
@@ -403,24 +626,27 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
 
     res.json({ imported, total: rows.length, errors });
   } catch (err) {
+    if (isBadRequestError(err)) {
+      res.status(400).json({ error: err.message }); return;
+    }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 
-// POST /api/admin/consumption/refresh-weather — Mevcut tüketim kayıtlarının HDD/CDD'sini yenile
-router.post("/admin/consumption/refresh-weather", requireAuth, requireAdmin, async (req, res) => {
+router.post("/admin/consumption/refresh-weather", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
-    const dryRun = req.body?.dryRun === true;
-
-    // superadmin body.companyId ile hedef şirketi belirleyebilir
-    let targetCompanyId: number | null = sessionCompanyId;
-    if (role === "superadmin" && req.body?.companyId) {
-      targetCompanyId = parseInt(req.body.companyId);
+    if (!isPrivileged(role)) {
+      res.status(403).json({ error: "Bu işlem için yetkiniz yok" }); return;
     }
 
-    // Tüm tüketim kayıtlarını sayaç şehriyle birlikte çek
+    const dryRun = req.body?.dryRun === true;
+    let targetCompanyId: number | null = sessionCompanyId;
+    if (isSuperAdmin(role) && req.body?.companyId !== undefined && req.body?.companyId !== null) {
+      targetCompanyId = parseOptionalId(req.body.companyId, "companyId") ?? targetCompanyId;
+    }
+
     const baseQuery = db
       .select({
         id: consumptionTable.id,
@@ -462,7 +688,6 @@ router.post("/admin/consumption/refresh-weather", requireAuth, requireAdmin, asy
           }).where(eq(consumptionTable.id, rec.id));
           updated++;
         } else {
-          // Resmi MGM verisi yok — hdd/cdd null yap, ondalıklı fallback kalmasın
           await db.update(consumptionTable).set({
             hdd: null,
             cdd: null,
@@ -486,33 +711,41 @@ router.post("/admin/consumption/refresh-weather", requireAuth, requireAdmin, asy
       errors: errors.slice(0, 20),
     });
   } catch (err) {
+    if (isBadRequestError(err)) {
+      res.status(400).json({ error: err.message }); return;
+    }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 
-// DELETE /api/consumption/:id
 router.delete("/consumption/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
+    const id = parsePathId(req.params.id, "consumption id");
+    if (!isPrivileged(role) && sessionUnitId === null) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
 
     const [existing] = await db
       .select({ meterUnitId: metersTable.unitId, meterCompanyId: metersTable.companyId })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-      .where(eq(consumptionTable.id, id));
+      .where(scopedConsumptionCondition(id, role, sessionCompanyId));
     if (!existing) { res.status(404).send(); return; }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.meterUnitId !== sessionUnitId) {
+    if (!isSuperAdmin(role) && existing.meterCompanyId !== sessionCompanyId) {
+      res.status(404).send(); return;
+    }
+    if (!isPrivileged(role) && existing.meterUnitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    if (role === "admin" && existing.meterCompanyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu kaydı silme yetkiniz yok" }); return;
-    }
 
-    await db.delete(consumptionTable).where(eq(consumptionTable.id, id));
+    await db.delete(consumptionTable).where(scopedConsumptionCondition(id, role, sessionCompanyId));
     res.status(204).send();
   } catch (err) {
+    if (isBadRequestError(err)) {
+      res.status(400).json({ error: err.message }); return;
+    }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
