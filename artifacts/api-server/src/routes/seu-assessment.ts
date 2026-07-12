@@ -7,6 +7,7 @@ import {
   subUnitsTable,
   energySourcesTable,
   unitsTable,
+  companiesTable,
   seuAssessmentsTable,
   seuAssessmentItemsTable,
   seuTable,
@@ -35,6 +36,100 @@ function parsePositiveInteger(value: unknown): number | null {
     if (Number.isSafeInteger(parsed)) return parsed;
   }
   return null;
+}
+
+class AssessmentScopeError extends Error {
+  constructor(public status: number, message: string) { super(message); }
+}
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parseOptionalId(value: unknown, field: string): number | null {
+  if (value === undefined || value === null) return null;
+  const parsed = parsePositiveInteger(value);
+  if (parsed === null) throw new AssessmentScopeError(400, `Geçersiz ${field}`);
+  return parsed;
+}
+
+async function validateAssessmentItemRelations(
+  companyId: number,
+  assessmentUnitId: number,
+  assessmentEnergySourceId: number | null,
+  item: any,
+) {
+  let unitId = parseOptionalId(item.unitId, "item.unitId");
+  let subUnitId = parseOptionalId(item.subUnitId, "item.subUnitId");
+  let energySourceId = parseOptionalId(item.energySourceId, "item.energySourceId");
+  let energyUseGroupId = parseOptionalId(item.energyUseGroupId, "item.energyUseGroupId");
+  const meterId = parseOptionalId(item.meterId, "item.meterId");
+
+  if (meterId !== null) {
+    const [meter] = await db.select({
+      unitId: metersTable.unitId,
+      subUnitId: metersTable.subUnitId,
+      energySourceId: metersTable.energySourceId,
+      energyUseGroupId: metersTable.energyUseGroupId,
+    }).from(metersTable).where(and(eq(metersTable.id, meterId), eq(metersTable.companyId, companyId)));
+    if (!meter) throw new AssessmentScopeError(400, "Geçersiz item.meterId");
+    if (unitId !== null && meter.unitId !== null && unitId !== meter.unitId) throw new AssessmentScopeError(400, "Sayaç unit ilişkisi çelişkili");
+    if (subUnitId !== null && meter.subUnitId !== null && subUnitId !== meter.subUnitId) throw new AssessmentScopeError(400, "Sayaç subUnit ilişkisi çelişkili");
+    if (energySourceId !== null && meter.energySourceId !== null && energySourceId !== meter.energySourceId) throw new AssessmentScopeError(400, "Sayaç enerji kaynağı ilişkisi çelişkili");
+    if (energyUseGroupId !== null && meter.energyUseGroupId !== null && energyUseGroupId !== meter.energyUseGroupId) throw new AssessmentScopeError(400, "Sayaç enerji kullanım grubu ilişkisi çelişkili");
+    unitId ??= meter.unitId;
+    subUnitId ??= meter.subUnitId;
+    energySourceId ??= meter.energySourceId;
+    energyUseGroupId ??= meter.energyUseGroupId;
+  }
+
+  if (energyUseGroupId !== null) {
+    const [group] = await db.select({
+      unitId: energyUseGroupsTable.unitId,
+      subUnitId: energyUseGroupsTable.subUnitId,
+      energySourceId: energyUseGroupsTable.energySourceId,
+    }).from(energyUseGroupsTable).where(and(eq(energyUseGroupsTable.id, energyUseGroupId), eq(energyUseGroupsTable.companyId, companyId)));
+    if (!group) throw new AssessmentScopeError(400, "Geçersiz item.energyUseGroupId");
+    if (unitId !== null && group.unitId !== null && unitId !== group.unitId) throw new AssessmentScopeError(400, "Grup unit ilişkisi çelişkili");
+    if (subUnitId !== null && group.subUnitId !== null && subUnitId !== group.subUnitId) throw new AssessmentScopeError(400, "Grup subUnit ilişkisi çelişkili");
+    if (energySourceId !== null && group.energySourceId !== null && energySourceId !== group.energySourceId) throw new AssessmentScopeError(400, "Grup enerji kaynağı ilişkisi çelişkili");
+    unitId ??= group.unitId;
+    subUnitId ??= group.subUnitId;
+    energySourceId ??= group.energySourceId;
+  }
+
+  unitId ??= assessmentUnitId;
+  if (unitId !== assessmentUnitId) throw new AssessmentScopeError(400, "Item assessment birimi ile uyumlu değil");
+  const [unit] = await db.select({ id: unitsTable.id }).from(unitsTable)
+    .where(and(eq(unitsTable.id, unitId), eq(unitsTable.companyId, companyId)));
+  if (!unit) throw new AssessmentScopeError(400, "Geçersiz item.unitId");
+
+  if (subUnitId !== null) {
+    const [subUnit] = await db.select({ id: subUnitsTable.id }).from(subUnitsTable)
+      .where(and(eq(subUnitsTable.id, subUnitId), eq(subUnitsTable.companyId, companyId), eq(subUnitsTable.unitId, unitId)));
+    if (!subUnit) throw new AssessmentScopeError(400, "Geçersiz item.subUnitId");
+  }
+  energySourceId ??= assessmentEnergySourceId;
+  if (assessmentEnergySourceId !== null && energySourceId !== null && energySourceId !== assessmentEnergySourceId) {
+    throw new AssessmentScopeError(400, "Item assessment enerji kaynağı ile uyumlu değil");
+  }
+  if (energySourceId !== null) {
+    const [source] = await db.select({ id: energySourcesTable.id }).from(energySourcesTable)
+      .where(and(eq(energySourcesTable.id, energySourceId), eq(energySourcesTable.companyId, companyId), eq(energySourcesTable.unitId, unitId)));
+    if (!source) throw new AssessmentScopeError(400, "Geçersiz item.energySourceId");
+  }
+
+  return { ...item, unitId, subUnitId, energySourceId, energyUseGroupId, meterId };
+}
+
+function handleAssessmentScopeError(res: any, err: unknown) {
+  if (!(err instanceof AssessmentScopeError)) return false;
+  res.status(err.status).json({ error: err.message });
+  return true;
 }
 
 // ── GET /seu/analyze ─────────────────────────────────────
@@ -292,7 +387,8 @@ router.get("/seu/assessments", requireAuth, async (req, res) => {
 router.get("/seu/assessments/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
+    const id = parsePositiveInteger(req.params.id);
+    if (id === null) { res.status(400).json({ error: "Geçersiz assessmentId" }); return; }
     const [assessment] = await db
       .select()
       .from(seuAssessmentsTable)
@@ -318,7 +414,7 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId, userId } = req.user!;
     const {
-      unitId, year, periodStart = 1, periodEnd = 12,
+      companyId: bodyCompanyId, unitId, year, periodStart = 1, periodEnd = 12,
       analysisLevel = "energyUseGroup",
       methodType = "consumption_share_opportunity_matrix",
       recordType: requestedRecordType,
@@ -330,17 +426,38 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
     let recordType = "unit_official";
     let isOfficial = true;
 
-    if (role === "user") {
+    const requestedCompanyId = parseOptionalId(bodyCompanyId, "companyId");
+    const effectiveCompanyId = isSuperAdmin(role) ? (requestedCompanyId ?? sessionCompanyId) : sessionCompanyId;
+    const [company] = await db.select({ id: companiesTable.id }).from(companiesTable)
+      .where(eq(companiesTable.id, effectiveCompanyId));
+    if (!company) throw new AssessmentScopeError(400, "Geçersiz companyId");
+    const requestedUnitId = parseOptionalId(unitId, "unitId");
+
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role)) {
+      if (sessionUnitId === null) throw new AssessmentScopeError(403, "Yetki yok");
       resolvedUnitId = sessionUnitId;
       recordType = "unit_official";
       isOfficial = true;
     } else {
-      resolvedUnitId = unitId ? parseInt(unitId) : null;
+      resolvedUnitId = requestedUnitId;
       recordType = requestedRecordType ?? "admin_review";
       isOfficial = recordType === "unit_official";
     }
 
     if (!resolvedUnitId) { res.status(400).json({ error: "Birim seçilmedi" }); return; }
+    const [assessmentUnit] = await db.select({ id: unitsTable.id }).from(unitsTable)
+      .where(and(eq(unitsTable.id, resolvedUnitId), eq(unitsTable.companyId, effectiveCompanyId)));
+    if (!assessmentUnit) throw new AssessmentScopeError(400, "Geçersiz unitId");
+    const assessmentEnergySourceId = parseOptionalId(energySourceId, "energySourceId");
+    if (assessmentEnergySourceId !== null) {
+      const [source] = await db.select({ id: energySourcesTable.id }).from(energySourcesTable)
+        .where(and(
+          eq(energySourcesTable.id, assessmentEnergySourceId),
+          eq(energySourcesTable.companyId, effectiveCompanyId),
+          eq(energySourcesTable.unitId, resolvedUnitId),
+        ));
+      if (!source) throw new AssessmentScopeError(400, "Geçersiz energySourceId");
+    }
 
     const ALLOWED_METHOD_TYPES = ["consumption_share_opportunity_matrix"] as const;
     const resolvedMethodType = methodType || "consumption_share_opportunity_matrix";
@@ -357,46 +474,58 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
       }
     }
 
+    if (!Array.isArray(items)) throw new AssessmentScopeError(400, "items dizi olmalıdır");
+    const validatedItems: any[] = [];
+    for (const item of items) {
+      validatedItems.push(await validateAssessmentItemRelations(
+        effectiveCompanyId,
+        resolvedUnitId,
+        assessmentEnergySourceId,
+        item,
+      ));
+    }
+
+    const assessment = await db.transaction(async (tx) => {
     if (recordType === "unit_official") {
-      const [existing] = await db
+      const [existing] = await tx
         .select({ id: seuAssessmentsTable.id })
         .from(seuAssessmentsTable)
         .where(and(
-          eq(seuAssessmentsTable.companyId, sessionCompanyId),
+          eq(seuAssessmentsTable.companyId, effectiveCompanyId),
           eq(seuAssessmentsTable.unitId, resolvedUnitId),
           eq(seuAssessmentsTable.year, parseInt(year)),
           eq(seuAssessmentsTable.analysisLevel, analysisLevel),
-          eq(seuAssessmentsTable.methodType, methodType),
+          eq(seuAssessmentsTable.methodType, resolvedMethodType),
           eq(seuAssessmentsTable.recordType, "unit_official"),
         ));
       if (existing) {
-        if (role === "admin" || role === "superadmin") {
-          res.status(409).json({ error: "Bu birim için resmi kayıt zaten mevcut. Admin kayıtları ezemez." }); return;
+        if (isCompanyAdmin(role) || isSuperAdmin(role)) {
+          throw new AssessmentScopeError(409, "Bu birim için resmi kayıt zaten mevcut. Admin kayıtları ezemez.");
         }
-        await db.delete(seuAssessmentItemsTable).where(eq(seuAssessmentItemsTable.assessmentId, existing.id));
-        await db.delete(seuAssessmentsTable).where(eq(seuAssessmentsTable.id, existing.id));
+        await tx.delete(seuAssessmentItemsTable).where(eq(seuAssessmentItemsTable.assessmentId, existing.id));
+        await tx.delete(seuAssessmentsTable).where(eq(seuAssessmentsTable.id, existing.id));
       }
     }
 
-    const [assessment] = await db.insert(seuAssessmentsTable).values({
-      companyId: sessionCompanyId,
+    const [assessment] = await tx.insert(seuAssessmentsTable).values({
+      companyId: effectiveCompanyId,
       unitId: resolvedUnitId,
       year: parseInt(year),
       periodStart: parseInt(periodStart),
       periodEnd: parseInt(periodEnd),
       analysisLevel,
-      methodType,
+      methodType: resolvedMethodType,
       recordType,
       isOfficial,
       unitTotalTep: parseFloat(unitTotalTep) || 0,
-      energySourceId: energySourceId ? parseInt(energySourceId) : null,
+      energySourceId: assessmentEnergySourceId,
       createdByUserId: userId,
       updatedByUserId: userId,
     }).returning();
 
-    if (items.length > 0) {
-      await db.insert(seuAssessmentItemsTable).values(
-        items.map((item: any) => ({
+    if (validatedItems.length > 0) {
+      await tx.insert(seuAssessmentItemsTable).values(
+        validatedItems.map((item: any) => ({
           assessmentId: assessment.id,
           energyUseGroupId: item.energyUseGroupId ?? null,
           meterId: item.meterId ?? null,
@@ -418,8 +547,12 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
       );
     }
 
+    return assessment;
+    });
+
     res.status(201).json({ id: assessment.id });
   } catch (err) {
+    if (handleAssessmentScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -497,7 +630,8 @@ router.patch("/seu/assessments/:id/items/:itemId", requireAuth, async (req, res)
 router.patch("/seu/decision-items/analysis/:itemId", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const itemId = parseInt(req.params.itemId as string);
+    const itemId = parsePositiveInteger(req.params.itemId);
+    if (itemId === null) { res.status(400).json({ error: "Geçersiz itemId" }); return; }
 
     const [existingItem] = await db
       .select({ id: seuAssessmentItemsTable.id, assessmentId: seuAssessmentItemsTable.assessmentId, consumptionSharePercent: seuAssessmentItemsTable.consumptionSharePercent })
@@ -551,7 +685,8 @@ router.patch("/seu/decision-items/analysis/:itemId", requireAuth, async (req, re
 router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
+    const id = parsePositiveInteger(req.params.id);
+    if (id === null) { res.status(400).json({ error: "Geçersiz assessmentId" }); return; }
     const [assessment] = await db
       .select()
       .from(seuAssessmentsTable)
@@ -884,7 +1019,8 @@ router.get("/seu/admin/unit-detail/:unitId", requireAuth, async (req, res) => {
     if (role !== "admin" && role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    const unitId = parseInt(req.params.unitId as string);
+    const unitId = parsePositiveInteger(req.params.unitId);
+    if (unitId === null) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
 
     // Official assessments for this unit/year
