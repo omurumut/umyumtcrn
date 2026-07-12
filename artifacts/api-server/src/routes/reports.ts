@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { db, reportsTable, consumptionTable, swotTable, risksTable, seuTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
-import { eq, and, SQL, inArray, lte, gte, desc, asc } from "drizzle-orm";
+import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -88,16 +88,36 @@ const MONTH_NAMES = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
 router.get("/reports", requireAuth, async (req, res) => {
   try {
     const user = req.user!;
-    const queryUnitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
+    parsePositiveInteger(req.query.companyId, "companyId");
+    parsePositiveInteger(req.query.unitId, "unitId");
 
-    const resolvedUnitId: number | null =
-      user.role !== "admin" && user.unitId !== null
-        ? user.unitId
-        : (queryUnitId !== undefined ? queryUnitId : null);
+    if (!isCompanyAdmin(user.role) && !isSuperAdmin(user.role) && user.unitId === null) {
+      res.json([]);
+      return;
+    }
 
-    const items = resolvedUnitId !== null
-      ? await db.select().from(reportsTable).where(eq(reportsTable.unitId, resolvedUnitId)).orderBy(reportsTable.createdAt)
-      : await db.select().from(reportsTable).orderBy(reportsTable.createdAt);
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, false);
+    const conditions: SQL[] = [
+      or(
+        isNull(reportsTable.unitId),
+        eq(unitsTable.companyId, reportsTable.companyId),
+      )!,
+    ];
+    if (scope.companyId !== undefined) conditions.push(eq(reportsTable.companyId, scope.companyId));
+    if (scope.unitId !== null) conditions.push(eq(reportsTable.unitId, scope.unitId));
+
+    const items = await db.select({
+      id: reportsTable.id,
+      unitId: reportsTable.unitId,
+      year: reportsTable.year,
+      status: reportsTable.status,
+      downloadUrl: reportsTable.downloadUrl,
+      createdAt: reportsTable.createdAt,
+    })
+      .from(reportsTable)
+      .leftJoin(unitsTable, eq(reportsTable.unitId, unitsTable.id))
+      .where(and(...conditions))
+      .orderBy(reportsTable.createdAt);
 
     res.json(items.map(r => ({
       id: r.id,
@@ -108,6 +128,7 @@ router.get("/reports", requireAuth, async (req, res) => {
       createdAt: r.createdAt,
     })));
   } catch (err) {
+    if (handleReportScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
