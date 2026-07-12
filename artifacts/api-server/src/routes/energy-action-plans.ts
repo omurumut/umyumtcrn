@@ -5,14 +5,29 @@ import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
+function isCompanyAdmin(role: string) { return role === "admin" || role === "kontrol_admin"; }
+function isSuperAdmin(role: string) { return role === "superadmin"; }
+function isStandard(role: string) { return !isCompanyAdmin(role) && !isSuperAdmin(role); }
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value); if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 // GET /api/energy-action-plans
 router.get("/energy-action-plans", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const conditions: SQL[] = [eq(energyActionPlansTable.companyId, sessionCompanyId)];
 
-    const targetId = req.query.targetId ? parseInt(req.query.targetId as string) : undefined;
+    if (isStandard(role) && sessionUnitId === null) { res.json([]); return; }
+    const targetId = parsePositiveInteger(req.query.targetId);
+    if (req.query.targetId !== undefined && targetId === undefined) { res.status(400).json({ error: "Geçersiz targetId" }); return; }
     if (targetId !== undefined) conditions.push(eq(energyActionPlansTable.targetId, targetId));
+    if (isStandard(role)) conditions.push(eq(energyTargetsTable.unitId, sessionUnitId!));
 
     const plans = await db
       .select({
@@ -48,14 +63,14 @@ router.get("/energy-action-plans", requireAuth, async (req, res) => {
       .orderBy(energyActionPlansTable.createdAt);
 
     // Non-admin ve birime atanmamış kullanıcı şirket geneli veri göremez
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId === null) {
+    if (isStandard(role) && sessionUnitId === null) {
       res.json([]);
       return;
     }
 
     // Normal kullanıcı sadece kendi birimini görür
     const filtered =
-      role !== "admin" && role !== "superadmin"
+      isStandard(role)
         ? plans.filter((p) => p.targetUnitId === sessionUnitId)
         : plans;
 
@@ -82,12 +97,17 @@ router.post("/energy-action-plans", requireAuth, async (req, res) => {
     }
 
     // Hedefin aynı company_id içinde olduğunu doğrula
+    if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const parsedTargetId = parsePositiveInteger(targetId);
+    if (parsedTargetId === undefined) { res.status(400).json({ error: "Geçersiz targetId" }); return; }
+    const targetConditions = [eq(energyTargetsTable.id, parsedTargetId), eq(energyTargetsTable.companyId, sessionCompanyId)];
+    if (isStandard(role)) targetConditions.push(eq(energyTargetsTable.unitId, sessionUnitId!));
     const [target] = await db.select({ id: energyTargetsTable.id, companyId: energyTargetsTable.companyId, unitId: energyTargetsTable.unitId })
-      .from(energyTargetsTable).where(eq(energyTargetsTable.id, parseInt(targetId)));
-    if (!target || target.companyId !== sessionCompanyId) {
+      .from(energyTargetsTable).where(and(...targetConditions));
+    if (!target) {
       res.status(403).json({ error: "Geçersiz hedef" }); return;
     }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && target.unitId !== sessionUnitId) {
+    if (isStandard(role) && sessionUnitId !== null && target.unitId !== sessionUnitId) {
       res.status(403).json({ error: "Bu hedefe eylem planı ekleme yetkiniz yok" }); return;
     }
 
@@ -99,7 +119,7 @@ router.post("/energy-action-plans", requireAuth, async (req, res) => {
 
     const [item] = await db.insert(energyActionPlansTable).values({
       companyId: sessionCompanyId,
-      targetId: parseInt(targetId),
+      targetId: parsedTargetId,
       title,
       description: description || null,
       responsibleName: responsibleName || null,
@@ -147,16 +167,23 @@ router.post("/energy-action-plans", requireAuth, async (req, res) => {
 router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
+    if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const id = parsePositiveInteger(req.params.id);
+    if (id === undefined) { res.status(400).json({ error: "Geçersiz actionPlanId" }); return; }
 
+    const recordConditions = [eq(energyActionPlansTable.id, id), eq(energyActionPlansTable.companyId, sessionCompanyId)];
     const [existing] = await db
       .select({ id: energyActionPlansTable.id, companyId: energyActionPlansTable.companyId, targetId: energyActionPlansTable.targetId })
-      .from(energyActionPlansTable).where(eq(energyActionPlansTable.id, id));
+      .from(energyActionPlansTable).where(and(...recordConditions));
     if (!existing) { res.status(404).json({ error: "Bulunamadı" }); return; }
     if (existing.companyId !== sessionCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
 
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
-      const [target] = await db.select({ unitId: energyTargetsTable.unitId }).from(energyTargetsTable).where(eq(energyTargetsTable.id, existing.targetId));
+    if (isStandard(role) && sessionUnitId !== null) {
+      const [target] = await db.select({ unitId: energyTargetsTable.unitId }).from(energyTargetsTable).where(and(
+        eq(energyTargetsTable.id, existing.targetId),
+        eq(energyTargetsTable.companyId, sessionCompanyId),
+        eq(energyTargetsTable.unitId, sessionUnitId!),
+      ));
       if (target?.unitId !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
     }
 
@@ -190,7 +217,8 @@ router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
     if (isVap !== undefined) updates.isVap = Boolean(isVap);
     if (notes !== undefined) updates.notes = notes || null;
 
-    const [item] = await db.update(energyActionPlansTable).set(updates).where(eq(energyActionPlansTable.id, id)).returning();
+    recordConditions.push(eq(energyActionPlansTable.targetId, existing.targetId));
+    const [item] = await db.update(energyActionPlansTable).set(updates).where(and(...recordConditions)).returning();
 
     // isVap değişti ise VAP kaydını güncelle
     if (isVap !== undefined) {
@@ -198,7 +226,7 @@ router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
         // isVap true → bağlı VAP yoksa oluştur
         const [existingVap] = await db.select({ id: vapProjectsTable.id })
           .from(vapProjectsTable)
-          .where(eq(vapProjectsTable.actionPlanId, id));
+          .where(and(eq(vapProjectsTable.actionPlanId, id), eq(vapProjectsTable.companyId, sessionCompanyId)));
         if (!existingVap) {
           const { name: userName } = req.user!;
           await db.insert(vapProjectsTable).values({
@@ -214,7 +242,7 @@ router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
         }
       } else {
         // isVap false → phantom VAP kaydını temizle
-        await db.delete(vapProjectsTable).where(eq(vapProjectsTable.actionPlanId, id));
+        await db.delete(vapProjectsTable).where(and(eq(vapProjectsTable.actionPlanId, id), eq(vapProjectsTable.companyId, sessionCompanyId)));
       }
     }
 
@@ -229,15 +257,23 @@ router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
 router.delete("/energy-action-plans/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
-    const [existing] = await db.select().from(energyActionPlansTable).where(eq(energyActionPlansTable.id, id));
+    if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const id = parsePositiveInteger(req.params.id);
+    if (id === undefined) { res.status(400).json({ error: "Geçersiz actionPlanId" }); return; }
+    const recordConditions = [eq(energyActionPlansTable.id, id), eq(energyActionPlansTable.companyId, sessionCompanyId)];
+    const [existing] = await db.select().from(energyActionPlansTable).where(and(...recordConditions));
     if (!existing) { res.status(404).send(); return; }
     if (existing.companyId !== sessionCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
-      const [target] = await db.select({ unitId: energyTargetsTable.unitId }).from(energyTargetsTable).where(eq(energyTargetsTable.id, existing.targetId));
+    if (isStandard(role) && sessionUnitId !== null) {
+      const [target] = await db.select({ unitId: energyTargetsTable.unitId }).from(energyTargetsTable).where(and(
+        eq(energyTargetsTable.id, existing.targetId),
+        eq(energyTargetsTable.companyId, sessionCompanyId),
+        eq(energyTargetsTable.unitId, sessionUnitId!),
+      ));
       if (target?.unitId !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
     }
-    await db.delete(energyActionPlansTable).where(eq(energyActionPlansTable.id, id));
+    recordConditions.push(eq(energyActionPlansTable.targetId, existing.targetId));
+    await db.delete(energyActionPlansTable).where(and(...recordConditions));
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

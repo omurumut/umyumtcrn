@@ -5,14 +5,29 @@ import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
+function isCompanyAdmin(role: string) { return role === "admin" || role === "kontrol_admin"; }
+function isSuperAdmin(role: string) { return role === "superadmin"; }
+function isStandard(role: string) { return !isCompanyAdmin(role) && !isSuperAdmin(role); }
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value); if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 // GET /api/energy-target-progress
 router.get("/energy-target-progress", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const conditions: SQL[] = [eq(energyTargetProgressTable.companyId, sessionCompanyId)];
+    if (isStandard(role) && sessionUnitId === null) { res.json([]); return; }
 
-    const targetId = req.query.targetId ? parseInt(req.query.targetId as string) : undefined;
+    const targetId = parsePositiveInteger(req.query.targetId);
+    if (req.query.targetId !== undefined && targetId === undefined) { res.status(400).json({ error: "Geçersiz targetId" }); return; }
     if (targetId !== undefined) conditions.push(eq(energyTargetProgressTable.targetId, targetId));
+    if (isStandard(role)) conditions.push(eq(energyTargetsTable.unitId, sessionUnitId!));
 
     const rows = await db
       .select({
@@ -33,12 +48,7 @@ router.get("/energy-target-progress", requireAuth, async (req, res) => {
       .where(conditions.length === 1 ? conditions[0] : and(...conditions))
       .orderBy(desc(energyTargetProgressTable.recordedAt));
 
-    const filtered =
-      role !== "admin" && role !== "superadmin" && sessionUnitId !== null
-        ? rows.filter((r) => r.targetUnitId === sessionUnitId)
-        : rows;
-
-    res.json(filtered);
+    res.json(rows);
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
@@ -54,19 +64,25 @@ router.post("/energy-target-progress", requireAuth, async (req, res) => {
     if (!targetId || periodYear === undefined || actualValue === undefined) {
       res.status(400).json({ error: "Hedef, yıl ve gerçekleşen değer zorunludur" }); return;
     }
+    if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const parsedTargetId = parsePositiveInteger(targetId);
+    const parsedPeriodYear = parsePositiveInteger(periodYear);
+    if (parsedTargetId === undefined) { res.status(400).json({ error: "Geçersiz targetId" }); return; }
+    if (parsedPeriodYear === undefined) { res.status(400).json({ error: "Geçersiz periodYear" }); return; }
 
-    const [target] = await db.select().from(energyTargetsTable).where(eq(energyTargetsTable.id, parseInt(targetId)));
-    if (!target || target.companyId !== sessionCompanyId) {
+    const targetConditions = [eq(energyTargetsTable.id, parsedTargetId), eq(energyTargetsTable.companyId, sessionCompanyId)];
+    if (isStandard(role)) targetConditions.push(eq(energyTargetsTable.unitId, sessionUnitId!));
+    const [target] = await db.select().from(energyTargetsTable).where(and(...targetConditions));
+    if (!target) {
       res.status(403).json({ error: "Geçersiz hedef" }); return;
     }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && target.unitId !== sessionUnitId) {
-      res.status(403).json({ error: "Yetki yok" }); return;
-    }
-
     const parsedPeriodMonth =
       periodMonth !== null && periodMonth !== undefined && periodMonth !== ""
-        ? parseInt(periodMonth)
+        ? parsePositiveInteger(periodMonth)
         : null;
+    if (parsedPeriodMonth !== null && (parsedPeriodMonth === undefined || parsedPeriodMonth > 12)) {
+      res.status(400).json({ error: "Geçersiz periodMonth" }); return;
+    }
     const parsedActualSaving =
       actualSavingValue !== null && actualSavingValue !== undefined && actualSavingValue !== ""
         ? parseFloat(actualSavingValue)
@@ -74,8 +90,8 @@ router.post("/energy-target-progress", requireAuth, async (req, res) => {
 
     const [item] = await db.insert(energyTargetProgressTable).values({
       companyId: sessionCompanyId,
-      targetId: parseInt(targetId),
-      periodYear: parseInt(periodYear),
+      targetId: parsedTargetId,
+      periodYear: parsedPeriodYear,
       periodMonth: parsedPeriodMonth,
       actualValue: parseFloat(actualValue),
       actualSavingValue: parsedActualSaving,
@@ -85,7 +101,7 @@ router.post("/energy-target-progress", requireAuth, async (req, res) => {
 
     // Son kaydı hedefin actual_value alanına yansıt
     await db.update(energyTargetsTable).set({ actualValue: parseFloat(actualValue), updatedAt: new Date() })
-      .where(eq(energyTargetsTable.id, parseInt(targetId)));
+      .where(and(...targetConditions));
 
     res.status(201).json(item);
   } catch (err) {
@@ -97,12 +113,20 @@ router.post("/energy-target-progress", requireAuth, async (req, res) => {
 // DELETE /api/energy-target-progress/:id
 router.delete("/energy-target-progress/:id", requireAuth, async (req, res) => {
   try {
-    const { companyId: sessionCompanyId } = req.user!;
-    const id = parseInt(req.params.id as string);
-    const [existing] = await db.select().from(energyTargetProgressTable).where(eq(energyTargetProgressTable.id, id));
+    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const id = parsePositiveInteger(req.params.id);
+    if (id === undefined) { res.status(400).json({ error: "Geçersiz progressId" }); return; }
+    const recordConditions = [eq(energyTargetProgressTable.id, id), eq(energyTargetProgressTable.companyId, sessionCompanyId)];
+    const [existing] = await db.select({ id: energyTargetProgressTable.id, companyId: energyTargetProgressTable.companyId, targetId: energyTargetProgressTable.targetId, targetUnitId: energyTargetsTable.unitId })
+      .from(energyTargetProgressTable)
+      .innerJoin(energyTargetsTable, eq(energyTargetProgressTable.targetId, energyTargetsTable.id))
+      .where(and(...recordConditions, eq(energyTargetsTable.companyId, sessionCompanyId)));
     if (!existing) { res.status(404).send(); return; }
     if (existing.companyId !== sessionCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
-    await db.delete(energyTargetProgressTable).where(eq(energyTargetProgressTable.id, id));
+    if (isStandard(role) && existing.targetUnitId !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
+    recordConditions.push(eq(energyTargetProgressTable.targetId, existing.targetId));
+    await db.delete(energyTargetProgressTable).where(and(...recordConditions));
     res.status(204).send();
   } catch (err) {
     req.log.error(err);
