@@ -118,6 +118,7 @@ interface BaselineVariableCheckCandidate {
 
 interface BaselineScopeMeter {
   id: number;
+  name: string;
   unitId: number | null;
   subUnitId: number | null;
 }
@@ -144,6 +145,18 @@ interface MissingVariableSummary {
   variableId: number;
   variableName: string;
   months: number[];
+}
+
+interface HddCddRequirement {
+  needsHdd: boolean;
+  needsCdd: boolean;
+}
+
+interface MissingHddCddSummary {
+  month: number;
+  meterId: number;
+  meterName: string | null;
+  missingValues: string[];
 }
 
 const ACTION_PLAN_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
@@ -224,6 +237,20 @@ function parseUserVariableId(variableCode: string | null): number | null {
   if (!variableCode?.startsWith("user-")) return null;
   const variableId = Number.parseInt(variableCode.replace("user-", ""), 10);
   return Number.isFinite(variableId) ? variableId : null;
+}
+
+function normalizeHddCddVariableCode(value: string | null | undefined): "HDD" | "CDD" | null {
+  const normalized = (value ?? "").trim().toUpperCase();
+  const compact = normalized.replace(/[^A-Z0-9]/g, "");
+  if (compact === "HDD" || compact.startsWith("HDD")) return "HDD";
+  if (compact === "CDD" || compact.startsWith("CDD")) return "CDD";
+  return null;
+}
+
+function isMissingClimateValue(value: number | string | null | undefined): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return value.trim() === "";
+  return false;
 }
 
 function getOnlyValue(values: Array<number | null>): number | null {
@@ -479,6 +506,7 @@ async function getMetersForBaselineVariableCheck(
   return db
     .select({
       id: metersTable.id,
+      name: metersTable.name,
       unitId: metersTable.unitId,
       subUnitId: metersTable.subUnitId,
     })
@@ -569,6 +597,27 @@ function formatMissingVariableDescription(missingSummaries: MissingVariableSumma
 
   if (hiddenMissingCount > 0) {
     fragments.push(`ve ${hiddenMissingCount} eksik değer daha`);
+  }
+
+  return fragments.join("; ");
+}
+
+function formatMissingHddCddDescription(missingSummaries: MissingHddCddSummary[]): string {
+  const sortedSummaries = [...missingSummaries].sort((a, b) => {
+    if (a.month !== b.month) return a.month - b.month;
+    return (a.meterName ?? `Sayaç #${a.meterId}`).localeCompare(b.meterName ?? `Sayaç #${b.meterId}`, "tr");
+  });
+
+  const visibleSummaries = sortedSummaries.slice(0, 6);
+  const fragments = visibleSummaries.map((summary) => {
+    const monthLabel = MONTH_LABELS[summary.month] ?? String(summary.month);
+    const meterLabel = summary.meterName ?? `Sayaç #${summary.meterId}`;
+    return `${monthLabel} (${meterLabel}): ${summary.missingValues.join("/")}`;
+  });
+
+  const hiddenCount = sortedSummaries.length - visibleSummaries.length;
+  if (hiddenCount > 0) {
+    fragments.push(`ve ${hiddenCount} eksik kayıt daha`);
   }
 
   return fragments.join("; ");
@@ -725,6 +774,122 @@ async function appendMissingBaselineVariableValueWorkItems(
       unitName: baseline.unitName,
       dueDate: null,
       actionUrl: `/degiskenler?${params.toString()}`,
+    });
+  }
+}
+
+async function appendMissingHddCddWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+  selectedYear: number,
+  today: Date,
+) {
+  const monthLimit = getMonitoringMonthLimit(selectedYear, today);
+  if (monthLimit === 0) return;
+
+  const baselines = await getActiveBaselinesForVariableCheck(companyId, unitId);
+  if (baselines.length === 0) return;
+
+  const baselineIds = baselines.map((baseline) => baseline.id);
+  const baselineVariables = await db
+    .select({
+      baselineId: energyBaselineVariablesTable.baselineId,
+      variableName: energyBaselineVariablesTable.variableName,
+      variableCode: energyBaselineVariablesTable.variableCode,
+    })
+    .from(energyBaselineVariablesTable)
+    .where(inArray(energyBaselineVariablesTable.baselineId, baselineIds));
+
+  const requirementByBaseline = new Map<number, HddCddRequirement>();
+  for (const variableRow of baselineVariables) {
+    const code = normalizeHddCddVariableCode(variableRow.variableCode ?? variableRow.variableName);
+    if (code === null) continue;
+
+    const requirement = requirementByBaseline.get(variableRow.baselineId) ?? {
+      needsHdd: false,
+      needsCdd: false,
+    };
+    if (code === "HDD") requirement.needsHdd = true;
+    if (code === "CDD") requirement.needsCdd = true;
+    requirementByBaseline.set(variableRow.baselineId, requirement);
+  }
+
+  if (requirementByBaseline.size === 0) return;
+
+  for (const baseline of baselines) {
+    const requirement = requirementByBaseline.get(baseline.id);
+    if (!requirement || (!requirement.needsHdd && !requirement.needsCdd)) continue;
+
+    const meters = await getMetersForBaselineVariableCheck(companyId, baseline);
+    const meterIds = meters.map((meter) => meter.id);
+    if (meterIds.length === 0) continue;
+
+    const consumptionRows = await db
+      .select({
+        id: consumptionTable.id,
+        meterId: consumptionTable.meterId,
+        month: consumptionTable.month,
+        hdd: consumptionTable.hdd,
+        cdd: consumptionTable.cdd,
+        meterName: metersTable.name,
+      })
+      .from(consumptionTable)
+      .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+      .where(and(
+        eq(consumptionTable.companyId, companyId),
+        eq(consumptionTable.year, selectedYear),
+        inArray(consumptionTable.meterId, meterIds),
+        lte(consumptionTable.month, monthLimit),
+      ));
+
+    if (consumptionRows.length === 0) continue;
+
+    const missingSummaries: MissingHddCddSummary[] = [];
+    for (const row of consumptionRows) {
+      const missingValues: string[] = [];
+      if (requirement.needsHdd && isMissingClimateValue(row.hdd)) missingValues.push("HDD");
+      if (requirement.needsCdd && isMissingClimateValue(row.cdd)) missingValues.push("CDD");
+      if (missingValues.length === 0) continue;
+
+      missingSummaries.push({
+        month: row.month,
+        meterId: row.meterId,
+        meterName: row.meterName,
+        missingValues,
+      });
+    }
+
+    if (missingSummaries.length === 0) continue;
+
+    const sortedMissingSummaries = [...missingSummaries].sort((a, b) => {
+      if (a.month !== b.month) return a.month - b.month;
+      return a.meterId - b.meterId;
+    });
+    const firstMissing = sortedMissingSummaries[0];
+    const resolvedUnitId = baseline.unitId ?? getOnlyValue(meters.map((meter) => meter.unitId));
+    const params = new URLSearchParams({
+      year: String(selectedYear),
+      month: String(firstMissing.month),
+      meterId: String(firstMissing.meterId),
+    });
+    if (resolvedUnitId !== null) {
+      params.set("unitId", String(resolvedUnitId));
+    }
+
+    const unitLabel = baseline.unitName ?? "Şirket geneli";
+    items.push({
+      id: `consumption_missing_hdd_cdd:${baseline.id}:${selectedYear}`,
+      type: "consumption_missing_hdd_cdd",
+      severity: "warning",
+      title: `${selectedYear} yılı HDD/CDD verisi eksik: ${baseline.seuName}`,
+      description: `${unitLabel} birimindeki aktif EnRÇ modeli için tüketim kayıtlarında eksik MGM verileri var: ${formatMissingHddCddDescription(missingSummaries)}.`,
+      sourceModule: "Tüketim Verileri / MGM",
+      sourceRecordId: baseline.id,
+      unitId: resolvedUnitId,
+      unitName: baseline.unitName,
+      dueDate: null,
+      actionUrl: `/tuketim?${params.toString()}`,
     });
   }
 }
@@ -1280,6 +1445,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
 
     await appendSeuEnergyPerformanceWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendMissingBaselineVariableValueWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear, today);
+    await appendMissingHddCddWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear, today);
     await appendEnergyTargetWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendVapProjectWorkItems(items, sessionCompanyId, effectiveUnitId, todayDateOnly);
     await appendEnergyReviewRecordWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
