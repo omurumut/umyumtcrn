@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db, weatherTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
+import { requireAuth, requireSuperAdmin } from "../middlewares/auth.js";
 
 const router = Router();
 
@@ -37,7 +38,7 @@ function getBaseline(location: string): { hdd: number[], cdd: number[] } {
 }
 
 // GET /api/weather
-router.get("/weather", async (req, res) => {
+router.get("/weather", requireAuth, async (req, res) => {
   try {
     const year = req.query.year ? parseInt(req.query.year as string) : undefined;
     let rows = await db.select().from(weatherTable).orderBy(weatherTable.year, weatherTable.month);
@@ -59,7 +60,7 @@ router.get("/weather", async (req, res) => {
 });
 
 // POST /api/weather — fetch from "meteoroloji API" (simulated with baseline data)
-router.post("/weather", async (req, res) => {
+router.post("/weather", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const { location, year } = req.body;
     if (!location || !year) {
