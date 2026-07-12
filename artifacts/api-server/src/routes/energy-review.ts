@@ -846,6 +846,26 @@ router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (r
 //   NOT: energyTargetsTable içinde doğrudan bir "seuAssessmentItemId" veya VAP'a
 //   doğrudan bağlanan bir alan YOKTUR — bu ilişkiler üretilmemiştir (uydurulmamıştır).
 // ─────────────────────────────────────────────────────────────────────────────
+class TargetsActionsScopeError extends Error {}
+
+function isTargetsActionsCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isTargetsActionsSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parseTargetsActionsId(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new TargetsActionsScopeError(`Geçersiz ${field}`);
+}
+
 router.get("/energy-review/targets-actions-summary", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
@@ -853,34 +873,37 @@ router.get("/energy-review/targets-actions-summary", requireAuth, async (req, re
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const statusParam = req.query.status as string | undefined;
     const today = new Date().toISOString().slice(0, 10);
+    const queryCompanyId = parseTargetsActionsId(req.query.companyId, "companyId");
+    const queryUnitId = parseTargetsActionsId(req.query.unitId, "unitId");
 
-    // ── Yetki/filtre koşulları (targets.ts GET /targets ile BİREBİR AYNI kalıp) ──
-    const conditions: SQL[] = [];
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
-      conditions.push(eq(energyTargetsTable.unitId, sessionUnitId));
-    } else if (role === "admin") {
-      conditions.push(eq(energyTargetsTable.companyId, sessionCompanyId));
-      const unitIdParam = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-      if (unitIdParam !== undefined && !isNaN(unitIdParam)) {
-        conditions.push(eq(energyTargetsTable.unitId, unitIdParam));
-      }
-    } else {
-      // superadmin (veya birimsiz non-admin): sorgu paramlarıyla opsiyonel filtre
-      const unitIdParam = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-      if (unitIdParam !== undefined && !isNaN(unitIdParam)) {
-        conditions.push(eq(energyTargetsTable.unitId, unitIdParam));
-      }
-      const companyIdParam = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-      if (companyIdParam !== undefined && !isNaN(companyIdParam)) {
-        conditions.push(eq(energyTargetsTable.companyId, companyIdParam));
+    const effectiveCompanyId = isTargetsActionsSuperAdmin(role) ? queryCompanyId : sessionCompanyId;
+    const effectiveUnitId = isTargetsActionsCompanyAdmin(role) || isTargetsActionsSuperAdmin(role)
+      ? queryUnitId
+      : sessionUnitId ?? undefined;
+
+    if (!isTargetsActionsCompanyAdmin(role) && !isTargetsActionsSuperAdmin(role) && sessionUnitId === null) {
+      res.json([]);
+      return;
+    }
+
+    if (effectiveUnitId !== undefined) {
+      const [unit] = await db.select({ companyId: unitsTable.companyId })
+        .from(unitsTable).where(eq(unitsTable.id, effectiveUnitId));
+      if (!unit || (effectiveCompanyId !== undefined && unit.companyId !== effectiveCompanyId)) {
+        res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
       }
     }
+
+    const conditions: SQL[] = [];
+    if (effectiveCompanyId !== undefined) conditions.push(eq(energyTargetsTable.companyId, effectiveCompanyId));
+    if (effectiveUnitId !== undefined) conditions.push(eq(energyTargetsTable.unitId, effectiveUnitId));
     if (statusParam) conditions.push(eq(energyTargetsTable.status, statusParam));
 
     // ── Hedefler ──────────────────────────────────────────────────────────
     const targets = await db
       .select({
         id: energyTargetsTable.id,
+        companyId: energyTargetsTable.companyId,
         unitId: energyTargetsTable.unitId,
         subUnitId: energyTargetsTable.subUnitId,
         energySourceId: energyTargetsTable.energySourceId,
@@ -922,7 +945,10 @@ router.get("/energy-review/targets-actions-summary", requireAuth, async (req, re
     const actions = await db
       .select()
       .from(energyActionPlansTable)
-      .where(inArray(energyActionPlansTable.targetId, targetIds))
+      .where(and(
+        inArray(energyActionPlansTable.targetId, targetIds),
+        ...(effectiveCompanyId !== undefined ? [eq(energyActionPlansTable.companyId, effectiveCompanyId)] : []),
+      ))
       .orderBy(asc(energyActionPlansTable.createdAt));
 
     const actionIds = actions.map((a) => a.id);
@@ -932,7 +958,10 @@ router.get("/energy-review/targets-actions-summary", requireAuth, async (req, re
       ? await db
           .select()
           .from(vapProjectsTable)
-          .where(inArray(vapProjectsTable.actionPlanId, actionIds))
+          .where(and(
+            inArray(vapProjectsTable.actionPlanId, actionIds),
+            ...(effectiveCompanyId !== undefined ? [eq(vapProjectsTable.companyId, effectiveCompanyId)] : []),
+          ))
       : [];
     const vapByActionId = new Map(vaps.map((v) => [v.actionPlanId, v]));
 
@@ -982,7 +1011,7 @@ router.get("/energy-review/targets-actions-summary", requireAuth, async (req, re
             .from(energyBaselinesTable)
             .where(
               and(
-                eq(energyBaselinesTable.companyId, sessionCompanyId),
+                ...(effectiveCompanyId !== undefined ? [eq(energyBaselinesTable.companyId, effectiveCompanyId)] : []),
                 inArray(energyBaselinesTable.seuAssessmentItemId, itemIds),
               ),
             )
@@ -1003,7 +1032,7 @@ router.get("/energy-review/targets-actions-summary", requireAuth, async (req, re
             .from(energyPerformanceResultsTable)
             .where(
               and(
-                eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+                ...(effectiveCompanyId !== undefined ? [eq(energyPerformanceResultsTable.companyId, effectiveCompanyId)] : []),
                 inArray(energyPerformanceResultsTable.seuAssessmentItemId, itemIds),
                 inArray(energyPerformanceResultsTable.baselineId, activeBaselineIds),
                 eq(energyPerformanceResultsTable.year, year),
@@ -1034,7 +1063,7 @@ router.get("/energy-review/targets-actions-summary", requireAuth, async (req, re
     // ── Hedef başına ilerleme (targets.ts calcProgress ile AYNI kural) ───
     const result = await Promise.all(
       targets.map(async (t) => {
-        const progress = await calcProgress(t.unitId, t.baselineYear, t.targetYear);
+        const progress = await calcProgress(t.unitId, t.baselineYear, t.targetYear, t.companyId);
         const lastReductionPercent = progress.yearlyProgress.length > 0
           ? progress.yearlyProgress[progress.yearlyProgress.length - 1].reductionPercent
           : null;
@@ -1161,6 +1190,9 @@ router.get("/energy-review/targets-actions-summary", requireAuth, async (req, re
 
     res.json(result);
   } catch (err) {
+    if (err instanceof TargetsActionsScopeError) {
+      res.status(400).json({ error: err.message }); return;
+    }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
