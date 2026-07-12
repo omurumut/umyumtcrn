@@ -7,7 +7,7 @@ import {
   energyBaselinesTable, energyPerformanceResultsTable, reportsTable,
 } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
-import { requireAuth } from "../middlewares/auth.js";
+import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 
 const router = Router();
 
@@ -99,13 +99,12 @@ router.get("/units", requireAuth, async (req, res) => {
 });
 
 // POST /api/units — admin only
-router.post("/units", requireAuth, async (req, res) => {
+router.post("/units", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
     const { name, location, type, city, responsible, description, active, companyId } = req.body;
     if (!name || !location) { res.status(400).json({ error: "Ad ve lokasyon zorunludur" }); return; }
     // Admin kendi firmasına ekler; superadmin body'deki companyId'yi kullanır
-    if (!isCompanyAdmin(role) && !isSuperAdmin(role)) { res.status(403).json({ error: "Yetki yok" }); return; }
     const parsedCompanyId = parsePositiveInteger(companyId);
     if (companyId !== undefined && parsedCompanyId === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
     const targetCompanyId = isSuperAdmin(role) ? (parsedCompanyId ?? sessionCompanyId) : sessionCompanyId;
@@ -149,10 +148,9 @@ router.get("/units/:id", requireAuth, async (req, res) => {
 });
 
 // PATCH /api/units/:id — admin only
-router.patch("/units/:id", requireAuth, async (req, res) => {
+router.patch("/units/:id", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
-    if (!isCompanyAdmin(role) && !isSuperAdmin(role)) { res.status(403).json({ error: "Yetki yok" }); return; }
     const id = parsePositiveInteger(req.params.id);
     if (id === undefined) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
     const parsedCompanyId = parsePositiveInteger(req.body.companyId);
@@ -187,10 +185,9 @@ router.patch("/units/:id", requireAuth, async (req, res) => {
 });
 
 // DELETE /api/units/:id — admin only
-router.delete("/units/:id", requireAuth, async (req, res) => {
+router.delete("/units/:id", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
-    if (!isCompanyAdmin(role) && !isSuperAdmin(role)) { res.status(403).json({ error: "Yetki yok" }); return; }
     const id = parsePositiveInteger(req.params.id);
     if (id === undefined) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
     const conditions = [eq(unitsTable.id, id)];

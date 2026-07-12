@@ -16,7 +16,7 @@ import {
   vapProjectsTable,
 } from "@workspace/db";
 import { eq, and, inArray, desc, asc, SQL, sql } from "drizzle-orm";
-import { requireAuth, requireAdmin } from "../middlewares/auth.js";
+import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 import { calcProgress } from "./targets.js";
 
 const router = Router();
@@ -716,7 +716,7 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/energy-review/unit-comparison   (sadece admin/superadmin)
 // ─────────────────────────────────────────────────────────────────────────────
-router.get("/energy-review/unit-comparison", requireAuth, requireAdmin, async (req, res) => {
+router.get("/energy-review/unit-comparison", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
     const { companyId: sessionCompanyId } = req.user!;
 
