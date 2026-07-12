@@ -39,15 +39,6 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-// Legacy/ambiguous guard: admin + superadmin.
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.user || (req.user.role !== "admin" && req.user.role !== "superadmin")) {
-    res.status(403).json({ error: "Bu işlem için yetkiniz yok" });
-    return;
-  }
-  next();
-}
-
 // Tenant-level company administration.
 export function requireCompanyAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.user) {

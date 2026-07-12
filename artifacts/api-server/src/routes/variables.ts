@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, variablesTable, variableValuesTable, weatherDegreeDaysTable, companiesTable, unitsTable, subUnitsTable, metersTable, mgmStationsTable, mgmDegreeDataTable } from "@workspace/db";
 import { eq, and, or, ne, isNull, inArray, sql, SQL } from "drizzle-orm";
-import { requireAuth, requireAdmin } from "../middlewares/auth.js";
+import { requireAuth } from "../middlewares/auth.js";
 import { parseIlIlce, findStationByIlIlce } from "../services/mgm-stations-data.js";
 import { lookupStationKeyByLocation, lookupOfficialByStationKey } from "../services/mgm-sync.js";
 
