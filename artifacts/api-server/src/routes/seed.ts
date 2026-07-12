@@ -13,12 +13,29 @@ import {
   riskNotesTable,
   seuTable,
   energyTargetsTable,
+  companiesTable,
 } from "@workspace/db";
-import { requireAuth, requireAdmin } from "../middlewares/auth.js";
+import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 import { eq, inArray, ne, and } from "drizzle-orm";
 
 
 const router = Router();
+
+function isSuperAdmin(role: string) { return role === "superadmin"; }
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value); if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+async function companyExists(companyId: number) {
+  const [company] = await db.select({ id: companiesTable.id }).from(companiesTable)
+    .where(eq(companiesTable.id, companyId));
+  return !!company;
+}
 
 function hashPassword(password: string): string {
   return createHash("sha256").update(password + "eys_salt_2024").digest("hex");
@@ -50,9 +67,31 @@ function gasFactor(month: number, city: string): number {
   return 0.2 + (w.hdd[month - 1] / 450) * 1.2;
 }
 
-router.post("/admin/seed", requireAuth, requireAdmin, async (req, res) => {
+router.post("/admin/seed", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
-    const companyId: number = req.body?.companyId ? parseInt(req.body.companyId) : 1;
+    const { role, companyId: sessionCompanyId } = req.user!;
+    const bodyCompanyId = parsePositiveInteger(req.body?.companyId);
+    const queryCompanyId = parsePositiveInteger(req.query.companyId);
+    if ((req.body?.companyId !== undefined && bodyCompanyId === undefined) ||
+        (req.query.companyId !== undefined && queryCompanyId === undefined)) {
+      res.status(400).json({ ok: false, error: "Geçersiz companyId" }); return;
+    }
+    if (bodyCompanyId !== undefined && queryCompanyId !== undefined && bodyCompanyId !== queryCompanyId) {
+      res.status(400).json({ ok: false, error: "Çelişkili companyId" }); return;
+    }
+    const requestedCompanyId = bodyCompanyId ?? queryCompanyId;
+    if (!isSuperAdmin(role) && requestedCompanyId !== undefined && requestedCompanyId !== sessionCompanyId) {
+      res.status(403).json({ ok: false, error: "Yetki yok" }); return;
+    }
+    if (isSuperAdmin(role) && requestedCompanyId === undefined) {
+      res.status(400).json({ ok: false, error: "companyId zorunludur" }); return;
+    }
+    const companyId = isSuperAdmin(role) ? requestedCompanyId! : sessionCompanyId;
+    if (!await companyExists(companyId)) {
+      res.status(404).json({ ok: false, error: "Şirket bulunamadı" }); return;
+    }
+
+    const summary = await db.transaction(async (db) => {
 
     // ── Mevcut demo verileri temizle (sadece aynı firma) ────────────────────
     await db.delete(usersTable).where(and(eq(usersTable.isDemo, true), eq(usersTable.companyId, companyId)));
@@ -346,36 +385,62 @@ router.post("/admin/seed", requireAuth, requireAdmin, async (req, res) => {
       { unitId: units[2].id, name: "Kondenser Fan Yenileme Kısa Vadeli Hedef",baselineYear: 2023, targetYear: 2025, targetReductionPercent: 15, notes: "EC fan motoru yenileme tamamlanınca hedef aşılabilir",                            companyId },
     ]);
 
-    res.json({
-      ok: true,
-      summary: {
+    return {
         units: units.length,
         subUnits: subUnits.length,
         energySources: sources.length,
         meters: meters.length,
         consumptionRecords: rows.length,
-      },
+      };
     });
+    res.json({ ok: true, summary });
   } catch (err: any) {
     console.error("[seed] Hata:", err);
     res.status(500).json({ ok: false, error: err?.message ?? "Bilinmeyen hata" });
   }
 });
 
-// POST /api/admin/reset — body: { mode: "demo" | "all" }
-router.post("/admin/reset", requireAuth, requireAdmin, async (req, res) => {
+// POST /api/admin/reset — body: { mode: "demo" | "all" | "global" }
+router.post("/admin/reset", requireAuth, requireCompanyAdmin, async (req, res) => {
   const mode = req.body?.mode as string;
-  if (mode !== "demo" && mode !== "all") {
-    res.status(400).json({ ok: false, error: "mode 'demo' veya 'all' olmalı" });
+  if (mode !== "demo" && mode !== "all" && mode !== "global") {
+    res.status(400).json({ ok: false, error: "mode 'demo', 'all' veya 'global' olmalı" });
     return;
   }
 
   const { role, companyId: sessionCompanyId, userId: currentUserId } = req.user!;
-  const isSuperAdmin = role === "superadmin";
+  const superAdmin = isSuperAdmin(role);
 
   try {
-    if (mode === "all") {
-      if (isSuperAdmin) {
+    const bodyCompanyId = parsePositiveInteger(req.body?.companyId);
+    const queryCompanyId = parsePositiveInteger(req.query.companyId);
+    if ((req.body?.companyId !== undefined && bodyCompanyId === undefined) ||
+        (req.query.companyId !== undefined && queryCompanyId === undefined)) {
+      res.status(400).json({ ok: false, error: "Geçersiz companyId" }); return;
+    }
+    if (bodyCompanyId !== undefined && queryCompanyId !== undefined && bodyCompanyId !== queryCompanyId) {
+      res.status(400).json({ ok: false, error: "Çelişkili companyId" }); return;
+    }
+    const requestedCompanyId = bodyCompanyId ?? queryCompanyId;
+    if (!superAdmin && requestedCompanyId !== undefined && requestedCompanyId !== sessionCompanyId) {
+      res.status(403).json({ ok: false, error: "Yetki yok" }); return;
+    }
+    if (mode === "global" && !superAdmin) {
+      res.status(403).json({ ok: false, error: "Yetki yok" }); return;
+    }
+    if (mode === "global" && requestedCompanyId !== undefined) {
+      res.status(400).json({ ok: false, error: "Global reset companyId kabul etmez" }); return;
+    }
+    if (mode !== "global" && superAdmin && requestedCompanyId === undefined) {
+      res.status(400).json({ ok: false, error: "companyId zorunludur" }); return;
+    }
+    const effectiveCompanyId = superAdmin ? requestedCompanyId : sessionCompanyId;
+    if (mode !== "global" && !await companyExists(effectiveCompanyId!)) {
+      res.status(404).json({ ok: false, error: "Şirket bulunamadı" }); return;
+    }
+
+    await db.transaction(async (db) => {
+    if (mode === "global") {
         // Superadmin: tüm verileri temizle, sadece "admin" kullanıcısını koru
         await db.delete(consumptionTable);
         await db.delete(metersTable);
@@ -387,72 +452,61 @@ router.post("/admin/reset", requireAuth, requireAdmin, async (req, res) => {
         await db.delete(energyTargetsTable);
         await db.delete(unitsTable);
         await db.delete(usersTable).where(ne(usersTable.username, "admin"));
-      } else {
+        return;
+      }
+      if (mode === "all") {
         // Admin: sadece kendi firmasının verilerini temizle, kendi hesabını silme
         const companyUnits = await db
           .select({ id: unitsTable.id })
           .from(unitsTable)
-          .where(eq(unitsTable.companyId, sessionCompanyId));
+          .where(eq(unitsTable.companyId, effectiveCompanyId!));
         const companyUnitIds = companyUnits.map((u) => u.id);
 
         // Önce tüketim kayıtlarını sil (companyId üzerinden)
-        await db.delete(consumptionTable).where(eq(consumptionTable.companyId, sessionCompanyId));
+        await db.delete(consumptionTable).where(eq(consumptionTable.companyId, effectiveCompanyId!));
         // Sayaçları sil
-        await db.delete(metersTable).where(eq(metersTable.companyId, sessionCompanyId));
+        await db.delete(metersTable).where(eq(metersTable.companyId, effectiveCompanyId!));
         // Enerji kaynaklarını sil
-        await db.delete(energySourcesTable).where(eq(energySourcesTable.companyId, sessionCompanyId));
+        await db.delete(energySourcesTable).where(eq(energySourcesTable.companyId, effectiveCompanyId!));
         // Alt birimleri sil
-        await db.delete(subUnitsTable).where(eq(subUnitsTable.companyId, sessionCompanyId));
+        await db.delete(subUnitsTable).where(eq(subUnitsTable.companyId, effectiveCompanyId!));
         // ISO 50001 verilerini sil
-        await db.delete(swotTable).where(eq(swotTable.companyId, sessionCompanyId));
-        await db.delete(risksTable).where(eq(risksTable.companyId, sessionCompanyId));
-        await db.delete(seuTable).where(eq(seuTable.companyId, sessionCompanyId));
-        await db.delete(energyTargetsTable).where(eq(energyTargetsTable.companyId, sessionCompanyId));
+        await db.delete(swotTable).where(eq(swotTable.companyId, effectiveCompanyId!));
+        await db.delete(risksTable).where(eq(risksTable.companyId, effectiveCompanyId!));
+        await db.delete(seuTable).where(eq(seuTable.companyId, effectiveCompanyId!));
+        await db.delete(energyTargetsTable).where(eq(energyTargetsTable.companyId, effectiveCompanyId!));
         // Birimleri sil
         if (companyUnitIds.length > 0) {
-          await db.delete(unitsTable).where(eq(unitsTable.companyId, sessionCompanyId));
+          await db.delete(unitsTable).where(eq(unitsTable.companyId, effectiveCompanyId!));
         }
         // Kullanıcıları sil — kendi hesabı hariç
         await db.delete(usersTable).where(
-          and(eq(usersTable.companyId, sessionCompanyId), ne(usersTable.id, currentUserId))
+          and(eq(usersTable.companyId, effectiveCompanyId!), ne(usersTable.id, currentUserId))
         );
+        return;
       }
-      res.json({ ok: true, mode: "all" });
-      return;
-    }
 
     // mode === "demo": sadece is_demo=true olan verileri sil
-    if (isSuperAdmin) {
-      // Superadmin: tüm firmaların demo verilerini sil
-      await db.delete(usersTable).where(eq(usersTable.isDemo, true));
-      const demoUnits = await db
-        .select({ id: unitsTable.id })
-        .from(unitsTable)
-        .where(eq(unitsTable.isDemo, true));
-      if (demoUnits.length > 0) {
-        const demoUnitIds = demoUnits.map((u) => u.id);
-        await db.delete(metersTable).where(inArray(metersTable.unitId, demoUnitIds));
-        await db.delete(unitsTable).where(eq(unitsTable.isDemo, true));
-      }
-    } else {
-      // Admin: sadece kendi firmasının demo verilerini sil
+    {
+      // Yalnız seçilen firmanın demo verilerini sil
       await db.delete(usersTable).where(
-        and(eq(usersTable.isDemo, true), eq(usersTable.companyId, sessionCompanyId))
+        and(eq(usersTable.isDemo, true), eq(usersTable.companyId, effectiveCompanyId!))
       );
       const demoUnits = await db
         .select({ id: unitsTable.id })
         .from(unitsTable)
-        .where(and(eq(unitsTable.isDemo, true), eq(unitsTable.companyId, sessionCompanyId)));
+        .where(and(eq(unitsTable.isDemo, true), eq(unitsTable.companyId, effectiveCompanyId!)));
       if (demoUnits.length > 0) {
         const demoUnitIds = demoUnits.map((u) => u.id);
         await db.delete(metersTable).where(inArray(metersTable.unitId, demoUnitIds));
         await db.delete(unitsTable).where(
-          and(eq(unitsTable.isDemo, true), eq(unitsTable.companyId, sessionCompanyId))
+          and(eq(unitsTable.isDemo, true), eq(unitsTable.companyId, effectiveCompanyId!))
         );
       }
     }
 
-    res.json({ ok: true, mode: "demo" });
+    });
+    res.json({ ok: true, mode });
   } catch (err: any) {
     console.error("[reset] Hata:", err);
     res.status(500).json({ ok: false, error: err?.message ?? "Bilinmeyen hata" });
