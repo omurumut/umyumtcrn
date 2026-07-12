@@ -64,6 +64,16 @@ Tenant kapsamı backend tarafında korunur.
 - İlk fazlarda önceki ay kontrol edilir.
 - Eksik tüketim uyarıları yıl/ay ve birim bazında gruplanır.
 
+### Tüketim Verileri / MGM
+
+- Aktif/geçerli EnRÇ modelinde HDD veya CDD kullanılıyorsa, seçili yılda ilgili EnRÇ/ÖEK kapsamındaki mevcut tüketim kayıtlarında `consumption.hdd` veya `consumption.cdd` null ise uyarı üretilir.
+- `type`: `consumption_missing_hdd_cdd`
+- `severity`: `warning`
+- `sourceModule`: `Tüketim Verileri / MGM`
+- `0` geçerli HDD/CDD değeridir, eksik sayılmaz.
+- Tüketim kaydı olmayan aylar bu kontrol kapsamında uyarı üretmez; eksik tüketim ayrı kontrol edilir.
+- Sayaç lokasyonu, MGM station mapping ve `weather_degree_days` eksikliği bu fazda ayrı pending item olarak üretilmez; çünkü mevcut lookup zincirinde fallback davranışları vardır.
+
 ### Aksiyon Planları
 
 - Gecikmiş aksiyon planı.
@@ -107,6 +117,7 @@ Bekleyen iş kartlarındaki `actionUrl`, kullanıcıyı mümkün olduğunca ilgi
 Desteklenen bağlantı kalıpları:
 
 - `/tuketim?year=...&month=...&unitId=...&meterId=...`
+  - Eksik tüketim ve HDD/CDD veri bütünlüğü uyarıları bu tüketim deep-link kapsamını kullanır.
 - `/performans-gostergeleri?seuItemId=...&baselineId=...&year=...&tab=...`
 - `/hedefler?targetId=...&actionPlanId=...`
 - `/vap-projeler?vapProjectId=...&actionPlanId=...`
@@ -121,6 +132,7 @@ Aşağıdaki kontroller mevcut veri modeli nedeniyle bu modülde yoktur:
 
 - Risk gözden geçirme tarihi geçmiş kontrolü yok; modelde `reviewDate` veya `followUpDate` yok.
 - Risk aksiyonu tamamlandı ama kalan risk değerlendirilmedi kontrolü yok; gerçek aksiyon tamamlanma ilişkisi yok.
+- Sayaç lokasyonu eksikliği, MGM station mapping eksikliği ve `weather_degree_days` eksikliği şu an ayrı bekleyen iş olarak üretilmez; gerekirse ayrı analiz fazında ele alınacaktır.
 - Manuel task yönetimi yok.
 - Yeni pending work tablosu yok.
 - Pending work için migration yok.
