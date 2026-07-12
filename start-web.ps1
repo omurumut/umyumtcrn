@@ -1,1 +1,0 @@
-pnpm.cmd --filter @workspace/ems-dashboard run dev

@@ -110,6 +110,27 @@ Tenant kapsamı backend tarafında korunur.
   - `score >= 15`
   - `responseType != "aksiyon"` veya `mitigationPlan` boş/null/trim sonrası boş
 
+### SWOT Analizi
+
+- Birim kapsamında hiç SWOT maddesi yoksa uyarı üretilir.
+  - `type`: `swot_analysis_missing`
+  - `severity`: `warning`
+  - `sourceModule`: `SWOT Analizi`
+  - `actionUrl`: `/swot?unitId=...`
+- Birimde SWOT maddesi var ama dört ana kategoriden biri eksikse uyarı üretilir.
+  - `type`: `swot_category_missing`
+  - `severity`: `warning`
+  - `sourceModule`: `SWOT Analizi`
+  - `actionUrl`: `/swot?unitId=...&category=...`
+- SWOT kategori değerleri:
+  - `strengths`: Güçlü Yönler
+  - `weaknesses`: Zayıf Yönler
+  - `opportunities`: Fırsatlar
+  - `threats`: Tehditler
+- Bilinmeyen kategori değerleri dört ana kategoriyi tamamlamış sayılmaz.
+- SWOT kontrolü yıl bazlı değildir; `swot_items` tablosunda `year`, `period` veya `reviewDate` yoktur.
+- `unitId = null` firma geneli SWOT maddeleri bu fazda birim SWOT'unu karşılamaz.
+
 ## 6. Deep-Link Destekleri
 
 Bekleyen iş kartlarındaki `actionUrl`, kullanıcıyı mümkün olduğunca ilgili ekran ve bağlama götürür.
@@ -123,6 +144,7 @@ Desteklenen bağlantı kalıpları:
 - `/vap-projeler?vapProjectId=...&actionPlanId=...`
 - `/enerji-gozden-gecirme?tab=records&year=...&unitId=...&reviewRecordId=...`
 - `/riskler?riskId=...&unitId=...&type=risk`
+- `/swot?unitId=...&category=...`
 
 Deep-link davranışları genellikle ayrı küçük fazlarda eklenir. Backend kontrolü ile frontend odaklama/vurgulama aynı fazda olmak zorunda değildir.
 
@@ -133,6 +155,10 @@ Aşağıdaki kontroller mevcut veri modeli nedeniyle bu modülde yoktur:
 - Risk gözden geçirme tarihi geçmiş kontrolü yok; modelde `reviewDate` veya `followUpDate` yok.
 - Risk aksiyonu tamamlandı ama kalan risk değerlendirilmedi kontrolü yok; gerçek aksiyon tamamlanma ilişkisi yok.
 - Sayaç lokasyonu eksikliği, MGM station mapping eksikliği ve `weather_degree_days` eksikliği şu an ayrı bekleyen iş olarak üretilmez; gerekirse ayrı analiz fazında ele alınacaktır.
+- SWOT için seçili yıl kontrolü yok; `swot_items` tablosunda `year` veya `period` yoktur.
+- SWOT çok eski/güncel değil kontrolü yok; `updatedAt` veya `reviewDate` yoktur.
+- SWOT opportunity/threat maddeleri risk-fırsata aktarılmamış kontrolü yok; SWOT ile `risks` arasında doğrudan ilişki yoktur.
+- SWOT aksiyon planı bağlantısı kontrolü yok; doğrudan ilişki yoktur.
 - Manuel task yönetimi yok.
 - Yeni pending work tablosu yok.
 - Pending work için migration yok.
@@ -158,7 +184,6 @@ Kurallar:
 
 Gelecekte değerlendirilebilecek kontroller:
 
-- SWOT kontrolü.
 - Değişken verisi eksikliği.
 - Sayaç lokasyon/MGM eşleşme eksikliği.
 - Hedef hesaplama için veri yeterliliği.

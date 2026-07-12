@@ -13,6 +13,7 @@ import {
   risksTable,
   seuAssessmentItemsTable,
   seuAssessmentsTable,
+  swotTable,
   unitsTable,
   variablesTable,
   variableValuesTable,
@@ -159,9 +160,26 @@ interface MissingHddCddSummary {
   missingValues: string[];
 }
 
+interface SwotUnit {
+  id: number;
+  name: string;
+}
+
+interface SwotCategoryRow {
+  unitId: number | null;
+  category: string;
+}
+
 const ACTION_PLAN_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
 const VAP_COMPLETED_STATUSES = new Set(["completed", "cancelled"]);
 const VARIABLE_CODES_IGNORED_IN_PHASE_2F = new Set(["HDD", "CDD"]);
+const SWOT_CATEGORY_LABELS: Record<string, string> = {
+  strengths: "Güçlü Yönler",
+  weaknesses: "Zayıf Yönler",
+  opportunities: "Fırsatlar",
+  threats: "Tehditler",
+};
+const SWOT_CATEGORY_KEYS = Object.keys(SWOT_CATEGORY_LABELS);
 const MONTH_LABELS: Record<number, string> = {
   1: "Ocak",
   2: "Şubat",
@@ -245,6 +263,11 @@ function normalizeHddCddVariableCode(value: string | null | undefined): "HDD" | 
   if (compact === "HDD" || compact.startsWith("HDD")) return "HDD";
   if (compact === "CDD" || compact.startsWith("CDD")) return "CDD";
   return null;
+}
+
+function normalizeSwotCategory(value: string | null | undefined): string | null {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return SWOT_CATEGORY_KEYS.includes(normalized) ? normalized : null;
 }
 
 function isMissingClimateValue(value: number | string | null | undefined): boolean {
@@ -1111,6 +1134,125 @@ async function appendVapProjectWorkItems(
   }
 }
 
+async function getSwotUnits(
+  companyId: number,
+  unitId: number | undefined,
+): Promise<SwotUnit[]> {
+  const conditions: SQL[] = [
+    eq(unitsTable.companyId, companyId),
+    eq(unitsTable.active, true),
+  ];
+
+  if (unitId !== undefined) {
+    conditions.push(eq(unitsTable.id, unitId));
+  }
+
+  return db
+    .select({
+      id: unitsTable.id,
+      name: unitsTable.name,
+    })
+    .from(unitsTable)
+    .where(buildWhere(conditions));
+}
+
+async function getSwotCategoriesByUnit(
+  companyId: number,
+  unitIds: number[],
+): Promise<{
+  categoriesByUnit: Map<number, Set<string>>;
+  totalItemsByUnit: Map<number, number>;
+}> {
+  const categoriesByUnit = new Map<number, Set<string>>();
+  const totalItemsByUnit = new Map<number, number>();
+  if (unitIds.length === 0) return { categoriesByUnit, totalItemsByUnit };
+
+  const swotRows: SwotCategoryRow[] = await db
+    .select({
+      unitId: swotTable.unitId,
+      category: swotTable.category,
+    })
+    .from(swotTable)
+    .where(and(
+      eq(swotTable.companyId, companyId),
+      inArray(swotTable.unitId, unitIds),
+    ));
+
+  for (const row of swotRows) {
+    if (row.unitId === null) continue;
+
+    totalItemsByUnit.set(row.unitId, (totalItemsByUnit.get(row.unitId) ?? 0) + 1);
+
+    const category = normalizeSwotCategory(row.category);
+    if (category === null) continue;
+
+    const categories = categoriesByUnit.get(row.unitId) ?? new Set<string>();
+    categories.add(category);
+    categoriesByUnit.set(row.unitId, categories);
+  }
+
+  return { categoriesByUnit, totalItemsByUnit };
+}
+
+async function appendSwotWorkItems(
+  items: PendingWorkItem[],
+  companyId: number,
+  unitId: number | undefined,
+) {
+  const units = await getSwotUnits(companyId, unitId);
+  if (units.length === 0) return;
+
+  const unitIds = units.map((unit) => unit.id);
+  const { categoriesByUnit, totalItemsByUnit } = await getSwotCategoriesByUnit(companyId, unitIds);
+
+  for (const unit of units) {
+    const totalItemCount = totalItemsByUnit.get(unit.id) ?? 0;
+    const baseParams = new URLSearchParams({ unitId: String(unit.id) });
+
+    if (totalItemCount === 0) {
+      items.push({
+        id: `swot-analysis-missing-${unit.id}`,
+        type: "swot_analysis_missing",
+        severity: "warning",
+        title: `SWOT analizi yok: ${unit.name}`,
+        description: `${unit.name} birimi için SWOT analizi maddesi bulunmuyor.`,
+        sourceModule: "SWOT Analizi",
+        sourceRecordId: null,
+        unitId: unit.id,
+        unitName: unit.name,
+        dueDate: null,
+        actionUrl: `/swot?${baseParams.toString()}`,
+      });
+      continue;
+    }
+
+    const existingCategories = categoriesByUnit.get(unit.id) ?? new Set<string>();
+    const missingCategories = SWOT_CATEGORY_KEYS.filter((category) => !existingCategories.has(category));
+    if (missingCategories.length === 0) continue;
+
+    const params = new URLSearchParams(baseParams);
+    params.set("category", missingCategories[0]);
+
+    const missingCategoryLabels = missingCategories
+      .map((category) => SWOT_CATEGORY_LABELS[category] ?? category)
+      .join(", ");
+
+    items.push({
+      id: `swot-category-missing-${unit.id}`,
+      type: "swot_category_missing",
+      severity: "warning",
+      title: `SWOT analizi eksik kategoriler içeriyor: ${unit.name}`,
+      description: `${unit.name} birimi için SWOT analizinde eksik kategoriler var: ${missingCategoryLabels}.`,
+      sourceModule: "SWOT Analizi",
+      sourceRecordId: null,
+      unitId: unit.id,
+      unitName: unit.name,
+      dueDate: null,
+      actionUrl: `/swot?${params.toString()}`,
+    });
+  }
+}
+
 async function getHighRiskWithoutActionCandidates(
   companyId: number,
   unitId: number | undefined,
@@ -1450,6 +1592,7 @@ router.get("/pending-work-items", requireAuth, async (req, res) => {
     await appendVapProjectWorkItems(items, sessionCompanyId, effectiveUnitId, todayDateOnly);
     await appendEnergyReviewRecordWorkItems(items, sessionCompanyId, effectiveUnitId, selectedYear);
     await appendHighRiskWorkItems(items, sessionCompanyId, effectiveUnitId);
+    await appendSwotWorkItems(items, sessionCompanyId, effectiveUnitId);
 
     items.sort((a, b) => {
       const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
