@@ -1,9 +1,76 @@
 import { Router } from "express";
-import { db, consumptionTable, metersTable, weatherTable } from "@workspace/db";
+import type { Request, Response } from "express";
+import { db, consumptionTable, metersTable, weatherTable, unitsTable } from "@workspace/db";
 import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
+
+class AnalysisQueryError extends Error {}
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parsePositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new AnalysisQueryError(`Geçersiz ${field}`);
+}
+
+function parseAnalysisYear(value: unknown): number {
+  if (value === undefined || value === null) return new Date().getFullYear();
+  const year = parsePositiveInteger(value, "year");
+  if (year === undefined || year < 1900 || year > 3000) {
+    throw new AnalysisQueryError("Geçersiz year");
+  }
+  return year;
+}
+
+async function resolveAnalysisScope(req: Request) {
+  const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+  const queryCompanyId = parsePositiveInteger(req.query.companyId, "companyId");
+  const queryUnitId = parsePositiveInteger(req.query.unitId, "unitId");
+  const companyId = isSuperAdmin(role) ? queryCompanyId : sessionCompanyId;
+  const unitId = isCompanyAdmin(role) || isSuperAdmin(role) ? queryUnitId : sessionUnitId ?? undefined;
+  const empty = !isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null;
+
+  if (unitId !== undefined) {
+    const [unit] = await db.select({ companyId: unitsTable.companyId })
+      .from(unitsTable).where(eq(unitsTable.id, unitId));
+    if (!unit || (companyId !== undefined && unit.companyId !== companyId)) {
+      throw new AnalysisQueryError("Bu birim için yetkiniz yok");
+    }
+  }
+
+  return { companyId, unitId, empty };
+}
+
+function buildAnalysisConditions(year: number, companyId?: number, unitId?: number, meterId?: number): SQL[] {
+  const conditions: SQL[] = [eq(consumptionTable.year, year)];
+  if (companyId !== undefined) {
+    conditions.push(eq(consumptionTable.companyId, companyId));
+    conditions.push(eq(metersTable.companyId, companyId));
+  }
+  if (unitId !== undefined) conditions.push(eq(metersTable.unitId, unitId));
+  if (meterId !== undefined) conditions.push(eq(consumptionTable.meterId, meterId));
+  return conditions;
+}
+
+function handleAnalysisQueryError(res: Response, err: unknown) {
+  if (!(err instanceof AnalysisQueryError)) return false;
+  const status = err.message === "Bu birim için yetkiniz yok" ? 403 : 400;
+  res.status(status).json({ error: err.message });
+  return true;
+}
 
 function linearRegression(xs: number[], ys: number[]): { slope: number; intercept: number; r2: number } {
   const n = xs.length;
@@ -26,18 +93,19 @@ function linearRegression(xs: number[], ys: number[]): { slope: number; intercep
 // GET /api/analysis/regression
 router.get("/analysis/regression", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-    const meterId = req.query.meterId ? parseInt(req.query.meterId as string) : undefined;
+    const year = parseAnalysisYear(req.query.year);
+    const meterId = parsePositiveInteger(req.query.meterId, "meterId");
+    const scope = await resolveAnalysisScope(req);
+    if (scope.empty) {
+      res.json({
+        slope: 0, intercept: 0, r2: 0,
+        enpg: 0, enrc: 0, eei: 1,
+        dataPoints: [],
+      });
+      return;
+    }
 
-    // Normal kullanıcı: kendi birimi; admin: kendi firması; superadmin: query'den
-    const effectiveUnitId = role !== "admin" && role !== "superadmin" && sessionUnitId !== null
-      ? sessionUnitId
-      : undefined;
-    const queryCompanyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    const effectiveCompanyId = role === "admin" ? sessionCompanyId : queryCompanyId;
-
-    let consumptionRows = await db
+    const consumptionRows = await db
       .select({
         month: consumptionTable.month,
         kwh: consumptionTable.kwh,
@@ -48,14 +116,7 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
       })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-      .where(eq(consumptionTable.year, year));
-
-    consumptionRows = consumptionRows.filter(r => {
-      if (effectiveUnitId !== undefined && r.meterUnitId !== effectiveUnitId) return false;
-      if (effectiveCompanyId !== undefined && r.meterCompanyId !== effectiveCompanyId) return false;
-      if (meterId !== undefined && r.meterId !== meterId) return false;
-      return true;
-    });
+      .where(and(...buildAnalysisConditions(year, scope.companyId, scope.unitId, meterId)));
 
     const byMonth: Record<number, { kwh: number; hdd: number | null }> = {};
     for (const row of consumptionRows) {
@@ -108,6 +169,7 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
       })),
     });
   } catch (err) {
+    if (handleAnalysisQueryError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -116,30 +178,23 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
 // GET /api/analysis/performance
 router.get("/analysis/performance", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-
-    const effectiveUnitId = role !== "admin" && role !== "superadmin" && sessionUnitId !== null
-      ? sessionUnitId
-      : undefined;
-    const queryCompanyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    const effectiveCompanyId = role === "admin" ? sessionCompanyId : queryCompanyId;
+    const year = parseAnalysisYear(req.query.year);
+    const scope = await resolveAnalysisScope(req);
+    if (scope.empty) {
+      res.json({
+        totalKwh: 0, totalTep: 0, totalCo2: 0,
+        enpg: 0, enrc: 1.0, eei: 1,
+        savingsKwh: 0, savingsTep: 0, improvementPercent: 0,
+      });
+      return;
+    }
 
     const filterByUnit = async (y: number) => {
-      const conds: SQL[] = [eq(consumptionTable.year, y)];
-      if (effectiveUnitId !== undefined || effectiveCompanyId !== undefined) {
-        const rows = await db
-          .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2, meterUnitId: metersTable.unitId, meterCompanyId: metersTable.companyId })
-          .from(consumptionTable)
-          .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-          .where(and(...conds));
-        return rows.filter(r => {
-          if (effectiveUnitId !== undefined && r.meterUnitId !== effectiveUnitId) return false;
-          if (effectiveCompanyId !== undefined && r.meterCompanyId !== effectiveCompanyId) return false;
-          return true;
-        });
-      }
-      return db.select().from(consumptionTable).where(conds[0]);
+      return db
+        .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2 })
+        .from(consumptionTable)
+        .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+        .where(and(...buildAnalysisConditions(y, scope.companyId, scope.unitId)));
     };
 
     const rows = await filterByUnit(year);
@@ -170,6 +225,7 @@ router.get("/analysis/performance", requireAuth, async (req, res) => {
       improvementPercent: Math.round(improvementPercent * 10) / 10,
     });
   } catch (err) {
+    if (handleAnalysisQueryError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
