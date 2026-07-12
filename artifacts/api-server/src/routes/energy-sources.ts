@@ -5,15 +5,36 @@ import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
+function isCompanyAdmin(role: string) { return role === "admin" || role === "kontrol_admin"; }
+function isSuperAdmin(role: string) { return role === "superadmin"; }
+function isStandard(role: string) { return !isCompanyAdmin(role) && !isSuperAdmin(role); }
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value); if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return undefined;
+}
+async function validateUnit(unitId: number, companyId?: number) {
+  const conditions = [eq(unitsTable.id, unitId)];
+  if (companyId !== undefined) conditions.push(eq(unitsTable.companyId, companyId));
+  const [unit] = await db.select({ companyId: unitsTable.companyId }).from(unitsTable).where(and(...conditions));
+  return unit;
+}
+
 // GET /api/energy-sources?unitId=1&companyId=1
 router.get("/energy-sources", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-    const queryCompanyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
+    const unitId = parsePositiveInteger(req.query.unitId);
+    const queryCompanyId = parsePositiveInteger(req.query.companyId);
+    if (req.query.unitId !== undefined && unitId === undefined) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
+    if (req.query.companyId !== undefined && queryCompanyId === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
+    if (isStandard(role) && sessionUnitId === null) { res.json([]); return; }
 
     // Normal kullanıcı: sadece kendi birimi
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
+    if (isStandard(role)) {
       const rows = await db.select().from(energySourcesTable)
         .where(eq(energySourcesTable.unitId, sessionUnitId!))
         .orderBy(energySourcesTable.name);
@@ -23,6 +44,10 @@ router.get("/energy-sources", requireAuth, async (req, res) => {
 
     // Superadmin: isteğe bağlı companyId + unitId filtresi
     if (role === "superadmin") {
+      if (unitId !== undefined) {
+        const unit = await validateUnit(unitId, queryCompanyId);
+        if (!unit) { res.status(queryCompanyId !== undefined ? 403 : 400).json({ error: "Geçersiz unitId" }); return; }
+      }
       const conditions = [];
       if (queryCompanyId !== undefined) conditions.push(eq(energySourcesTable.companyId, queryCompanyId));
       if (unitId !== undefined) conditions.push(eq(energySourcesTable.unitId, unitId));
@@ -34,6 +59,7 @@ router.get("/energy-sources", requireAuth, async (req, res) => {
     }
 
     // Admin: sadece kendi firması + isteğe bağlı unitId
+    if (unitId !== undefined && !await validateUnit(unitId, sessionCompanyId)) { res.status(403).json({ error: "Yetki yok" }); return; }
     const conditions = [eq(energySourcesTable.companyId, sessionCompanyId)];
     if (unitId !== undefined) conditions.push(eq(energySourcesTable.unitId, unitId));
     const rows = await db.select().from(energySourcesTable).where(and(...conditions)).orderBy(energySourcesTable.name);
@@ -53,15 +79,19 @@ router.post("/energy-sources", requireAuth, async (req, res) => {
       res.status(400).json({ error: "Birim, tür ve ad zorunludur" });
       return;
     }
-    const parsedUnitId = parseInt(unitId);
+    if (req.body.companyId !== undefined && parsePositiveInteger(req.body.companyId) === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
+    const requestedUnitId = parsePositiveInteger(unitId);
+    if (requestedUnitId === undefined) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
+    if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const parsedUnitId = isStandard(role) ? sessionUnitId! : requestedUnitId;
 
     // Normal kullanıcı: sadece kendi birimine ekleyebilir
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== parsedUnitId) {
+    if (isStandard(role) && sessionUnitId !== parsedUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
 
     // Admin: hedef birimin kendi firmasına ait olduğunu kontrol et
-    if (role === "admin") {
+    if (isCompanyAdmin(role)) {
       const [parentUnit] = await db.select({ companyId: unitsTable.companyId })
         .from(unitsTable).where(eq(unitsTable.id, parsedUnitId));
       if (!parentUnit || parentUnit.companyId !== sessionCompanyId) {
@@ -70,8 +100,11 @@ router.post("/energy-sources", requireAuth, async (req, res) => {
     }
 
     // companyId'yi parent unit'ten al
+    const parentConditions = [eq(unitsTable.id, parsedUnitId)];
+    if (!isSuperAdmin(role)) parentConditions.push(eq(unitsTable.companyId, sessionCompanyId));
     const [parentUnit] = await db.select({ companyId: unitsTable.companyId })
-      .from(unitsTable).where(eq(unitsTable.id, parsedUnitId));
+      .from(unitsTable).where(and(...parentConditions));
+    if (!parentUnit) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
     const targetCompanyId = parentUnit?.companyId ?? sessionCompanyId;
 
     const [row] = await db.insert(energySourcesTable).values({
@@ -93,13 +126,20 @@ router.post("/energy-sources", requireAuth, async (req, res) => {
 router.patch("/energy-sources/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
-    const [existing] = await db.select().from(energySourcesTable).where(eq(energySourcesTable.id, id));
+    const id = parsePositiveInteger(req.params.id);
+    if (id === undefined) { res.status(400).json({ error: "Geçersiz energySourceId" }); return; }
+    if (req.body.companyId !== undefined && parsePositiveInteger(req.body.companyId) === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
+    if (req.body.unitId !== undefined && parsePositiveInteger(req.body.unitId) === undefined) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
+    if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const conditions = [eq(energySourcesTable.id, id)];
+    if (!isSuperAdmin(role)) conditions.push(eq(energySourcesTable.companyId, sessionCompanyId));
+    if (isStandard(role)) conditions.push(eq(energySourcesTable.unitId, sessionUnitId!));
+    const [existing] = await db.select().from(energySourcesTable).where(and(...conditions));
     if (!existing) { res.status(404).json({ error: "Enerji kaynağı bulunamadı" }); return; }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== existing.unitId) {
+    if (isStandard(role) && sessionUnitId !== existing.unitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    if (role === "admin" && existing.companyId !== sessionCompanyId) {
+    if (isCompanyAdmin(role) && existing.companyId !== sessionCompanyId) {
       res.status(403).json({ error: "Bu enerji kaynağını düzenleme yetkiniz yok" }); return;
     }
     const { type, name, unit, active } = req.body;
@@ -108,7 +148,7 @@ router.patch("/energy-sources/:id", requireAuth, async (req, res) => {
     if (name !== undefined) updates.name = name;
     if (unit !== undefined) updates.unit = unit;
     if (active !== undefined) updates.active = Boolean(active);
-    const [row] = await db.update(energySourcesTable).set(updates).where(eq(energySourcesTable.id, id)).returning();
+    const [row] = await db.update(energySourcesTable).set(updates).where(and(...conditions)).returning();
     res.json(row);
   } catch (err) {
     req.log.error(err);
@@ -120,16 +160,21 @@ router.patch("/energy-sources/:id", requireAuth, async (req, res) => {
 router.delete("/energy-sources/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
-    const [existing] = await db.select().from(energySourcesTable).where(eq(energySourcesTable.id, id));
+    const id = parsePositiveInteger(req.params.id);
+    if (id === undefined) { res.status(400).json({ error: "Geçersiz energySourceId" }); return; }
+    if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const conditions = [eq(energySourcesTable.id, id)];
+    if (!isSuperAdmin(role)) conditions.push(eq(energySourcesTable.companyId, sessionCompanyId));
+    if (isStandard(role)) conditions.push(eq(energySourcesTable.unitId, sessionUnitId!));
+    const [existing] = await db.select().from(energySourcesTable).where(and(...conditions));
     if (!existing) { res.status(404).send(); return; }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== existing.unitId) {
+    if (isStandard(role) && sessionUnitId !== existing.unitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    if (role === "admin" && existing.companyId !== sessionCompanyId) {
+    if (isCompanyAdmin(role) && existing.companyId !== sessionCompanyId) {
       res.status(403).json({ error: "Bu enerji kaynağını silme yetkiniz yok" }); return;
     }
-    await db.delete(energySourcesTable).where(eq(energySourcesTable.id, id));
+    await db.delete(energySourcesTable).where(and(...conditions));
     res.status(204).send();
   } catch (err) {
     req.log.error(err);
