@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Request, Response } from "express";
 import {
   db,
   consumptionTable, metersTable, seuTable, weatherTable, unitsTable,
@@ -11,25 +12,97 @@ import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
+class DashboardScopeError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parsePositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number") {
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  } else if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new DashboardScopeError(400, `Geçersiz ${field}`);
+}
+
+async function resolveDashboardScope(req: Request) {
+  const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+  const queryCompanyId = parsePositiveInteger(req.query.companyId, "companyId");
+  const queryUnitId = parsePositiveInteger(req.query.unitId, "unitId");
+
+  let companyId: number | undefined;
+  let unitId: number | undefined;
+
+  if (isSuperAdmin(role)) {
+    companyId = queryCompanyId;
+    unitId = queryUnitId;
+  } else if (isCompanyAdmin(role)) {
+    companyId = sessionCompanyId;
+    unitId = queryUnitId;
+  } else {
+    companyId = sessionCompanyId;
+    unitId = sessionUnitId ?? undefined;
+    if (sessionUnitId === null) return { companyId, unitId, empty: true };
+  }
+
+  if (unitId !== undefined && companyId !== undefined) {
+    const [unit] = await db.select({ companyId: unitsTable.companyId })
+      .from(unitsTable)
+      .where(eq(unitsTable.id, unitId));
+    if (!unit || unit.companyId !== companyId) {
+      throw new DashboardScopeError(403, "Bu birim için yetkiniz yok");
+    }
+  }
+
+  return { companyId, unitId, empty: false };
+}
+
+function sendDashboardError(res: Response, err: unknown) {
+  if (!(err instanceof DashboardScopeError)) return false;
+  res.status(err.status).json({ error: err.message });
+  return true;
+}
+
 const MONTH_NAMES = ["", "Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
 
 function buildConsumptionConditions(year: number, unitId?: number, companyId?: number): SQL[] {
   const conds: SQL[] = [eq(consumptionTable.year, year)];
   if (unitId !== undefined) conds.push(eq(metersTable.unitId, unitId));
-  if (companyId !== undefined) conds.push(eq(metersTable.companyId, companyId));
+  if (companyId !== undefined) {
+    conds.push(eq(consumptionTable.companyId, companyId));
+    conds.push(eq(metersTable.companyId, companyId));
+  }
   return conds;
 }
 
 // GET /api/dashboard/kpi?year=2026&unitId=1
 router.get("/dashboard/kpi", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-    const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
+    const scope = await resolveDashboardScope(req);
+    const unitId = scope.unitId;
+    const effectiveCompanyId = scope.companyId;
 
-    // Admin: kendi firması; superadmin: query'den
-    const queryCompanyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    const effectiveCompanyId = role === "admin" ? sessionCompanyId : queryCompanyId;
+    if (scope.empty) {
+      res.json({
+        year, totalKwh: 0, totalTep: 0, totalCo2: 0,
+        kwhChange: 0, tepChange: 0, co2Change: 0,
+        meterCount: 0, activeSeuCount: 0,
+      });
+      return;
+    }
 
     const currConds = buildConsumptionConditions(year, unitId, effectiveCompanyId);
     const prevConds = buildConsumptionConditions(year - 1, unitId, effectiveCompanyId);
@@ -86,6 +159,7 @@ router.get("/dashboard/kpi", requireAuth, async (req, res) => {
       activeSeuCount: seuItems.length,
     });
   } catch (err) {
+    if (sendDashboardError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -94,11 +168,19 @@ router.get("/dashboard/kpi", requireAuth, async (req, res) => {
 // GET /api/dashboard/monthly-trend?year=2026&unitId=1
 router.get("/dashboard/monthly-trend", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-    const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-    const queryCompanyId2 = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    const effectiveCompanyId = role === "admin" ? sessionCompanyId : queryCompanyId2;
+    const scope = await resolveDashboardScope(req);
+    const unitId = scope.unitId;
+    const effectiveCompanyId = scope.companyId;
+
+    if (scope.empty) {
+      res.json(Array.from({ length: 12 }, (_, index) => ({
+        month: index + 1,
+        monthName: MONTH_NAMES[index + 1],
+        kwh: 0, tep: 0, co2: 0, hdd: null, cdd: null,
+      })));
+      return;
+    }
 
     const conds = buildConsumptionConditions(year, unitId, effectiveCompanyId);
     const rows = await db
@@ -134,6 +216,7 @@ router.get("/dashboard/monthly-trend", requireAuth, async (req, res) => {
     }
     res.json(trend);
   } catch (err) {
+    if (sendDashboardError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -142,11 +225,15 @@ router.get("/dashboard/monthly-trend", requireAuth, async (req, res) => {
 // GET /api/dashboard/seu-breakdown?year=2026&unitId=1
 router.get("/dashboard/seu-breakdown", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-    const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-    const queryCompanyId3 = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    const effectiveCompanyId = role === "admin" ? sessionCompanyId : queryCompanyId3;
+    const scope = await resolveDashboardScope(req);
+    const unitId = scope.unitId;
+    const effectiveCompanyId = scope.companyId;
+
+    if (scope.empty) {
+      res.json([]);
+      return;
+    }
 
     const seuConds: SQL[] = [];
     if (unitId !== undefined) seuConds.push(eq(seuTable.unitId, unitId));
@@ -192,6 +279,7 @@ router.get("/dashboard/seu-breakdown", requireAuth, async (req, res) => {
       }))
     );
   } catch (err) {
+    if (sendDashboardError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -200,32 +288,22 @@ router.get("/dashboard/seu-breakdown", requireAuth, async (req, res) => {
 // ── GET /api/dashboard/target-status ─────────────────────
 router.get("/dashboard/target-status", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId === null) {
+    const scope = await resolveDashboardScope(req);
+    if (scope.empty) {
       res.json({ items: [] });
       return;
     }
 
     const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    const unitIdParam = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-    const energySourceIdParam = req.query.energySourceId ? parseInt(req.query.energySourceId as string) : undefined;
+    const energySourceIdParam = parsePositiveInteger(req.query.energySourceId, "energySourceId");
     const statusParam = req.query.status as string | undefined;
-    const queryCompanyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    // admin: kendi şirketi; superadmin: query'den veya filtre yok (tüm şirketler)
-    const effectiveCompanyId = role === "admin" ? sessionCompanyId : queryCompanyId;
 
     const conds: SQL[] = [];
-    if (effectiveCompanyId !== undefined) conds.push(eq(energyTargetsTable.companyId, effectiveCompanyId));
+    if (scope.companyId !== undefined) conds.push(eq(energyTargetsTable.companyId, scope.companyId));
+    if (scope.unitId !== undefined) conds.push(eq(energyTargetsTable.unitId, scope.unitId));
     // year filtresi SQL'den kaldırıldı — JS katmanında baselineYear <= year <= targetYear mantığıyla uygulanır
     if (energySourceIdParam !== undefined) conds.push(eq(energyTargetsTable.energySourceId, energySourceIdParam));
     if (statusParam) conds.push(eq(energyTargetsTable.status, statusParam));
-    if (role !== "admin" && role !== "superadmin") {
-      conds.push(eq(energyTargetsTable.unitId, sessionUnitId!));
-    } else if (role === "admin" && unitIdParam !== undefined) {
-      conds.push(eq(energyTargetsTable.unitId, unitIdParam));
-    }
-
     const targets = await db.select({
       id: energyTargetsTable.id,
       name: energyTargetsTable.name,
@@ -270,11 +348,17 @@ router.get("/dashboard/target-status", requireAuth, async (req, res) => {
     const [allProgress, allActions] = await Promise.all([
       db.select()
         .from(energyTargetProgressTable)
-        .where(inArray(energyTargetProgressTable.targetId, targetIds))
+        .where(and(
+          inArray(energyTargetProgressTable.targetId, targetIds),
+          ...(scope.companyId !== undefined ? [eq(energyTargetProgressTable.companyId, scope.companyId)] : []),
+        ))
         .orderBy(energyTargetProgressTable.periodYear, energyTargetProgressTable.periodMonth),
       db.select({ id: energyActionPlansTable.id, targetId: energyActionPlansTable.targetId })
         .from(energyActionPlansTable)
-        .where(inArray(energyActionPlansTable.targetId, targetIds)),
+        .where(and(
+          inArray(energyActionPlansTable.targetId, targetIds),
+          ...(scope.companyId !== undefined ? [eq(energyActionPlansTable.companyId, scope.companyId)] : []),
+        )),
     ]);
 
     const progressByTarget: Record<number, typeof allProgress> = {};
@@ -352,6 +436,7 @@ router.get("/dashboard/target-status", requireAuth, async (req, res) => {
 
     res.json({ items });
   } catch (err) {
+    if (sendDashboardError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -360,9 +445,8 @@ router.get("/dashboard/target-status", requireAuth, async (req, res) => {
 // ── GET /api/dashboard/action-status ─────────────────────
 router.get("/dashboard/action-status", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId === null) {
+    const scope = await resolveDashboardScope(req);
+    if (scope.empty) {
       res.json({
         summary: { total: 0, planned: 0, inProgress: 0, completed: 0, cancelled: 0, overdue: 0, avgProgressPct: 0 },
         financial: { totalExpectedCostSaving: 0, totalInvestment: 0, avgPaybackMonths: null },
@@ -372,16 +456,16 @@ router.get("/dashboard/action-status", requireAuth, async (req, res) => {
     }
 
     const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    const unitIdParam = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
     const statusParam = req.query.status as string | undefined;
     const priorityParam = req.query.priority as string | undefined;
     const isVapParam = req.query.isVap !== undefined ? req.query.isVap === "true" : undefined;
 
-    const queryCompanyIdAction = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    const effectiveCompanyIdAction = role === "admin" ? sessionCompanyId : queryCompanyIdAction;
-
     const actionConds: SQL[] = [];
-    if (effectiveCompanyIdAction !== undefined) actionConds.push(eq(energyActionPlansTable.companyId, effectiveCompanyIdAction));
+    if (scope.companyId !== undefined) {
+      actionConds.push(eq(energyActionPlansTable.companyId, scope.companyId));
+      actionConds.push(eq(energyTargetsTable.companyId, scope.companyId));
+    }
+    if (scope.unitId !== undefined) actionConds.push(eq(energyTargetsTable.unitId, scope.unitId));
     if (statusParam) actionConds.push(eq(energyActionPlansTable.status, statusParam));
     if (priorityParam) actionConds.push(eq(energyActionPlansTable.priority, priorityParam));
     if (isVapParam !== undefined) actionConds.push(eq(energyActionPlansTable.isVap, isVapParam));
@@ -425,12 +509,6 @@ router.get("/dashboard/action-status", requireAuth, async (req, res) => {
         return baselineY <= year && year <= targetY;
       });
     }
-    if (role !== "admin" && role !== "superadmin") {
-      filtered = filtered.filter(r => r.targetUnitId === sessionUnitId);
-    } else if (role === "admin" && unitIdParam !== undefined) {
-      filtered = filtered.filter(r => r.targetUnitId === unitIdParam);
-    }
-
     const today = new Date().toISOString().split("T")[0];
 
     const items = filtered.map(r => {
@@ -495,6 +573,7 @@ router.get("/dashboard/action-status", requireAuth, async (req, res) => {
       })),
     });
   } catch (err) {
+    if (sendDashboardError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -503,9 +582,8 @@ router.get("/dashboard/action-status", requireAuth, async (req, res) => {
 // ── GET /api/dashboard/vap-summary ───────────────────────
 router.get("/dashboard/vap-summary", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId === null) {
+    const scope = await resolveDashboardScope(req);
+    if (scope.empty) {
       res.json({
         summary: { total: 0, byStatus: {}, byFeasibility: {} },
         financial: { totalInvestment: 0, totalAnnualCostSaving: 0, totalCo2ReductionTon: 0, portfolioPaybackMonths: null },
@@ -515,15 +593,16 @@ router.get("/dashboard/vap-summary", requireAuth, async (req, res) => {
     }
 
     const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    const unitIdParam = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
     const statusParam = req.query.status as string | undefined;
     const feasibilityStatusParam = req.query.feasibilityStatus as string | undefined;
 
-    const queryCompanyIdVap = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    const effectiveCompanyIdVap = role === "admin" ? sessionCompanyId : queryCompanyIdVap;
-
     const vapConds: SQL[] = [];
-    if (effectiveCompanyIdVap !== undefined) vapConds.push(eq(vapProjectsTable.companyId, effectiveCompanyIdVap));
+    if (scope.companyId !== undefined) {
+      vapConds.push(eq(vapProjectsTable.companyId, scope.companyId));
+      vapConds.push(eq(energyActionPlansTable.companyId, scope.companyId));
+      vapConds.push(eq(energyTargetsTable.companyId, scope.companyId));
+    }
+    if (scope.unitId !== undefined) vapConds.push(eq(energyTargetsTable.unitId, scope.unitId));
     if (statusParam) vapConds.push(eq(vapProjectsTable.status, statusParam));
     if (feasibilityStatusParam) vapConds.push(eq(vapProjectsTable.feasibilityStatus, feasibilityStatusParam));
 
@@ -582,12 +661,6 @@ router.get("/dashboard/vap-summary", requireAuth, async (req, res) => {
         return baselineY <= year && year <= targetY;
       });
     }
-    if (role !== "admin" && role !== "superadmin") {
-      filtered = filtered.filter(r => r.targetUnitId === sessionUnitId);
-    } else if (role === "admin" && unitIdParam !== undefined) {
-      filtered = filtered.filter(r => r.targetUnitId === unitIdParam);
-    }
-
     const byStatus: Record<string, number> = {};
     const byFeasibility: Record<string, number> = {};
     let totalInvestment = 0;
@@ -645,6 +718,7 @@ router.get("/dashboard/vap-summary", requireAuth, async (req, res) => {
       })),
     });
   } catch (err) {
+    if (sendDashboardError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -653,27 +727,18 @@ router.get("/dashboard/vap-summary", requireAuth, async (req, res) => {
 // ── GET /api/dashboard/seu-summary ───────────────────────
 router.get("/dashboard/seu-summary", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId === null) {
+    const scope = await resolveDashboardScope(req);
+    if (scope.empty) {
       res.json({ totalAssessments: 0, byUnit: [], topSeuItems: [] });
       return;
     }
 
     const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    const unitIdParam = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-
-    const queryCompanyIdSeu = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-    const effectiveCompanyIdSeu = role === "admin" ? sessionCompanyId : queryCompanyIdSeu;
 
     const assessmentConds: SQL[] = [eq(seuAssessmentsTable.recordType, "unit_official")];
-    if (effectiveCompanyIdSeu !== undefined) assessmentConds.push(eq(seuAssessmentsTable.companyId, effectiveCompanyIdSeu));
+    if (scope.companyId !== undefined) assessmentConds.push(eq(seuAssessmentsTable.companyId, scope.companyId));
+    if (scope.unitId !== undefined) assessmentConds.push(eq(seuAssessmentsTable.unitId, scope.unitId));
     if (year !== undefined) assessmentConds.push(eq(seuAssessmentsTable.year, year));
-    if (role !== "admin" && role !== "superadmin") {
-      assessmentConds.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
-    } else if (role === "admin" && unitIdParam !== undefined) {
-      assessmentConds.push(eq(seuAssessmentsTable.unitId, unitIdParam));
-    }
 
     const assessments = await db.select({
       id: seuAssessmentsTable.id,
@@ -769,6 +834,7 @@ router.get("/dashboard/seu-summary", requireAuth, async (req, res) => {
 
     res.json({ totalAssessments: assessments.length, byUnit, topSeuItems });
   } catch (err) {
+    if (sendDashboardError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
