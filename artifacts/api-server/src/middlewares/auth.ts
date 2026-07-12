@@ -39,6 +39,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+// Legacy/ambiguous guard: admin + superadmin.
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.user || (req.user.role !== "admin" && req.user.role !== "superadmin")) {
     res.status(403).json({ error: "Bu işlem için yetkiniz yok" });
@@ -47,6 +48,20 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+// Tenant-level company administration.
+export function requireCompanyAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.user) {
+    res.status(401).json({ error: "Giriş yapmalısınız" });
+    return;
+  }
+  if (req.user.role !== "admin" && req.user.role !== "kontrol_admin" && req.user.role !== "superadmin") {
+    res.status(403).json({ error: "Bu işlem için yetkiniz yok" });
+    return;
+  }
+  next();
+}
+
+// Platform administration.
 export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.user || req.user.role !== "superadmin") {
     res.status(403).json({ error: "Bu işlem için sistem yöneticisi yetkisi gereklidir" });
