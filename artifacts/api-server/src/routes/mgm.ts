@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, mgmStationsTable, mgmDegreeDataTable, mgmSyncLogTable, weatherDegreeDaysTable, mgmStationMappingsTable } from "@workspace/db";
 import { desc, eq, and, sql } from "drizzle-orm";
-import { requireAuth, requireAdmin } from "../middlewares/auth.js";
+import { requireAuth, requireSuperAdmin } from "../middlewares/auth.js";
 import { syncCurrentMonthData, lookupOfficialWeatherDegreeDay, lookupOfficialByStationKey, toStationKey, lookupStationKeyByLocation } from "../services/mgm-sync.js";
 import { MGM_STATIONS, findStationByCity, parseIlIlce, findNearestStation, haversineDistance } from "../services/mgm-stations-data.js";
 import { syncOfficialDegreeDays } from "../services/mgm-official-sync.js";
@@ -381,7 +381,7 @@ router.get("/mgm/lookup-by-location", requireAuth, async (req, res) => {
 });
 
 // GET /api/mgm/sync-log — Son sync logları
-router.get("/mgm/sync-log", requireAuth, async (req, res) => {
+router.get("/mgm/sync-log", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const rows = await db.select().from(mgmSyncLogTable)
       .orderBy(desc(mgmSyncLogTable.startedAt))
@@ -394,7 +394,7 @@ router.get("/mgm/sync-log", requireAuth, async (req, res) => {
 });
 
 // POST /api/mgm/sync — Manuel Open-Meteo sync tetikle (admin only)
-router.post("/mgm/sync", requireAuth, requireAdmin, async (req, res) => {
+router.post("/mgm/sync", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const result = await syncCurrentMonthData();
     res.json({
@@ -410,7 +410,7 @@ router.post("/mgm/sync", requireAuth, requireAdmin, async (req, res) => {
 
 // POST /api/admin/weather-degree-days/sync — MGM Resmi Gün Derece Havuzu senkronizasyonu
 // Admin/superadmin erişebilir. Body: { year?: number } veya { years?: number[] }
-router.post("/admin/weather-degree-days/sync", requireAuth, requireAdmin, async (req, res) => {
+router.post("/admin/weather-degree-days/sync", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const now = new Date();
     const currentYear = now.getFullYear();
@@ -473,7 +473,7 @@ router.get("/mgm/degree-data", requireAuth, async (req, res) => {
 
 // POST /api/admin/mgm/station-mapping/import-excel
 // Repo içindeki mgm_station_mapping_checked.xlsx dosyasını mgm_station_mappings tablosuna import eder
-router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireAdmin, async (req, res) => {
+router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const filePath = req.body?.filePath ?? DEFAULT_MAPPING_FILE;
     const logs: string[] = [];
@@ -497,7 +497,7 @@ router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireAdmin
 
 // POST /api/admin/weather-degree-days/import-excel
 // Repo içindeki mgm_degree_days_last_10_years_final.xlsx dosyasını weather_degree_days tablosuna import eder
-router.post("/admin/weather-degree-days/import-excel", requireAuth, requireAdmin, async (req, res) => {
+router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const filePath = req.body?.filePath ?? DEFAULT_DEGREE_DAYS_FILE;
     const logs: string[] = [];
@@ -520,7 +520,7 @@ router.post("/admin/weather-degree-days/import-excel", requireAuth, requireAdmin
 });
 
 // GET /api/admin/mgm/station-mappings — İstasyon eşleştirme listesi (admin)
-router.get("/admin/mgm/station-mappings", requireAuth, requireAdmin, async (req, res) => {
+router.get("/admin/mgm/station-mappings", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const { province, search } = req.query;
     let rows = await db.select().from(mgmStationMappingsTable)
@@ -546,7 +546,7 @@ router.get("/admin/mgm/station-mappings", requireAuth, requireAdmin, async (req,
 });
 
 // GET /api/admin/weather-degree-days — Resmi MGM veri listesi (admin)
-router.get("/admin/weather-degree-days", requireAuth, requireAdmin, async (req, res) => {
+router.get("/admin/weather-degree-days", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const { year, province } = req.query;
     const rows = await db.select().from(weatherDegreeDaysTable)
