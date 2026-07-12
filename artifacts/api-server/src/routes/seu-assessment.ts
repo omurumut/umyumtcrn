@@ -28,6 +28,15 @@ function computeRecommendation(priority: number | null): "seu_candidate" | "not_
   return priority !== null ? "seu_candidate" : "not_seu";
 }
 
+function parsePositiveInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return null;
+}
+
 // ── GET /seu/analyze ─────────────────────────────────────
 router.get("/seu/analyze", requireAuth, async (req, res) => {
   try {
@@ -420,17 +429,38 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
 router.patch("/seu/assessments/:id/items/:itemId", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const assessmentId = parseInt(req.params.id as string);
-    const itemId = parseInt(req.params.itemId as string);
+    const assessmentId = parsePositiveInteger(req.params.id);
+    const itemId = parsePositiveInteger(req.params.itemId);
+    if (assessmentId === null || itemId === null) {
+      res.status(400).json({ error: "Geçersiz assessmentId veya itemId" }); return;
+    }
+
+    const isSuperAdmin = role === "superadmin";
+    const isCompanyAdmin = role === "admin" || role === "kontrol_admin";
+    if (!isSuperAdmin && !isCompanyAdmin && sessionUnitId === null) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+
+    const assessmentConditions = [eq(seuAssessmentsTable.id, assessmentId)];
+    if (!isSuperAdmin) assessmentConditions.push(eq(seuAssessmentsTable.companyId, sessionCompanyId));
+    if (!isSuperAdmin && !isCompanyAdmin) {
+      assessmentConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
+    }
 
     const [assessment] = await db
       .select()
       .from(seuAssessmentsTable)
-      .where(and(eq(seuAssessmentsTable.id, assessmentId), eq(seuAssessmentsTable.companyId, sessionCompanyId)));
+      .where(and(...assessmentConditions));
     if (!assessment) { res.status(404).json({ error: "Bulunamadı" }); return; }
-    if (role === "user" && assessment.unitId !== sessionUnitId) {
-      res.status(403).json({ error: "Yetki yok" }); return;
-    }
+
+    const [existingItem] = await db
+      .select({ consumptionSharePercent: seuAssessmentItemsTable.consumptionSharePercent })
+      .from(seuAssessmentItemsTable)
+      .where(and(
+        eq(seuAssessmentItemsTable.id, itemId),
+        eq(seuAssessmentItemsTable.assessmentId, assessmentId),
+      ));
+    if (!existingItem) { res.status(404).json({ error: "Kalem bulunamadı" }); return; }
 
     const { hasOpportunity, userDecision, decisionReason, responsible, targetReductionPercent, notes } = req.body;
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -442,17 +472,11 @@ router.patch("/seu/assessments/:id/items/:itemId", requireAuth, async (req, res)
     if (notes !== undefined) updates.notes = notes || null;
 
     if (hasOpportunity !== undefined) {
-      const [existingItem] = await db
-        .select({ consumptionSharePercent: seuAssessmentItemsTable.consumptionSharePercent })
-        .from(seuAssessmentItemsTable)
-        .where(eq(seuAssessmentItemsTable.id, itemId));
-      if (existingItem) {
-        const share = existingItem.consumptionSharePercent;
-        const newHasOpp = !!hasOpportunity;
-        const priority = computePriority(share, newHasOpp);
-        updates.priorityResult = priority;
-        updates.systemRecommendation = computeRecommendation(priority);
-      }
+      const share = existingItem.consumptionSharePercent;
+      const newHasOpp = !!hasOpportunity;
+      const priority = computePriority(share, newHasOpp);
+      updates.priorityResult = priority;
+      updates.systemRecommendation = computeRecommendation(priority);
     }
 
     const [updated] = await db
