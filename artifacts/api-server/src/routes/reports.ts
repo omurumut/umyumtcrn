@@ -1,9 +1,86 @@
 import { Router } from "express";
+import type { Request, Response } from "express";
 import { db, reportsTable, consumptionTable, swotTable, risksTable, seuTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
 import { eq, and, SQL, inArray, lte, gte, desc, asc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
+
+class ReportScopeError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parsePositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new ReportScopeError(400, `Geçersiz ${field}`);
+}
+
+function parseRequiredId(value: unknown, field: string): number {
+  const parsed = parsePositiveInteger(value, field);
+  if (parsed === undefined) throw new ReportScopeError(400, `${field} zorunludur`);
+  return parsed;
+}
+
+function parseReportYear(value: unknown): number {
+  const year = parseRequiredId(value, "year");
+  if (year < 1900 || year > 3000) throw new ReportScopeError(400, "Geçersiz year");
+  return year;
+}
+
+async function resolveReportScope(
+  req: Request,
+  source: Record<string, unknown>,
+  requireSuperAdminCompany: boolean,
+) {
+  const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+  const requestedCompanyId = parsePositiveInteger(source.companyId, "companyId");
+  const requestedUnitId = parsePositiveInteger(source.unitId, "unitId");
+
+  if (!isCompanyAdmin(role) && !isSuperAdmin(role)) {
+    if (sessionUnitId === null) throw new ReportScopeError(403, "Bu rapor için birim yetkisi gerekli");
+    return { companyId: sessionCompanyId, unitId: sessionUnitId };
+  }
+
+  let companyId = isSuperAdmin(role) ? requestedCompanyId : sessionCompanyId;
+  const unitId = requestedUnitId;
+
+  if (unitId !== undefined) {
+    const [unit] = await db.select({ companyId: unitsTable.companyId })
+      .from(unitsTable).where(eq(unitsTable.id, unitId));
+    if (!unit) throw new ReportScopeError(400, "Geçersiz unitId");
+    if (companyId !== undefined && unit.companyId !== companyId) {
+      throw new ReportScopeError(403, "Bu birim için yetkiniz yok");
+    }
+    if (isSuperAdmin(role) && companyId === undefined) companyId = unit.companyId;
+  }
+
+  if (isSuperAdmin(role) && requireSuperAdminCompany && companyId === undefined) {
+    throw new ReportScopeError(400, "companyId zorunludur");
+  }
+
+  return { companyId, unitId: unitId ?? null };
+}
+
+function handleReportScopeError(res: Response, err: unknown) {
+  if (!(err instanceof ReportScopeError)) return false;
+  res.status(err.status).json({ error: err.message });
+  return true;
+}
 
 const MONTH_NAMES = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
 
@@ -40,15 +117,14 @@ router.get("/reports", requireAuth, async (req, res) => {
 router.post("/reports/generate", requireAuth, async (req, res) => {
   try {
     const { year, unitId: bodyUnitId, includeSwot, includeRisks, includeSeu, includeRegression } = req.body;
-    const yr = parseInt(year) || new Date().getFullYear();
-
-    const user = req.user!;
-    const resolvedUnitId: number | null =
-      user.role !== "admin" && user.unitId !== null
-        ? user.unitId
-        : (bodyUnitId !== undefined && bodyUnitId !== null ? parseInt(bodyUnitId) : null);
+    const yr = parseReportYear(year ?? new Date().getFullYear());
+    const scope = await resolveReportScope(req, { ...req.body, unitId: bodyUnitId }, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    const effectiveCompanyId = scope.companyId;
+    const resolvedUnitId = scope.unitId;
 
     const [report] = await db.insert(reportsTable).values({
+      companyId: effectiveCompanyId,
       year: yr,
       unitId: resolvedUnitId,
       status: "pending",
@@ -59,28 +135,32 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
     }).returning();
 
     // consumptionTable has no unitId directly — filter via meters join
-    const consumptionRows = resolvedUnitId !== null
-      ? await db
-          .select({ id: consumptionTable.id, meterId: consumptionTable.meterId, year: consumptionTable.year, month: consumptionTable.month, kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2, hdd: consumptionTable.hdd, cdd: consumptionTable.cdd, notes: consumptionTable.notes, createdAt: consumptionTable.createdAt })
-          .from(consumptionTable)
-          .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-          .where(and(eq(consumptionTable.year, yr), eq(metersTable.unitId, resolvedUnitId)))
-      : await db.select().from(consumptionTable).where(eq(consumptionTable.year, yr));
-    const meters = resolvedUnitId !== null
-      ? await db.select().from(metersTable).where(eq(metersTable.unitId, resolvedUnitId))
-      : await db.select().from(metersTable);
+    const consumptionConditions: SQL[] = [
+      eq(consumptionTable.year, yr),
+      eq(consumptionTable.companyId, effectiveCompanyId),
+      eq(metersTable.companyId, effectiveCompanyId),
+    ];
+    const meterConditions: SQL[] = [eq(metersTable.companyId, effectiveCompanyId)];
+    const swotConditions: SQL[] = [eq(swotTable.companyId, effectiveCompanyId)];
+    const riskConditions: SQL[] = [eq(risksTable.companyId, effectiveCompanyId)];
+    const seuConditions: SQL[] = [eq(seuTable.companyId, effectiveCompanyId)];
+    if (resolvedUnitId !== null) {
+      consumptionConditions.push(eq(metersTable.unitId, resolvedUnitId));
+      meterConditions.push(eq(metersTable.unitId, resolvedUnitId));
+      swotConditions.push(eq(swotTable.unitId, resolvedUnitId));
+      riskConditions.push(eq(risksTable.unitId, resolvedUnitId));
+      seuConditions.push(eq(seuTable.unitId, resolvedUnitId));
+    }
 
-    const swotItems = resolvedUnitId !== null
-      ? await db.select().from(swotTable).where(eq(swotTable.unitId, resolvedUnitId))
-      : await db.select().from(swotTable);
-
-    const riskItems = resolvedUnitId !== null
-      ? await db.select().from(risksTable).where(eq(risksTable.unitId, resolvedUnitId))
-      : await db.select().from(risksTable);
-
-    const seuItems = resolvedUnitId !== null
-      ? await db.select().from(seuTable).where(eq(seuTable.unitId, resolvedUnitId))
-      : await db.select().from(seuTable);
+    const consumptionRows = await db
+      .select({ id: consumptionTable.id, meterId: consumptionTable.meterId, year: consumptionTable.year, month: consumptionTable.month, kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2, hdd: consumptionTable.hdd, cdd: consumptionTable.cdd, notes: consumptionTable.notes, createdAt: consumptionTable.createdAt })
+      .from(consumptionTable)
+      .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+      .where(and(...consumptionConditions));
+    const meters = await db.select().from(metersTable).where(and(...meterConditions));
+    const swotItems = await db.select().from(swotTable).where(and(...swotConditions));
+    const riskItems = await db.select().from(risksTable).where(and(...riskConditions));
+    const seuItems = await db.select().from(seuTable).where(and(...seuConditions));
 
     const totalKwh = consumptionRows.reduce((a, r) => a + r.kwh, 0);
     const totalTep = consumptionRows.reduce((a, r) => a + r.tep, 0);
@@ -185,7 +265,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
 
     const [updated] = await db.update(reportsTable)
       .set({ status: "complete", downloadUrl: dataUrl })
-      .where(eq(reportsTable.id, report.id))
+      .where(and(eq(reportsTable.id, report.id), eq(reportsTable.companyId, effectiveCompanyId)))
       .returning();
 
     res.json({
@@ -196,6 +276,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       createdAt: updated.createdAt,
     });
   } catch (err) {
+    if (handleReportScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -217,15 +298,10 @@ const FEASIBILITY_STATUS_LABELS: Record<string, string> = {
 // GET /api/reports/energy-targets/pdf
 router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
 
     // ── Auth / scope ─────────────────────────────────────────────────────────
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId === null) {
-      res.status(403).json({ error: "Bu rapor için birim yetkisi gerekli" });
-      return;
-    }
-
-    const yearParam = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const yearParam = parseReportYear(req.query.year ?? new Date().getFullYear());
     const statusParam = req.query.status as string | undefined;
     const includeVap = req.query.includeVap !== "false";
     const includeProgress = req.query.includeProgress !== "false";
@@ -237,28 +313,9 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       gte(energyTargetsTable.targetYear, yearParam),
     ];
 
-    let resolvedUnitId: number | null = null;
-
-    if (role !== "admin" && role !== "superadmin") {
-      // Regular user: locked to own unit
-      resolvedUnitId = sessionUnitId!;
-      targetConditions.push(eq(energyTargetsTable.unitId, resolvedUnitId));
-    } else if (role === "admin") {
-      // Admin: scoped to own company, optional unitId filter
-      targetConditions.push(eq(energyTargetsTable.companyId, sessionCompanyId));
-      const quid = req.query.unitId ? parseInt(req.query.unitId as string) : NaN;
-      if (!isNaN(quid)) {
-        resolvedUnitId = quid;
-        targetConditions.push(eq(energyTargetsTable.unitId, resolvedUnitId));
-      }
-    } else {
-      // Superadmin: sees all companies, optional unitId filter
-      const quid = req.query.unitId ? parseInt(req.query.unitId as string) : NaN;
-      if (!isNaN(quid)) {
-        resolvedUnitId = quid;
-        targetConditions.push(eq(energyTargetsTable.unitId, resolvedUnitId));
-      }
-    }
+    const resolvedUnitId = scope.unitId;
+    if (scope.companyId !== undefined) targetConditions.push(eq(energyTargetsTable.companyId, scope.companyId));
+    if (resolvedUnitId !== null) targetConditions.push(eq(energyTargetsTable.unitId, resolvedUnitId));
 
     if (statusParam) targetConditions.push(eq(energyTargetsTable.status, statusParam));
 
@@ -292,7 +349,10 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
         ? await db
             .select()
             .from(energyActionPlansTable)
-            .where(inArray(energyActionPlansTable.targetId, targetIds))
+            .where(and(
+              inArray(energyActionPlansTable.targetId, targetIds),
+              ...(scope.companyId !== undefined ? [eq(energyActionPlansTable.companyId, scope.companyId)] : []),
+            ))
             .orderBy(energyActionPlansTable.createdAt)
         : [];
 
@@ -311,6 +371,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
         .where(and(
           inArray(energyTargetProgressTable.targetId, targetIds),
           eq(energyTargetProgressTable.periodYear, yearParam),
+          ...(scope.companyId !== undefined ? [eq(energyTargetProgressTable.companyId, scope.companyId)] : []),
         ))
         .orderBy(desc(energyTargetProgressTable.recordedAt));
 
@@ -336,6 +397,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
             .where(and(
               inArray(energyTargetProgressTable.targetId, targetIds),
               eq(energyTargetProgressTable.periodYear, yearParam),
+              ...(scope.companyId !== undefined ? [eq(energyTargetProgressTable.companyId, scope.companyId)] : []),
             ))
             .orderBy(energyTargetProgressTable.targetId, energyTargetProgressTable.periodYear, energyTargetProgressTable.periodMonth)
         : [];
@@ -347,7 +409,10 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
         ? await db
             .select()
             .from(vapProjectsTable)
-            .where(inArray(vapProjectsTable.actionPlanId, vapActionIds))
+            .where(and(
+              inArray(vapProjectsTable.actionPlanId, vapActionIds),
+              ...(scope.companyId !== undefined ? [eq(vapProjectsTable.companyId, scope.companyId)] : []),
+            ))
             .orderBy(vapProjectsTable.createdAt)
         : [];
 
@@ -574,6 +639,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       dataUrl,
     });
   } catch (err) {
+    if (handleReportScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Rapor üretme hatası" });
   }
@@ -586,15 +652,12 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
 // rawConsumption alias'ı tercih edilmelidir.
 router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-
-    const baselineId = req.query.baselineId ? parseInt(req.query.baselineId as string) : NaN;
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-
-    if (isNaN(baselineId)) {
-      res.status(400).json({ error: "baselineId zorunludur" });
-      return;
-    }
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, false);
+    const baselineId = parseRequiredId(req.query.baselineId, "baselineId");
+    const year = parseReportYear(req.query.year ?? new Date().getFullYear());
+    const baselineConditions: SQL[] = [eq(energyBaselinesTable.id, baselineId)];
+    if (scope.companyId !== undefined) baselineConditions.push(eq(energyBaselinesTable.companyId, scope.companyId));
+    if (scope.unitId !== null) baselineConditions.push(eq(energyBaselinesTable.unitId, scope.unitId));
 
     // ── Baseline + değişkenler ────────────────────────────────────────────
     const [baseline] = await db
@@ -619,22 +682,14 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
         seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
       })
       .from(energyBaselinesTable)
-      .where(eq(energyBaselinesTable.id, baselineId));
+      .where(and(...baselineConditions));
 
     if (!baseline) {
       res.status(404).json({ error: "EnRÇ bulunamadı" });
       return;
     }
 
-    // Tenant kontrolü
-    if (baseline.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Erişim yetkisi yok" });
-      return;
-    }
-    if (role === "user" && sessionUnitId && baseline.unitId !== sessionUnitId) {
-      res.status(403).json({ error: "Erişim yetkisi yok" });
-      return;
-    }
+    const effectiveCompanyId = baseline.companyId;
 
     const bvars = await db
       .select()
@@ -658,7 +713,11 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
         .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
         .leftJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
         .leftJoin(energySourcesTable, eq(seuAssessmentItemsTable.energySourceId, energySourcesTable.id))
-        .where(eq(seuAssessmentItemsTable.id, baseline.seuAssessmentItemId));
+        .where(and(
+          eq(seuAssessmentItemsTable.id, baseline.seuAssessmentItemId),
+          eq(seuAssessmentsTable.companyId, effectiveCompanyId),
+          ...(scope.unitId !== null ? [eq(seuAssessmentsTable.unitId, scope.unitId)] : []),
+        ));
 
       if (seuRow) {
         seuItemName = seuRow.itemName ?? "—";
@@ -675,7 +734,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       .where(and(
         eq(energyPerformanceResultsTable.baselineId, baselineId),
         eq(energyPerformanceResultsTable.year, year),
-        eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+        eq(energyPerformanceResultsTable.companyId, effectiveCompanyId),
       ))
       .orderBy(asc(energyPerformanceResultsTable.month));
 
@@ -879,6 +938,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
 
     res.json({ dataUrl, year, baselineId, seuItemName, rawUnit });
   } catch (err) {
+    if (handleReportScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "EnPG PDF raporu üretme hatası" });
   }
