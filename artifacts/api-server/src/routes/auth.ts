@@ -7,6 +7,40 @@ import { sessions, requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
+const COMPANY_ADMIN_ROLES = new Set(["user", "admin", "kontrol_admin"]);
+const SUPERADMIN_ROLES = new Set([...COMPANY_ADMIN_ROLES, "superadmin"]);
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function hasInvalidPositiveInteger(value: unknown) {
+  return value !== undefined && value !== null && parsePositiveInteger(value) === undefined;
+}
+
+async function companyExists(companyId: number) {
+  const [company] = await db.select({ id: companiesTable.id })
+    .from(companiesTable).where(eq(companiesTable.id, companyId));
+  return !!company;
+}
+
+async function unitBelongsToCompany(unitId: number, companyId: number) {
+  const [unit] = await db.select({ id: unitsTable.id })
+    .from(unitsTable)
+    .where(and(eq(unitsTable.id, unitId), eq(unitsTable.companyId, companyId)));
+  return !!unit;
+}
+
 function hashPassword(password: string): string {
   return createHash("sha256").update(password + "eys_salt_2024").digest("hex");
 }
@@ -109,9 +143,13 @@ router.post("/auth/logout", (req, res) => {
 router.get("/users", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
-    if (role !== "admin" && role !== "superadmin") {
+    if (!isCompanyAdmin(role) && role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" });
       return;
+    }
+
+    if (hasInvalidPositiveInteger(req.query.companyId)) {
+      res.status(400).json({ error: "Geçersiz companyId" }); return;
     }
 
     const base = db.select({
@@ -126,7 +164,7 @@ router.get("/users", requireAuth, async (req, res) => {
     }).from(usersTable);
 
     if (role === "superadmin") {
-      const queryCompanyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
+      const queryCompanyId = parsePositiveInteger(req.query.companyId);
       const users = queryCompanyId !== undefined
         ? await base.where(eq(usersTable.companyId, queryCompanyId)).orderBy(usersTable.name)
         : await base.orderBy(usersTable.name);
@@ -147,7 +185,7 @@ router.get("/users", requireAuth, async (req, res) => {
 router.post("/users", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
-    if (role !== "admin" && role !== "superadmin") {
+    if (!isCompanyAdmin(role) && role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
@@ -159,9 +197,29 @@ router.post("/users", requireAuth, async (req, res) => {
     }
 
     // admin kendi firmasına ekleyebilir; superadmin body'deki companyId'yi kullanır
-    const targetCompanyId = role === "superadmin"
-      ? (bodyCompanyId ? parseInt(bodyCompanyId) : sessionCompanyId)
-      : sessionCompanyId;
+    if (hasInvalidPositiveInteger(bodyCompanyId)) {
+      res.status(400).json({ error: "Geçersiz companyId" }); return;
+    }
+    if (hasInvalidPositiveInteger(unitId)) {
+      res.status(400).json({ error: "Geçersiz unitId" }); return;
+    }
+
+    const requestedCompanyId = parsePositiveInteger(bodyCompanyId);
+    const targetCompanyId = role === "superadmin" ? (requestedCompanyId ?? sessionCompanyId) : sessionCompanyId;
+    if (!await companyExists(targetCompanyId)) {
+      res.status(400).json({ error: "Geçersiz companyId" }); return;
+    }
+
+    const targetRole = newRole ?? "user";
+    const allowedRoles = role === "superadmin" ? SUPERADMIN_ROLES : COMPANY_ADMIN_ROLES;
+    if (typeof targetRole !== "string" || !allowedRoles.has(targetRole)) {
+      res.status(400).json({ error: "Geçersiz rol" }); return;
+    }
+
+    const targetUnitId = parsePositiveInteger(unitId) ?? null;
+    if (targetUnitId !== null && !await unitBelongsToCompany(targetUnitId, targetCompanyId)) {
+      res.status(400).json({ error: "Birim seçilen şirkete ait değil" }); return;
+    }
 
     const [existing] = await db.select().from(usersTable).where(eq(usersTable.username, username));
     if (existing) {
@@ -173,8 +231,8 @@ router.post("/users", requireAuth, async (req, res) => {
       username,
       passwordHash: hashPassword(password),
       name,
-      role: newRole || "user",
-      unitId: unitId ? parseInt(unitId) : null,
+      role: targetRole,
+      unitId: targetUnitId,
       companyId: targetCompanyId,
       active: true,
     }).returning();
@@ -199,34 +257,64 @@ router.post("/users", requireAuth, async (req, res) => {
 router.patch("/users/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
-    if (role !== "admin" && role !== "superadmin") {
+    if (!isCompanyAdmin(role) && role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
 
-    const id = parseInt(req.params.id as string);
+    const id = parsePositiveInteger(req.params.id);
+    if (id === undefined) {
+      res.status(400).json({ error: "Geçersiz userId" }); return;
+    }
 
     // Hedef kullanıcının firmasını kontrol et
-    const [target] = await db.select({ companyId: usersTable.companyId })
-      .from(usersTable).where(eq(usersTable.id, id));
+    const targetConditions = [eq(usersTable.id, id)];
+    if (role !== "superadmin") targetConditions.push(eq(usersTable.companyId, sessionCompanyId));
+    const [target] = await db.select({ companyId: usersTable.companyId, unitId: usersTable.unitId, role: usersTable.role })
+      .from(usersTable).where(and(...targetConditions));
     if (!target) {
       res.status(404).json({ error: "Kullanıcı bulunamadı" });
       return;
     }
-    if (role === "admin" && target.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu kullanıcıyı düzenleme yetkiniz yok" });
-      return;
+    if (role !== "superadmin" && target.role === "superadmin") {
+      res.status(403).json({ error: "Superadmin kullanıcısı düzenlenemez" }); return;
     }
 
-    const { name, password, role: newRole, unitId, active } = req.body;
+    const { name, password, role: newRole, unitId, companyId: bodyCompanyId, active } = req.body;
+    if (hasInvalidPositiveInteger(bodyCompanyId)) {
+      res.status(400).json({ error: "Geçersiz companyId" }); return;
+    }
+    if (hasInvalidPositiveInteger(unitId)) {
+      res.status(400).json({ error: "Geçersiz unitId" }); return;
+    }
+
+    const requestedCompanyId = parsePositiveInteger(bodyCompanyId);
+    const effectiveCompanyId = role === "superadmin" ? (requestedCompanyId ?? target.companyId) : sessionCompanyId;
+    if (!await companyExists(effectiveCompanyId)) {
+      res.status(400).json({ error: "Geçersiz companyId" }); return;
+    }
+
+    const allowedRoles = role === "superadmin" ? SUPERADMIN_ROLES : COMPANY_ADMIN_ROLES;
+    if (newRole !== undefined && (typeof newRole !== "string" || !allowedRoles.has(newRole))) {
+      res.status(400).json({ error: "Geçersiz rol" }); return;
+    }
+
+    const effectiveUnitId = unitId === undefined ? target.unitId : (parsePositiveInteger(unitId) ?? null);
+    if (effectiveUnitId !== null && !await unitBelongsToCompany(effectiveUnitId, effectiveCompanyId)) {
+      res.status(400).json({ error: "Birim seçilen şirkete ait değil" }); return;
+    }
+
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
     if (password) updates.passwordHash = hashPassword(password);
     if (newRole !== undefined) updates.role = newRole;
-    if (unitId !== undefined) updates.unitId = unitId ? parseInt(unitId) : null;
+    if (unitId !== undefined) updates.unitId = effectiveUnitId;
+    if (role === "superadmin" && requestedCompanyId !== undefined) updates.companyId = effectiveCompanyId;
     if (active !== undefined) updates.active = Boolean(active);
 
-    const [user] = await db.update(usersTable).set(updates).where(eq(usersTable.id, id)).returning();
+    const mutationConditions = [eq(usersTable.id, id)];
+    if (role !== "superadmin") mutationConditions.push(eq(usersTable.companyId, sessionCompanyId));
+    const [user] = await db.update(usersTable).set(updates).where(and(...mutationConditions)).returning();
     if (!user) {
       res.status(404).json({ error: "Kullanıcı bulunamadı" });
       return;
@@ -242,12 +330,15 @@ router.patch("/users/:id", requireAuth, async (req, res) => {
 router.delete("/users/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
-    if (role !== "admin" && role !== "superadmin") {
+    if (!isCompanyAdmin(role) && role !== "superadmin") {
       res.status(403).json({ error: "Yetki yok" });
       return;
     }
 
-    const id = parseInt(req.params.id as string);
+    const id = parsePositiveInteger(req.params.id);
+    if (id === undefined) {
+      res.status(400).json({ error: "Geçersiz userId" }); return;
+    }
 
     if (id === req.user!.userId) {
       res.status(400).json({ error: "Kendinizi silemezsiniz" });
@@ -255,18 +346,21 @@ router.delete("/users/:id", requireAuth, async (req, res) => {
     }
 
     // Hedef kullanıcının firmasını kontrol et
-    const [target] = await db.select({ companyId: usersTable.companyId })
-      .from(usersTable).where(eq(usersTable.id, id));
+    const targetConditions = [eq(usersTable.id, id)];
+    if (role !== "superadmin") targetConditions.push(eq(usersTable.companyId, sessionCompanyId));
+    const [target] = await db.select({ companyId: usersTable.companyId, role: usersTable.role })
+      .from(usersTable).where(and(...targetConditions));
     if (!target) {
       res.status(404).json({ error: "Kullanıcı bulunamadı" });
       return;
     }
-    if (role === "admin" && target.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu kullanıcıyı silme yetkiniz yok" });
-      return;
+    if (role !== "superadmin" && target.role === "superadmin") {
+      res.status(403).json({ error: "Superadmin kullanıcısı silinemez" }); return;
     }
 
-    await db.delete(usersTable).where(eq(usersTable.id, id));
+    const mutationConditions = [eq(usersTable.id, id)];
+    if (role !== "superadmin") mutationConditions.push(eq(usersTable.companyId, sessionCompanyId));
+    await db.delete(usersTable).where(and(...mutationConditions));
     res.status(204).send();
   } catch (err) {
     req.log.error(err);
