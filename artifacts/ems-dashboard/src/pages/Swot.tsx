@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUnit } from "@/context/UnitContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -25,6 +25,8 @@ const CATEGORIES = [
   { value: "threats", label: "Tehditler", color: "border-amber-500/30 bg-amber-500/5", headerColor: "text-amber-400 bg-amber-500/10", dot: "bg-amber-400" },
 ];
 
+const CATEGORY_VALUES = CATEGORIES.map((category) => category.value);
+
 const IMPACTS = [
   { value: "yuksek", label: "Yüksek" },
   { value: "orta", label: "Orta" },
@@ -33,6 +35,18 @@ const IMPACTS = [
 
 interface SwotForm { category: string; title: string; description: string; score: string; impact: string; }
 const EMPTY_FORM: SwotForm = { category: "strengths", title: "", description: "", score: "3", impact: "orta" };
+
+function parsePositiveInt(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseDeepLinkCategory(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  return CATEGORY_VALUES.includes(normalized) ? normalized : null;
+}
 
 function StarRating({ score }: { score: number }) {
   return (
@@ -47,11 +61,18 @@ function StarRating({ score }: { score: number }) {
 export default function Swot() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const { unitId } = useUnit();
+  const { unitId, setUnitId } = useUnit();
   const { companyId } = useCompany();
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const role = user?.role;
+  const isCompanyAdmin = role === "admin" || role === "kontrol_admin";
+  const isAdmin = isCompanyAdmin || role === "superadmin";
   const unitParam = unitId !== null ? { unitId } : companyId !== null ? { companyId } : undefined;
+  const [deepLinkParams] = useState(() => new URLSearchParams(window.location.search));
+  const deepLinkUnitId = parsePositiveInt(deepLinkParams.get("unitId"));
+  const deepLinkCategory = parseDeepLinkCategory(deepLinkParams.get("category"));
+  const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const deepLinkAppliedRef = useRef(false);
 
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -63,6 +84,29 @@ export default function Swot() {
   const createSwot = useCreateSwotItem();
   const updateSwot = useUpdateSwotItem();
   const deleteSwot = useDeleteSwotItem();
+
+  useEffect(() => {
+    if (deepLinkAppliedRef.current || !user) return;
+
+    if (isCompanyAdmin && deepLinkUnitId !== null) {
+      setUnitId(deepLinkUnitId);
+    }
+
+    deepLinkAppliedRef.current = true;
+  }, [deepLinkUnitId, isCompanyAdmin, setUnitId, user]);
+
+  useEffect(() => {
+    if (!deepLinkCategory || isLoading) return;
+
+    const node = categoryRefs.current[deepLinkCategory];
+    if (!node) return;
+
+    const scrollTimer = window.setTimeout(() => {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+
+    return () => window.clearTimeout(scrollTimer);
+  }, [deepLinkCategory, isLoading]);
 
   function openCreate(category: string) { setEditingId(null); setForm({ ...EMPTY_FORM, category }); setOpen(true); }
   function openEdit(item: any) {
@@ -104,8 +148,16 @@ export default function Swot() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {CATEGORIES.map(cat => {
             const catItems = (items ?? []).filter((i: any) => i.category === cat.value);
+            const isDeepLinkedCategory = deepLinkCategory === cat.value;
             return (
-              <Card key={cat.value} className={`border ${cat.color}`}>
+              <div
+                key={cat.value}
+                ref={(node) => {
+                  categoryRefs.current[cat.value] = node;
+                }}
+                className={`rounded-lg transition-shadow ${isDeepLinkedCategory ? "ring-2 ring-primary/60 ring-offset-2 ring-offset-background" : ""}`}
+              >
+              <Card className={`border ${cat.color}`}>
                 <CardHeader className="pb-3">
                   <div className={`flex items-center justify-between rounded-md px-3 py-1.5 ${cat.headerColor}`}>
                     <div className="flex items-center gap-2">
@@ -149,6 +201,7 @@ export default function Swot() {
                   )}
                 </CardContent>
               </Card>
+              </div>
             );
           })}
         </div>
