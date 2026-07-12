@@ -1,27 +1,81 @@
 import { Router } from "express";
-import { db, risksTable, riskNotesTable } from "@workspace/db";
+import { db, risksTable, riskNotesTable, unitsTable } from "@workspace/db";
 import { eq, and, inArray, SQL } from "drizzle-orm";
-import { requireAuth, requireAdmin } from "../middlewares/auth.js";
+import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
+
+class BadRequestError extends Error {}
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parsePositiveInteger(value: unknown, field = "id"): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new BadRequestError(`Geçersiz ${field}`);
+}
+
+function parseRequiredId(value: unknown, field: string): number {
+  return parsePositiveInteger(value, field) ?? (() => { throw new BadRequestError(`Geçersiz ${field}`); })();
+}
+
+function scopedRiskCondition(id: number, role: string, companyId: number) {
+  return isSuperAdmin(role)
+    ? eq(risksTable.id, id)
+    : and(eq(risksTable.id, id), eq(risksTable.companyId, companyId));
+}
+
+async function validateUnitCompany(unitId: number, companyId: number) {
+  const [unit] = await db.select({ companyId: unitsTable.companyId })
+    .from(unitsTable).where(eq(unitsTable.id, unitId));
+  return !!unit && unit.companyId === companyId;
+}
+
+function handleBadRequest(res: Parameters<typeof requireAuth>[1], err: unknown) {
+  if (!(err instanceof BadRequestError)) return false;
+  res.status(400).json({ error: err.message });
+  return true;
+}
 
 // ── GET /risks ─────────────────────────────────────────────
 router.get("/risks", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const conditions: SQL[] = [];
+    const queryCompanyId = parsePositiveInteger(req.query.companyId, "companyId");
+    const queryUnitId = parsePositiveInteger(req.query.unitId, "unitId");
 
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null) {
-      conditions.push(eq(risksTable.unitId, sessionUnitId));
-    } else if (role === "admin") {
+    if (isSuperAdmin(role)) {
+      if (queryCompanyId !== undefined) conditions.push(eq(risksTable.companyId, queryCompanyId));
+      if (queryUnitId !== undefined) {
+        if (queryCompanyId !== undefined && !await validateUnitCompany(queryUnitId, queryCompanyId)) {
+          res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+        }
+        conditions.push(eq(risksTable.unitId, queryUnitId));
+      }
+    } else if (isCompanyAdmin(role)) {
       conditions.push(eq(risksTable.companyId, sessionCompanyId));
-      const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-      if (unitId !== undefined) conditions.push(eq(risksTable.unitId, unitId));
+      if (queryUnitId !== undefined) {
+        if (!await validateUnitCompany(queryUnitId, sessionCompanyId)) {
+          res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+        }
+        conditions.push(eq(risksTable.unitId, queryUnitId));
+      }
+    } else if (sessionUnitId !== null) {
+      conditions.push(eq(risksTable.companyId, sessionCompanyId));
+      conditions.push(eq(risksTable.unitId, sessionUnitId));
     } else {
-      const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : undefined;
-      if (unitId !== undefined) conditions.push(eq(risksTable.unitId, unitId));
-      const companyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
-      if (companyId !== undefined) conditions.push(eq(risksTable.companyId, companyId));
+      res.json([]); return;
     }
 
     const items = conditions.length > 0
@@ -55,6 +109,7 @@ router.get("/risks", requireAuth, async (req, res) => {
       })),
     })));
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -78,9 +133,18 @@ router.post("/risks", requireAuth, async (req, res) => {
     }
     const prob = parseInt(probability);
     const sev = parseInt(severity);
-    const resolvedUnitId = role !== "admin" && role !== "superadmin" && sessionUnitId !== null
-      ? sessionUnitId
-      : (unitId ? parseInt(unitId) : null);
+    const requestedUnitId = unitId !== undefined && unitId !== null
+      ? parseRequiredId(unitId, "unitId")
+      : null;
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+    if (isCompanyAdmin(role) && requestedUnitId !== null && !await validateUnitCompany(requestedUnitId, sessionCompanyId)) {
+      res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+    }
+    const resolvedUnitId = isCompanyAdmin(role) || isSuperAdmin(role)
+      ? requestedUnitId
+      : sessionUnitId;
 
     const tProb = targetProbability ? parseInt(targetProbability) : null;
     const tSev = targetSeverity ? parseInt(targetSeverity) : null;
@@ -102,6 +166,7 @@ router.post("/risks", requireAuth, async (req, res) => {
     }).returning();
     res.status(201).json({ ...item, notes: [] });
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -111,14 +176,15 @@ router.post("/risks", requireAuth, async (req, res) => {
 router.patch("/risks/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
-    const [existing] = await db.select().from(risksTable).where(eq(risksTable.id, id));
-    if (!existing) { res.status(404).json({ error: "Bulunamadı" }); return; }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.unitId !== sessionUnitId) {
+    const id = parseRequiredId(req.params.id, "riskId");
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    if (role === "admin" && existing.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu kaydı düzenleme yetkiniz yok" }); return;
+    const riskScope = scopedRiskCondition(id, role, sessionCompanyId);
+    const [existing] = await db.select().from(risksTable).where(riskScope);
+    if (!existing) { res.status(404).json({ error: "Bulunamadı" }); return; }
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role) && existing.unitId !== sessionUnitId) {
+      res.status(403).json({ error: "Yetki yok" }); return;
     }
     const {
       type, title, description, foreseenImpact,
@@ -126,6 +192,18 @@ router.patch("/risks/:id", requireAuth, async (req, res) => {
       targetProbability, targetSeverity,
       owner, status, unitId,
     } = req.body;
+
+    const requestedUnitId = unitId !== undefined
+      ? (unitId === null ? null : parseRequiredId(unitId, "unitId"))
+      : undefined;
+    const effectiveUnitId = requestedUnitId !== undefined ? requestedUnitId : existing.unitId;
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role)) {
+      if (requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
+        res.status(403).json({ error: "Yetki yok" }); return;
+      }
+    } else if (isCompanyAdmin(role) && effectiveUnitId !== null && !await validateUnitCompany(effectiveUnitId, sessionCompanyId)) {
+      res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+    }
 
     const resolvedResponseType = responseType ?? existing.responseType;
     if (resolvedResponseType === "aksiyon") {
@@ -154,16 +232,17 @@ router.patch("/risks/:id", requireAuth, async (req, res) => {
     }
     if (owner !== undefined) updates.owner = owner;
     if (status !== undefined) updates.status = status;
-    if ((role === "admin" || role === "superadmin") && unitId !== undefined) {
-      updates.unitId = unitId ? parseInt(unitId) : null;
+    if ((isCompanyAdmin(role) || isSuperAdmin(role)) && requestedUnitId !== undefined) {
+      updates.unitId = requestedUnitId;
     }
-    const [item] = await db.update(risksTable).set(updates).where(eq(risksTable.id, id)).returning();
+    const [item] = await db.update(risksTable).set(updates).where(riskScope).returning();
     const noteRows = await db.select().from(riskNotesTable).where(eq(riskNotesTable.riskId, id)).orderBy(riskNotesTable.createdAt);
     res.json({
       ...item,
       notes: noteRows.map(n => ({ id: n.id, riskId: n.riskId, userId: n.userId, userName: n.userName, content: n.content, createdAt: n.createdAt })),
     });
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -173,18 +252,20 @@ router.patch("/risks/:id", requireAuth, async (req, res) => {
 router.delete("/risks/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const id = parseInt(req.params.id as string);
-    const [existing] = await db.select().from(risksTable).where(eq(risksTable.id, id));
-    if (!existing) { res.status(404).send(); return; }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.unitId !== sessionUnitId) {
+    const id = parseRequiredId(req.params.id, "riskId");
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    if (role === "admin" && existing.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu kaydı silme yetkiniz yok" }); return;
+    const riskScope = scopedRiskCondition(id, role, sessionCompanyId);
+    const [existing] = await db.select().from(risksTable).where(riskScope);
+    if (!existing) { res.status(404).send(); return; }
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role) && existing.unitId !== sessionUnitId) {
+      res.status(403).json({ error: "Yetki yok" }); return;
     }
-    await db.delete(risksTable).where(eq(risksTable.id, id));
+    await db.delete(risksTable).where(riskScope);
     res.status(204).send();
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -194,63 +275,87 @@ router.delete("/risks/:id", requireAuth, async (req, res) => {
 router.post("/risks/:id/notes", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId, userId, name } = req.user!;
-    const riskId = parseInt(req.params.id as string);
+    const riskId = parseRequiredId(req.params.id, "riskId");
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
     const { content } = req.body;
     if (!content?.trim()) {
       res.status(400).json({ error: "Açıklama içeriği boş olamaz" }); return;
     }
-    const [existing] = await db.select().from(risksTable).where(eq(risksTable.id, riskId));
+    const [existing] = await db.select().from(risksTable).where(scopedRiskCondition(riskId, role, sessionCompanyId));
     if (!existing) { res.status(404).json({ error: "Risk bulunamadı" }); return; }
-    if (role !== "admin" && role !== "superadmin" && sessionUnitId !== null && existing.unitId !== sessionUnitId) {
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role) && existing.unitId !== sessionUnitId) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
     const [note] = await db.insert(riskNotesTable).values({
-      riskId, companyId: sessionCompanyId,
+      riskId, companyId: existing.companyId,
       userId, userName: name,
       content: content.trim(),
     }).returning();
     res.status(201).json({ id: note.id, riskId: note.riskId, userId: note.userId, userName: note.userName, content: note.content, createdAt: note.createdAt });
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 
 // ── PATCH /risks/:id/notes/:noteId ────────────────────────
-router.patch("/risks/:id/notes/:noteId", requireAuth, requireAdmin, async (req, res) => {
+router.patch("/risks/:id/notes/:noteId", requireAuth, async (req, res) => {
   try {
-    const { companyId: sessionCompanyId } = req.user!;
-    const noteId = parseInt(req.params.noteId as string);
+    const { role, companyId: sessionCompanyId } = req.user!;
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role)) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+    const riskId = parseRequiredId(req.params.id, "riskId");
+    const noteId = parseRequiredId(req.params.noteId, "noteId");
     const { content } = req.body;
     if (!content?.trim()) {
       res.status(400).json({ error: "Açıklama içeriği boş olamaz" }); return;
     }
-    const [existing] = await db.select().from(riskNotesTable).where(eq(riskNotesTable.id, noteId));
+    const [risk] = await db.select({ id: risksTable.id }).from(risksTable)
+      .where(scopedRiskCondition(riskId, role, sessionCompanyId));
+    if (!risk) { res.status(404).json({ error: "Risk bulunamadı" }); return; }
+    const noteScope = and(
+      eq(riskNotesTable.id, noteId),
+      eq(riskNotesTable.riskId, riskId),
+      ...(!isSuperAdmin(role) ? [eq(riskNotesTable.companyId, sessionCompanyId)] : []),
+    );
+    const [existing] = await db.select().from(riskNotesTable).where(noteScope);
     if (!existing) { res.status(404).json({ error: "Not bulunamadı" }); return; }
-    if (existing.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Yetki yok" }); return;
-    }
-    const [note] = await db.update(riskNotesTable).set({ content: content.trim() }).where(eq(riskNotesTable.id, noteId)).returning();
+    const [note] = await db.update(riskNotesTable).set({ content: content.trim() }).where(noteScope).returning();
     res.json({ id: note.id, riskId: note.riskId, userId: note.userId, userName: note.userName, content: note.content, createdAt: note.createdAt });
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 
 // ── DELETE /risks/:id/notes/:noteId ───────────────────────
-router.delete("/risks/:id/notes/:noteId", requireAuth, requireAdmin, async (req, res) => {
+router.delete("/risks/:id/notes/:noteId", requireAuth, async (req, res) => {
   try {
-    const { companyId: sessionCompanyId } = req.user!;
-    const noteId = parseInt(req.params.noteId as string);
-    const [existing] = await db.select().from(riskNotesTable).where(eq(riskNotesTable.id, noteId));
-    if (!existing) { res.status(404).send(); return; }
-    if (existing.companyId !== sessionCompanyId) {
+    const { role, companyId: sessionCompanyId } = req.user!;
+    if (!isCompanyAdmin(role) && !isSuperAdmin(role)) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    await db.delete(riskNotesTable).where(eq(riskNotesTable.id, noteId));
+    const riskId = parseRequiredId(req.params.id, "riskId");
+    const noteId = parseRequiredId(req.params.noteId, "noteId");
+    const [risk] = await db.select({ id: risksTable.id }).from(risksTable)
+      .where(scopedRiskCondition(riskId, role, sessionCompanyId));
+    if (!risk) { res.status(404).send(); return; }
+    const noteScope = and(
+      eq(riskNotesTable.id, noteId),
+      eq(riskNotesTable.riskId, riskId),
+      ...(!isSuperAdmin(role) ? [eq(riskNotesTable.companyId, sessionCompanyId)] : []),
+    );
+    const [existing] = await db.select().from(riskNotesTable).where(noteScope);
+    if (!existing) { res.status(404).send(); return; }
+    await db.delete(riskNotesTable).where(noteScope);
     res.status(204).send();
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
