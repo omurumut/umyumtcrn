@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   db,
+  companiesTable,
   consumptionTable,
   metersTable,
   energySourcesTable,
@@ -20,6 +21,64 @@ import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 import { calcProgress } from "./targets.js";
 
 const router = Router();
+
+class EnergyReviewScopeError extends Error {
+  constructor(public status: number, message: string) { super(message); }
+}
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parsePositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new EnergyReviewScopeError(400, `Geçersiz ${field}`);
+}
+
+function parseYear(value: unknown): number {
+  if (value === undefined || value === null) return new Date().getFullYear();
+  return parsePositiveInteger(value, "year")!;
+}
+
+async function resolveEnergyReviewReadScope(req: any) {
+  const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+  const requestedCompanyId = parsePositiveInteger(req.query.companyId, "companyId");
+  const requestedUnitId = parsePositiveInteger(req.query.unitId, "unitId");
+  const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+  const companyId = isSuperAdmin(role) ? (requestedCompanyId ?? sessionCompanyId) : sessionCompanyId;
+
+  if (isSuperAdmin(role) && requestedCompanyId !== undefined) {
+    const [company] = await db.select({ id: companiesTable.id }).from(companiesTable)
+      .where(eq(companiesTable.id, requestedCompanyId));
+    if (!company) throw new EnergyReviewScopeError(404, "Şirket bulunamadı");
+  }
+
+  const unitId = standardUser ? sessionUnitId : (requestedUnitId ?? null);
+  if (!standardUser && unitId !== null) {
+    const [unit] = await db.select({ companyId: unitsTable.companyId }).from(unitsTable)
+      .where(eq(unitsTable.id, unitId));
+    if (!unit || unit.companyId !== companyId) {
+      throw new EnergyReviewScopeError(403, "Bu birim için yetkiniz yok");
+    }
+  }
+
+  return { companyId, unitId, standardUnitMissing: standardUser && sessionUnitId === null };
+}
+
+function handleEnergyReviewScopeError(res: any, err: unknown) {
+  if (!(err instanceof EnergyReviewScopeError)) return false;
+  res.status(err.status).json({ error: err.message });
+  return true;
+}
 
 // ── Yardımcı: yıl + sayaç bazlı tüketim koşulu ───────────────────────────────
 function buildConsumptionCond(year: number, meterIds: number[]): SQL {
@@ -138,16 +197,26 @@ async function getAcceptedSeuItems(unitId: number | null, companyId: number) {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/overview", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const year = parseYear(req.query.year);
+    const { companyId: effectiveCompanyId, unitId: effectiveUnitId, standardUnitMissing } = await resolveEnergyReviewReadScope(req);
+    if (standardUnitMissing) {
+      res.json({
+        year,
+        totalTep: 0,
+        totalCo2Ton: 0,
+        seuCount: 0,
+        activeEnpiCount: 0,
+        monitoredSeuCount: 0,
+        unmonitoredSeuCount: 0,
+        targetsCount: 0,
+        openActionsCount: 0,
+        overdueActionsCount: 0,
+        activeVapCount: 0,
+      });
+      return;
+    }
 
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-
-    const effectiveUnitId: number | null =
-      role === "admin" || role === "superadmin"
-        ? req.query.unitId ? parseInt(req.query.unitId as string) : null
-        : sessionUnitId;
-
-    const meterIds = await getMeterIds(effectiveUnitId, sessionCompanyId);
+    const meterIds = await getMeterIds(effectiveUnitId, effectiveCompanyId);
 
     // Toplam TEP & CO₂
     let totalTep = 0;
@@ -167,12 +236,12 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
     }
 
     // Kabul edilmiş ÖEK sayısı
-    const seuItems = await getAcceptedSeuItems(effectiveUnitId, sessionCompanyId);
+    const seuItems = await getAcceptedSeuItems(effectiveUnitId, effectiveCompanyId);
     const seuCount = seuItems.length;
     const seuItemIds = seuItems.map((s) => s.id);
 
     // Aktif EnPG sayısı = aktif EnRÇ (baseline status='active') sayısı
-    const activeEnpiCount = await countActiveBaselines(effectiveUnitId, sessionCompanyId);
+    const activeEnpiCount = await countActiveBaselines(effectiveUnitId, effectiveCompanyId);
 
     // İzlenen ÖEK: o yıl için EnPG sonucu olan ÖEK sayısı
     let monitoredSeuCount = 0;
@@ -192,7 +261,7 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
 
     // Aktif hedef sayısı
     const targetConds: SQL[] = [
-      eq(energyTargetsTable.companyId, sessionCompanyId),
+      eq(energyTargetsTable.companyId, effectiveCompanyId),
       eq(energyTargetsTable.status, "active"),
     ];
     if (effectiveUnitId !== null) targetConds.push(eq(energyTargetsTable.unitId, effectiveUnitId));
@@ -261,6 +330,7 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
       activeVapCount,
     });
   } catch (err) {
+    if (handleEnergyReviewScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -271,15 +341,14 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const year = parseYear(req.query.year);
+    const { companyId: effectiveCompanyId, unitId: effectiveUnitId, standardUnitMissing } = await resolveEnergyReviewReadScope(req);
+    if (standardUnitMissing) {
+      res.json([]);
+      return;
+    }
 
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-    const effectiveUnitId: number | null =
-      role === "admin" || role === "superadmin"
-        ? req.query.unitId ? parseInt(req.query.unitId as string) : null
-        : sessionUnitId;
-
-    const meterIds = await getMeterIds(effectiveUnitId, sessionCompanyId);
+    const meterIds = await getMeterIds(effectiveUnitId, effectiveCompanyId);
     if (meterIds.length === 0) {
       res.json([]);
       return;
@@ -333,6 +402,7 @@ router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
 
     res.json(breakdown);
   } catch (err) {
+    if (handleEnergyReviewScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -346,18 +416,15 @@ router.get("/energy-review/source-breakdown", requireAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/source-comparison", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-
-    const selectedYear = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const selectedYear = parseYear(req.query.year);
     const previousYear = selectedYear - 1;
+    const { companyId: effectiveCompanyId, unitId: effectiveUnitId, standardUnitMissing } = await resolveEnergyReviewReadScope(req);
+    if (standardUnitMissing) {
+      res.json([]);
+      return;
+    }
 
-    // Standart kullanıcıda session unitId'yi kullan; query parametresine güvenme.
-    const effectiveUnitId: number | null =
-      role === "admin" || role === "superadmin"
-        ? req.query.unitId ? parseInt(req.query.unitId as string) : null
-        : sessionUnitId;
-
-    const meterIds = await getMeterIds(effectiveUnitId, sessionCompanyId);
+    const meterIds = await getMeterIds(effectiveUnitId, effectiveCompanyId);
     if (meterIds.length === 0) {
       res.json([]);
       return;
@@ -458,6 +525,7 @@ router.get("/energy-review/source-comparison", requireAuth, async (req, res) => 
 
     res.json(result);
   } catch (err) {
+    if (handleEnergyReviewScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -468,16 +536,15 @@ router.get("/energy-review/source-comparison", requireAuth, async (req, res) => 
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
-    const effectiveUnitId: number | null =
-      role === "admin" || role === "superadmin"
-        ? req.query.unitId ? parseInt(req.query.unitId as string) : null
-        : sessionUnitId;
+    const year = parseYear(req.query.year);
+    const { companyId: effectiveCompanyId, unitId: effectiveUnitId, standardUnitMissing } = await resolveEnergyReviewReadScope(req);
+    if (standardUnitMissing) {
+      res.json([]);
+      return;
+    }
 
     // Kabul edilmiş ÖEK kalemleri (çözülmüş birim + enerji kaynağı ile)
-    const seuItems = await getAcceptedSeuItems(effectiveUnitId, sessionCompanyId);
+    const seuItems = await getAcceptedSeuItems(effectiveUnitId, effectiveCompanyId);
     if (seuItems.length === 0) {
       res.json([]);
       return;
@@ -504,7 +571,7 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
       .from(energyBaselinesTable)
       .where(
         and(
-          eq(energyBaselinesTable.companyId, sessionCompanyId),
+          eq(energyBaselinesTable.companyId, effectiveCompanyId),
           inArray(energyBaselinesTable.seuAssessmentItemId, seuItemIds),
         ),
       )
@@ -549,7 +616,7 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
           .from(energyPerformanceResultsTable)
           .where(
             and(
-              eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+              eq(energyPerformanceResultsTable.companyId, effectiveCompanyId),
               inArray(energyPerformanceResultsTable.seuAssessmentItemId, seuItemIds),
               inArray(energyPerformanceResultsTable.baselineId, activeBaselineIds),
             ),
@@ -708,6 +775,7 @@ router.get("/energy-review/enpi-summary", requireAuth, async (req, res) => {
 
     res.json(summary);
   } catch (err) {
+    if (handleEnergyReviewScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
