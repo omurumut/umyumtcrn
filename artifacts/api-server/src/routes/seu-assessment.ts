@@ -13,7 +13,7 @@ import {
   seuTable,
 } from "@workspace/db";
 import { eq, and, gte, lte, sql, desc, inArray } from "drizzle-orm";
-import { requireAuth } from "../middlewares/auth.js";
+import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 
 const router = Router();
 
@@ -55,6 +55,15 @@ function parseOptionalId(value: unknown, field: string): number | null {
   const parsed = parsePositiveInteger(value);
   if (parsed === null) throw new AssessmentScopeError(400, `Geçersiz ${field}`);
   return parsed;
+}
+
+async function resolveUnitCompanyId(unitId: number, companyId: number | null): Promise<number> {
+  const [unit] = await db.select({ companyId: unitsTable.companyId }).from(unitsTable)
+    .where(eq(unitsTable.id, unitId));
+  if (!unit || (companyId !== null && unit.companyId !== companyId)) {
+    throw new AssessmentScopeError(403, "Birim şirket kapsamıyla uyumlu değil");
+  }
+  return unit.companyId;
 }
 
 async function validateAssessmentItemRelations(
@@ -140,22 +149,40 @@ router.get("/seu/analyze", requireAuth, async (req, res) => {
     const monthStart = parseInt(req.query.monthStart as string) || 1;
     const monthEnd = parseInt(req.query.monthEnd as string) || 12;
     const analysisLevel = (req.query.analysisLevel as string) || "energyUseGroup";
-    const energySourceId = req.query.energySourceId ? parseInt(req.query.energySourceId as string) : null;
+    const requestedCompanyId = parseOptionalId(req.query.companyId, "companyId");
+    const requestedUnitId = parseOptionalId(req.query.unitId, "unitId");
+    const energySourceId = parseOptionalId(req.query.energySourceId, "energySourceId");
 
-    let resolvedUnitId: number | null = null;
-    if (role === "user" && sessionUnitId !== null) {
-      resolvedUnitId = sessionUnitId;
-    } else if (role === "admin" || role === "superadmin") {
-      resolvedUnitId = req.query.unitId ? parseInt(req.query.unitId as string) : null;
+    const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+    if (standardUser && sessionUnitId === null) {
+      res.json({
+        unitId: null,
+        year,
+        periodStart: monthStart,
+        periodEnd: monthEnd,
+        analysisLevel,
+        unitTotalTep: 0,
+        missingTepWarning: false,
+        missingTepCount: 0,
+        items: [],
+      });
+      return;
     }
+
+    const resolvedUnitId = standardUser ? sessionUnitId : requestedUnitId;
 
     if (!resolvedUnitId) {
       res.status(400).json({ error: "Birim seçilmedi" });
       return;
     }
 
+    const requestedScopeCompanyId = isSuperAdmin(role) ? requestedCompanyId : sessionCompanyId;
+    const resolvedCompanyId = standardUser
+      ? sessionCompanyId
+      : await resolveUnitCompanyId(resolvedUnitId, requestedScopeCompanyId);
+
     const baseConditions = [
-      eq(consumptionTable.companyId, sessionCompanyId),
+      eq(consumptionTable.companyId, resolvedCompanyId),
       eq(metersTable.unitId, resolvedUnitId),
       eq(consumptionTable.year, year),
       gte(consumptionTable.month, monthStart),
@@ -305,6 +332,7 @@ router.get("/seu/analyze", requireAuth, async (req, res) => {
       items,
     });
   } catch (err) {
+    if (handleAssessmentScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Analiz hesaplanamadı" });
   }
@@ -314,17 +342,32 @@ router.get("/seu/analyze", requireAuth, async (req, res) => {
 router.get("/seu/assessments", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : null;
+    const requestedCompanyId = parseOptionalId(req.query.companyId, "companyId");
+    const requestedUnitId = parseOptionalId(req.query.unitId, "unitId");
     const year = req.query.year ? parseInt(req.query.year as string) : null;
     const recordType = (req.query.recordType as string) || null;
 
-    const conds = [eq(seuAssessmentsTable.companyId, sessionCompanyId)];
+    const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+    if (standardUser && sessionUnitId === null) {
+      res.json([]);
+      return;
+    }
 
-    if (role === "user" && sessionUnitId !== null) {
-      conds.push(eq(seuAssessmentsTable.unitId, sessionUnitId));
+    let effectiveCompanyId = isSuperAdmin(role) ? requestedCompanyId : sessionCompanyId;
+    const effectiveUnitId = standardUser ? sessionUnitId : requestedUnitId;
+    if (effectiveUnitId !== null && !standardUser) {
+      const unitCompanyId = await resolveUnitCompanyId(effectiveUnitId, effectiveCompanyId);
+      effectiveCompanyId ??= unitCompanyId;
+    }
+
+    const conds = [];
+    if (effectiveCompanyId !== null) conds.push(eq(seuAssessmentsTable.companyId, effectiveCompanyId));
+
+    if (standardUser) {
+      conds.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
       conds.push(eq(seuAssessmentsTable.recordType, "unit_official"));
-    } else if (role === "admin" || role === "superadmin") {
-      if (unitId) conds.push(eq(seuAssessmentsTable.unitId, unitId));
+    } else {
+      if (effectiveUnitId !== null) conds.push(eq(seuAssessmentsTable.unitId, effectiveUnitId));
       if (recordType) conds.push(eq(seuAssessmentsTable.recordType, recordType));
     }
     if (year) conds.push(eq(seuAssessmentsTable.year, year));
@@ -347,7 +390,7 @@ router.get("/seu/assessments", requireAuth, async (req, res) => {
       })
       .from(seuAssessmentsTable)
       .leftJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
-      .where(and(...conds))
+      .where(conds.length > 0 ? and(...conds) : undefined)
       .orderBy(desc(seuAssessmentsTable.createdAt));
 
     const ids = assessments.map(a => a.id);
@@ -378,6 +421,7 @@ router.get("/seu/assessments", requireAuth, async (req, res) => {
       notSeuCount: itemCounts[a.id]?.notSeu ?? 0,
     })));
   } catch (err) {
+    if (handleAssessmentScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -633,22 +677,30 @@ router.patch("/seu/decision-items/analysis/:itemId", requireAuth, async (req, re
     const itemId = parsePositiveInteger(req.params.itemId);
     if (itemId === null) { res.status(400).json({ error: "Geçersiz itemId" }); return; }
 
-    const [existingItem] = await db
-      .select({ id: seuAssessmentItemsTable.id, assessmentId: seuAssessmentItemsTable.assessmentId, consumptionSharePercent: seuAssessmentItemsTable.consumptionSharePercent })
-      .from(seuAssessmentItemsTable)
-      .where(eq(seuAssessmentItemsTable.id, itemId));
-    if (!existingItem) { res.status(404).json({ error: "Kalem bulunamadı" }); return; }
-
-    const [assessment] = await db
-      .select()
-      .from(seuAssessmentsTable)
-      .where(and(eq(seuAssessmentsTable.id, existingItem.assessmentId), eq(seuAssessmentsTable.companyId, sessionCompanyId)));
-    if (!assessment) { res.status(404).json({ error: "Bulunamadı" }); return; }
-
-    if (role === "user" && assessment.unitId !== sessionUnitId) {
+    const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+    if (standardUser && sessionUnitId === null) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
-    if ((role === "admin" || role === "superadmin") && assessment.recordType === "unit_official") {
+
+    const itemConditions = [
+      eq(seuAssessmentItemsTable.id, itemId),
+      eq(seuAssessmentsTable.companyId, sessionCompanyId),
+    ];
+    if (standardUser) itemConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
+
+    const [existingItem] = await db
+      .select({
+        id: seuAssessmentItemsTable.id,
+        assessmentId: seuAssessmentItemsTable.assessmentId,
+        consumptionSharePercent: seuAssessmentItemsTable.consumptionSharePercent,
+        recordType: seuAssessmentsTable.recordType,
+      })
+      .from(seuAssessmentItemsTable)
+      .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+      .where(and(...itemConditions));
+    if (!existingItem) { res.status(404).json({ error: "Kalem bulunamadı" }); return; }
+
+    if ((isCompanyAdmin(role) || isSuperAdmin(role)) && existingItem.recordType === "unit_official") {
       res.status(403).json({ error: "Admin resmi kayıt kalemlerini düzenleyemez" }); return;
     }
 
@@ -672,8 +724,12 @@ router.patch("/seu/decision-items/analysis/:itemId", requireAuth, async (req, re
     const [updated] = await db
       .update(seuAssessmentItemsTable)
       .set(updates)
-      .where(eq(seuAssessmentItemsTable.id, itemId))
+      .where(and(
+        eq(seuAssessmentItemsTable.id, itemId),
+        eq(seuAssessmentItemsTable.assessmentId, existingItem.assessmentId),
+      ))
       .returning();
+    if (!updated) { res.status(404).json({ error: "Kalem bulunamadı" }); return; }
     res.json(updated);
   } catch (err) {
     req.log.error(err);
@@ -687,18 +743,26 @@ router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parsePositiveInteger(req.params.id);
     if (id === null) { res.status(400).json({ error: "Geçersiz assessmentId" }); return; }
+    const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+    if (standardUser && sessionUnitId === null) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+
+    const assessmentConditions = [
+      eq(seuAssessmentsTable.id, id),
+      eq(seuAssessmentsTable.companyId, sessionCompanyId),
+    ];
+    if (standardUser) assessmentConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
+
     const [assessment] = await db
       .select()
       .from(seuAssessmentsTable)
-      .where(and(eq(seuAssessmentsTable.id, id), eq(seuAssessmentsTable.companyId, sessionCompanyId)));
+      .where(and(...assessmentConditions));
     if (!assessment) { res.status(404).send(); return; }
-    if (role === "user" && assessment.unitId !== sessionUnitId) {
-      res.status(403).json({ error: "Yetki yok" }); return;
-    }
-    if (role === "admin" && assessment.recordType === "unit_official") {
+    if (isCompanyAdmin(role) && assessment.recordType === "unit_official") {
       res.status(403).json({ error: "Admin resmi kayıtları silemez" }); return;
     }
-    await db.delete(seuAssessmentsTable).where(eq(seuAssessmentsTable.id, id));
+    await db.delete(seuAssessmentsTable).where(and(...assessmentConditions));
     res.status(204).send();
   } catch (err) {
     req.log.error(err);
@@ -712,17 +776,32 @@ router.get("/seu/decision-items", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const year = req.query.year ? parseInt(req.query.year as string) : null;
-    const unitIdFilter = req.query.unitId ? parseInt(req.query.unitId as string) : null;
+    const requestedCompanyId = parseOptionalId(req.query.companyId, "companyId");
+    const requestedUnitId = parseOptionalId(req.query.unitId, "unitId");
 
     const recordTypeFilter = (req.query.recordType as string) || null;
 
+    const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+    if (standardUser && sessionUnitId === null) {
+      res.json([]);
+      return;
+    }
+
+    let effectiveCompanyId = isSuperAdmin(role) ? requestedCompanyId : sessionCompanyId;
+    const effectiveUnitId = standardUser ? sessionUnitId : requestedUnitId;
+    if (effectiveUnitId !== null && !standardUser) {
+      const unitCompanyId = await resolveUnitCompanyId(effectiveUnitId, effectiveCompanyId);
+      effectiveCompanyId ??= unitCompanyId;
+    }
+
     // ── Analiz kaynaklı kayıtlar ───────────────────────────
-    const assessmentConds = [eq(seuAssessmentsTable.companyId, sessionCompanyId)];
-    if (role === "user" && sessionUnitId !== null) {
-      assessmentConds.push(eq(seuAssessmentsTable.unitId, sessionUnitId));
+    const assessmentConds = [];
+    if (effectiveCompanyId !== null) assessmentConds.push(eq(seuAssessmentsTable.companyId, effectiveCompanyId));
+    if (standardUser) {
+      assessmentConds.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
       assessmentConds.push(eq(seuAssessmentsTable.recordType, "unit_official"));
-    } else if (role === "admin" || role === "superadmin") {
-      if (unitIdFilter) assessmentConds.push(eq(seuAssessmentsTable.unitId, unitIdFilter));
+    } else {
+      if (effectiveUnitId !== null) assessmentConds.push(eq(seuAssessmentsTable.unitId, effectiveUnitId));
       if (recordTypeFilter) assessmentConds.push(eq(seuAssessmentsTable.recordType, recordTypeFilter));
     }
     if (year) assessmentConds.push(eq(seuAssessmentsTable.year, year));
@@ -755,15 +834,16 @@ router.get("/seu/decision-items", requireAuth, async (req, res) => {
       .from(seuAssessmentItemsTable)
       .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
       .leftJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
-      .where(and(...assessmentConds))
+      .where(assessmentConds.length > 0 ? and(...assessmentConds) : undefined)
       .orderBy(desc(seuAssessmentsTable.year), desc(seuAssessmentItemsTable.consumptionSharePercent));
 
     // ── Manuel kayıtlar (seuTable) ─────────────────────────
-    const manualConds = [eq(seuTable.companyId, sessionCompanyId)];
-    if (role === "user" && sessionUnitId !== null) {
-      manualConds.push(eq(seuTable.unitId, sessionUnitId));
-    } else if ((role === "admin" || role === "superadmin") && unitIdFilter) {
-      manualConds.push(eq(seuTable.unitId, unitIdFilter));
+    const manualConds = [];
+    if (effectiveCompanyId !== null) manualConds.push(eq(seuTable.companyId, effectiveCompanyId));
+    if (standardUser) {
+      manualConds.push(eq(seuTable.unitId, sessionUnitId!));
+    } else if (effectiveUnitId !== null) {
+      manualConds.push(eq(seuTable.unitId, effectiveUnitId));
     }
 
     const manualRows = await db
@@ -783,7 +863,7 @@ router.get("/seu/decision-items", requireAuth, async (req, res) => {
       })
       .from(seuTable)
       .leftJoin(unitsTable, eq(seuTable.unitId, unitsTable.id))
-      .where(and(...manualConds))
+      .where(manualConds.length > 0 ? and(...manualConds) : undefined)
       .orderBy(seuTable.priority);
 
     // Normalize manual rows to the same shape as analysis rows
@@ -824,6 +904,7 @@ router.get("/seu/decision-items", requireAuth, async (req, res) => {
 
     res.json([...normalizedAnalysis, ...normalizedManual]);
   } catch (err) {
+    if (handleAssessmentScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -831,12 +912,9 @@ router.get("/seu/decision-items", requireAuth, async (req, res) => {
 
 // ── GET /seu/admin/unit-summary ───────────────────────────
 // Admin için birim kıyaslama özeti
-router.get("/seu/admin/unit-summary", requireAuth, async (req, res) => {
+router.get("/seu/admin/unit-summary", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId } = req.user!;
-    if (role !== "admin" && role !== "superadmin") {
-      res.status(403).json({ error: "Yetki yok" }); return;
-    }
+    const { companyId: sessionCompanyId } = req.user!;
 
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
     const recordTypeFilter = (req.query.recordType as string) || "all";
@@ -1013,14 +1091,12 @@ router.get("/seu/admin/unit-summary", requireAuth, async (req, res) => {
 
 // ── GET /seu/admin/unit-detail/:unitId ────────────────────
 // Admin için birim item detayları
-router.get("/seu/admin/unit-detail/:unitId", requireAuth, async (req, res) => {
+router.get("/seu/admin/unit-detail/:unitId", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
-    if (role !== "admin" && role !== "superadmin") {
-      res.status(403).json({ error: "Yetki yok" }); return;
-    }
     const unitId = parsePositiveInteger(req.params.unitId);
     if (unitId === null) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
+    const targetCompanyId = await resolveUnitCompanyId(unitId, isSuperAdmin(role) ? null : sessionCompanyId);
     const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
 
     // Official assessments for this unit/year
@@ -1028,7 +1104,7 @@ router.get("/seu/admin/unit-detail/:unitId", requireAuth, async (req, res) => {
       .select()
       .from(seuAssessmentsTable)
       .where(and(
-        eq(seuAssessmentsTable.companyId, sessionCompanyId),
+        eq(seuAssessmentsTable.companyId, targetCompanyId),
         eq(seuAssessmentsTable.unitId, unitId),
         eq(seuAssessmentsTable.year, year),
         eq(seuAssessmentsTable.recordType, "unit_official"),
@@ -1049,7 +1125,7 @@ router.get("/seu/admin/unit-detail/:unitId", requireAuth, async (req, res) => {
     const manualItems = await db
       .select()
       .from(seuTable)
-      .where(and(eq(seuTable.companyId, sessionCompanyId), eq(seuTable.unitId, unitId)))
+      .where(and(eq(seuTable.companyId, targetCompanyId), eq(seuTable.unitId, unitId)))
       .orderBy(seuTable.priority);
 
     res.json({
@@ -1072,6 +1148,7 @@ router.get("/seu/admin/unit-detail/:unitId", requireAuth, async (req, res) => {
       })),
     });
   } catch (err) {
+    if (handleAssessmentScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
