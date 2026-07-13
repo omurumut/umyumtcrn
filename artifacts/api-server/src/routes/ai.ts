@@ -1,31 +1,106 @@
 import { Router } from "express";
-import { db, consumptionTable, seuTable, metersTable } from "@workspace/db";
+import { db, companiesTable, consumptionTable, seuTable, metersTable, unitsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
+class AiScopeError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parsePositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new AiScopeError(400, `Geçersiz ${field}`);
+}
+
+function parseMatchingPositiveInteger(bodyValue: unknown, queryValue: unknown, field: string) {
+  const bodyId = parsePositiveInteger(bodyValue, field);
+  const queryId = parsePositiveInteger(queryValue, field);
+  if (bodyId !== undefined && queryId !== undefined && bodyId !== queryId) {
+    throw new AiScopeError(400, `Body ve query ${field} değerleri uyuşmuyor`);
+  }
+  return bodyId ?? queryId;
+}
+
+function parseYear(bodyValue: unknown, queryValue: unknown) {
+  const year = parseMatchingPositiveInteger(bodyValue, queryValue, "year") ?? new Date().getFullYear();
+  if (year < 1900 || year > 3000) throw new AiScopeError(400, "Geçersiz year");
+  return year;
+}
+
 router.post("/ai/suggestions", requireAuth, async (req, res) => {
   try {
-    const { year, focus, unitId: bodyUnitId } = req.body;
-    const yr = parseInt(year) || new Date().getFullYear();
-
+    const { year, focus, unitId: bodyUnitId, companyId: bodyCompanyId } = req.body;
     const user = req.user!;
-    const resolvedUnitId: number | null =
-      user.role !== "admin" && user.unitId !== null
-        ? user.unitId
-        : (bodyUnitId !== undefined && bodyUnitId !== null ? parseInt(bodyUnitId) : null);
+    const requestedCompanyId = parseMatchingPositiveInteger(bodyCompanyId, req.query.companyId, "companyId");
+    const requestedUnitId = parseMatchingPositiveInteger(bodyUnitId, req.query.unitId, "unitId");
+    const yr = parseYear(year, req.query.year);
+    const sessionCompanyId = parsePositiveInteger(user.companyId, "companyId");
+    if (sessionCompanyId === undefined) throw new AiScopeError(400, "Geçersiz companyId");
 
-    const rows = resolvedUnitId !== null
-      ? await db.select({ id: consumptionTable.id, kwh: consumptionTable.kwh, year: consumptionTable.year, month: consumptionTable.month, hdd: consumptionTable.hdd, cdd: consumptionTable.cdd, meterId: consumptionTable.meterId, tep: consumptionTable.tep, co2: consumptionTable.co2, notes: consumptionTable.notes, createdAt: consumptionTable.createdAt })
-          .from(consumptionTable)
-          .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-          .where(and(eq(consumptionTable.year, yr), eq(metersTable.unitId, resolvedUnitId)))
-      : await db.select().from(consumptionTable).where(eq(consumptionTable.year, yr));
+    const effectiveCompanyId = isSuperAdmin(user.role)
+      ? (requestedCompanyId ?? sessionCompanyId)
+      : sessionCompanyId;
 
-    const seuItems = resolvedUnitId !== null
-      ? await db.select().from(seuTable).where(eq(seuTable.unitId, resolvedUnitId)).orderBy(seuTable.priority)
-      : await db.select().from(seuTable).orderBy(seuTable.priority);
+    const [company] = await db.select({ id: companiesTable.id })
+      .from(companiesTable).where(eq(companiesTable.id, effectiveCompanyId)).limit(1);
+    if (!company) throw new AiScopeError(404, "Şirket bulunamadı");
+
+    let effectiveUnitId: number | undefined;
+    if (isCompanyAdmin(user.role) || isSuperAdmin(user.role)) {
+      effectiveUnitId = requestedUnitId;
+    } else {
+      effectiveUnitId = parsePositiveInteger(user.unitId, "unitId");
+      if (effectiveUnitId === undefined) {
+        throw new AiScopeError(403, "Bu işlem için birim kapsamı gereklidir");
+      }
+    }
+
+    if (effectiveUnitId !== undefined) {
+      const [unit] = await db.select({ companyId: unitsTable.companyId })
+        .from(unitsTable).where(eq(unitsTable.id, effectiveUnitId)).limit(1);
+      if (!unit) throw new AiScopeError(404, "Birim bulunamadı");
+      if (unit.companyId !== effectiveCompanyId) {
+        throw new AiScopeError(403, "Bu birim için yetkiniz yok");
+      }
+    }
+
+    const consumptionConditions = [
+      eq(consumptionTable.year, yr),
+      eq(consumptionTable.companyId, effectiveCompanyId),
+      eq(metersTable.companyId, effectiveCompanyId),
+    ];
+    if (effectiveUnitId !== undefined) {
+      consumptionConditions.push(eq(metersTable.unitId, effectiveUnitId));
+    }
+
+    const rows = await db.select({ id: consumptionTable.id, kwh: consumptionTable.kwh, year: consumptionTable.year, month: consumptionTable.month, hdd: consumptionTable.hdd, cdd: consumptionTable.cdd, meterId: consumptionTable.meterId, tep: consumptionTable.tep, co2: consumptionTable.co2, notes: consumptionTable.notes, createdAt: consumptionTable.createdAt })
+      .from(consumptionTable)
+      .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+      .where(and(...consumptionConditions));
+
+    const seuConditions = [eq(seuTable.companyId, effectiveCompanyId)];
+    if (effectiveUnitId !== undefined) {
+      seuConditions.push(eq(seuTable.unitId, effectiveUnitId));
+    }
+    const seuItems = await db.select().from(seuTable)
+      .where(and(...seuConditions)).orderBy(seuTable.priority);
 
     const totalKwh = rows.reduce((a, r) => a + r.kwh, 0);
 
@@ -128,6 +203,10 @@ router.post("/ai/suggestions", requireAuth, async (req, res) => {
 
     res.json({ suggestions: filtered.slice(0, 6) });
   } catch (err) {
+    if (err instanceof AiScopeError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
