@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, variablesTable, variableValuesTable, weatherDegreeDaysTable, companiesTable, unitsTable, subUnitsTable, metersTable, mgmStationsTable, mgmDegreeDataTable } from "@workspace/db";
 import { eq, and, or, ne, isNull, inArray, sql, SQL } from "drizzle-orm";
-import { requireAuth } from "../middlewares/auth.js";
+import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 import { parseIlIlce, findStationByIlIlce } from "../services/mgm-stations-data.js";
 import { lookupStationKeyByLocation, lookupOfficialByStationKey } from "../services/mgm-sync.js";
 
@@ -754,23 +754,33 @@ router.get("/weather-degree-days", requireAuth, async (req, res) => {
     const { role, companyId: sessionCompanyId } = req.user!;
     const province = req.query.province as string | undefined;
     const periodType = req.query.periodType as string | undefined;
-    const companyId = req.query.companyId ? parseInt(req.query.companyId as string) : undefined;
+    const requestedCompanyId = parseOptionalId(req.query.companyId, "companyId");
 
-    const rows = await db.select().from(weatherDegreeDaysTable).orderBy(weatherDegreeDaysTable.date);
-
-    const filtered = rows.filter(r => {
-      if (role !== "superadmin") {
-        if (r.companyId !== null && r.companyId !== sessionCompanyId) return false;
-      } else if (companyId !== undefined) {
-        if (r.companyId !== null && r.companyId !== companyId) return false;
+    if (isSuperAdmin(role) && requestedCompanyId !== undefined && requestedCompanyId !== null) {
+      const [company] = await db.select({ id: companiesTable.id }).from(companiesTable)
+        .where(eq(companiesTable.id, requestedCompanyId));
+      if (!company) {
+        res.status(404).json({ error: "Şirket bulunamadı" });
+        return;
       }
-      if (province && r.province !== province) return false;
-      if (periodType && r.periodType !== periodType) return false;
-      return true;
-    });
+    }
 
-    res.json(filtered);
+    const conditions: SQL[] = [];
+    if (!isSuperAdmin(role)) {
+      conditions.push(or(isNull(weatherDegreeDaysTable.companyId), eq(weatherDegreeDaysTable.companyId, sessionCompanyId))!);
+    } else if (requestedCompanyId !== undefined && requestedCompanyId !== null) {
+      conditions.push(or(isNull(weatherDegreeDaysTable.companyId), eq(weatherDegreeDaysTable.companyId, requestedCompanyId))!);
+    }
+    if (province) conditions.push(eq(weatherDegreeDaysTable.province, province));
+    if (periodType) conditions.push(eq(weatherDegreeDaysTable.periodType, periodType));
+
+    const rows = await db.select().from(weatherDegreeDaysTable)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(weatherDegreeDaysTable.date);
+
+    res.json(rows);
   } catch (err) {
+    if (handleInvalidId(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -778,15 +788,26 @@ router.get("/weather-degree-days", requireAuth, async (req, res) => {
 
 // POST /api/weather-degree-days/sync
 // MGM pool'dan sayaçların bulunduğu şehirlerin HDD/CDD verisini weather_degree_days tablosuna aktarır
-router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
+router.post("/weather-degree-days/sync", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
-    const { companyId } = req.user!;
+    const { role, companyId: sessionCompanyId } = req.user!;
+    const bodyCompanyId = parseOptionalId(req.body?.companyId, "companyId");
+    const queryCompanyId = parseOptionalId(req.query.companyId, "companyId");
+    if (bodyCompanyId != null && queryCompanyId != null && bodyCompanyId !== queryCompanyId) {
+      res.status(400).json({ error: "Çelişkili companyId" });
+      return;
+    }
+    const effectiveCompanyId = await resolveCompanyId(
+      role,
+      sessionCompanyId,
+      bodyCompanyId ?? queryCompanyId,
+    );
 
     // 1. Bu şirketin birimlerine bağlı tüm sayaç şehirlerini bul
     const unitRows = await db
       .select({ id: unitsTable.id })
       .from(unitsTable)
-      .where(eq(unitsTable.companyId, companyId));
+      .where(eq(unitsTable.companyId, effectiveCompanyId));
 
     if (unitRows.length === 0) {
       res.json({ synced: 0, provinces: [], message: "Kayıtlı birim bulunamadı" }); return;
@@ -797,7 +818,10 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
     const subUnitRows = await db
       .select({ id: subUnitsTable.id })
       .from(subUnitsTable)
-      .where(inArray(subUnitsTable.unitId, unitIds));
+      .where(and(
+        eq(subUnitsTable.companyId, effectiveCompanyId),
+        inArray(subUnitsTable.unitId, unitIds),
+      ));
 
     const subUnitIds = subUnitRows.map(s => s.id);
     if (subUnitIds.length === 0) {
@@ -807,7 +831,10 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
     const meterRows = await db
       .select({ city: metersTable.city })
       .from(metersTable)
-      .where(inArray(metersTable.subUnitId, subUnitIds));
+      .where(and(
+        eq(metersTable.companyId, effectiveCompanyId),
+        inArray(metersTable.subUnitId, subUnitIds),
+      ));
 
     const cities = [...new Set(meterRows.map(m => m.city.trim()).filter(Boolean))];
     if (cities.length === 0) {
@@ -889,7 +916,7 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
       .delete(weatherDegreeDaysTable)
       .where(
         and(
-          eq(weatherDegreeDaysTable.companyId, companyId),
+          eq(weatherDegreeDaysTable.companyId, effectiveCompanyId),
           inArray(weatherDegreeDaysTable.province, provinceList),
           eq(weatherDegreeDaysTable.periodType, "monthly"),
           eq(weatherDegreeDaysTable.source, "mgm"),
@@ -905,7 +932,7 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
       const mappings = sk ? stationToCities.get(sk) ?? [] : [];
       for (const mapping of mappings) {
         toInsert.push({
-          companyId,
+          companyId: effectiveCompanyId,
           province: mapping.il,
           district: null,
           stationCode: degreeRow.stationCode,
@@ -946,6 +973,7 @@ router.post("/weather-degree-days/sync", requireAuth, async (req, res) => {
       message: `${provinceList.join(", ")} için ${inserted} aylık HDD/CDD kaydı aktarıldı${fallbackMsg}${unmatchedMsg}`,
     });
   } catch (err) {
+    if (handleInvalidId(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
