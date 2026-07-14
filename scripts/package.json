@@ -12,6 +12,8 @@
     "sync:mgm-degree-days": "tsx ./src/sync-mgm-degree-days.ts",
     "import:mgm": "tsx ./src/import-mgm.ts",
     "import:mgm-excel": "tsx ./src/import-mgm-excel.ts",
+    "test:db:smoke": "tsx ./src/test-db.ts --smoke",
+    "test:with-db": "tsx ./src/test-db.ts --with-child",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

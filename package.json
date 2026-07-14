@@ -11,6 +11,8 @@
     "replit:start": "pnpm --filter @workspace/api-server run dev",
     "replit:api": "pnpm --filter @workspace/api-server run dev",
     "replit:web": "pnpm --filter @workspace/ems-dashboard run dev",
+    "test:db:smoke": "pnpm --filter @workspace/scripts run test:db:smoke",
+    "test:with-db": "pnpm --filter @workspace/scripts run test:with-db",
     "start": "ts-node scripts/index.ts",
     "dev": "ts-node-dev scripts/index.ts"
   },
