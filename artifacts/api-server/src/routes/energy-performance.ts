@@ -1,6 +1,8 @@
 import { Router } from "express";
+import type { Request, Response } from "express";
 import {
   db,
+  companiesTable,
   seuAssessmentItemsTable,
   seuAssessmentsTable,
   unitsTable,
@@ -9,14 +11,13 @@ import {
   energySourcesTable,
   variablesTable,
   variableValuesTable,
-  weatherDegreeDaysTable,
   energyUseGroupsTable,
   energyBaselinesTable,
   energyBaselineVariablesTable,
   energyPerformanceResultsTable,
   usersTable,
 } from "@workspace/db";
-import { eq, and, inArray, desc, asc } from "drizzle-orm";
+import { eq, and, inArray, desc, asc, type SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -25,6 +26,164 @@ const MONTH_LABELS: Record<number, string> = {
   1: "Ocak", 2: "Şubat", 3: "Mart", 4: "Nisan", 5: "Mayıs", 6: "Haziran",
   7: "Temmuz", 8: "Ağustos", 9: "Eylül", 10: "Ekim", 11: "Kasım", 12: "Aralık",
 };
+
+class EnergyPerformanceScopeError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+type EnergyPerformanceScope = {
+  companyId: number;
+  unitId?: number;
+  empty: boolean;
+};
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parsePositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new EnergyPerformanceScopeError(400, `Geçersiz ${field}`);
+}
+
+function getBodyValue(req: Request, field: string): unknown {
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) return undefined;
+  return (req.body as Record<string, unknown>)[field];
+}
+
+function parseRequestPositiveInteger(req: Request, field: string): number | undefined {
+  const bodyValue = parsePositiveInteger(getBodyValue(req, field), field);
+  const queryValue = parsePositiveInteger(req.query[field], field);
+  if (bodyValue !== undefined && queryValue !== undefined && bodyValue !== queryValue) {
+    throw new EnergyPerformanceScopeError(400, `Body ve query ${field} değerleri uyuşmuyor`);
+  }
+  return bodyValue ?? queryValue;
+}
+
+function parseRequestYear(req: Request, required: boolean): number | undefined {
+  const year = parseRequestPositiveInteger(req, "year");
+  if (year === undefined) {
+    if (required) throw new EnergyPerformanceScopeError(400, "year zorunludur");
+    return undefined;
+  }
+  if (year < 1900 || year > 3000) {
+    throw new EnergyPerformanceScopeError(400, "Geçersiz year");
+  }
+  return year;
+}
+
+function parseMonths(value: unknown): number[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new EnergyPerformanceScopeError(400, "Geçersiz months");
+
+  const months = value.map(month => {
+    const parsed = parsePositiveInteger(month, "month");
+    if (parsed === undefined || parsed > 12) {
+      throw new EnergyPerformanceScopeError(400, "Geçersiz month");
+    }
+    return parsed;
+  });
+  return [...new Set(months)];
+}
+
+function parsePeriodYearMonth(periodStart: string): { year: number; month: number } | null {
+  const match = /^(\d{4})-(\d{1,2})(?:-|$)/.exec(periodStart);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  return month >= 1 && month <= 12 ? { year, month } : null;
+}
+
+function parseUserVariableId(code: string): number | undefined {
+  if (!code.startsWith("user-")) return undefined;
+  const match = /^user-([1-9]\d*)$/.exec(code);
+  if (!match) throw new EnergyPerformanceScopeError(400, "Geçersiz variableId");
+  return parsePositiveInteger(match[1], "variableId");
+}
+
+function parseFiniteNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new EnergyPerformanceScopeError(400, `Geçersiz ${field}`);
+  }
+  return value;
+}
+
+async function resolveEnergyPerformanceScope(
+  req: Request,
+  standardNullPolicy: "empty" | "forbid",
+): Promise<EnergyPerformanceScope> {
+  const { role, companyId: sessionCompanyIdValue, unitId: sessionUnitIdValue } = req.user!;
+  const requestedCompanyId = parseRequestPositiveInteger(req, "companyId");
+  const requestedUnitId = parseRequestPositiveInteger(req, "unitId");
+  const sessionCompanyId = parsePositiveInteger(sessionCompanyIdValue, "companyId");
+  if (sessionCompanyId === undefined) {
+    throw new EnergyPerformanceScopeError(400, "Geçersiz companyId");
+  }
+
+  const companyId = isSuperAdmin(role) ? (requestedCompanyId ?? sessionCompanyId) : sessionCompanyId;
+  const [company] = await db.select({ id: companiesTable.id })
+    .from(companiesTable).where(eq(companiesTable.id, companyId)).limit(1);
+  if (!company) throw new EnergyPerformanceScopeError(404, "Şirket bulunamadı");
+
+  let unitId: number | undefined;
+  if (isCompanyAdmin(role) || isSuperAdmin(role)) {
+    unitId = requestedUnitId;
+  } else {
+    unitId = parsePositiveInteger(sessionUnitIdValue, "unitId");
+    if (unitId === undefined) {
+      if (standardNullPolicy === "forbid") {
+        throw new EnergyPerformanceScopeError(403, "Bu işlem için birim kapsamı gereklidir");
+      }
+      return { companyId, empty: true };
+    }
+  }
+
+  if (unitId !== undefined) {
+    const [unit] = await db.select({ companyId: unitsTable.companyId })
+      .from(unitsTable).where(eq(unitsTable.id, unitId)).limit(1);
+    if (!unit) throw new EnergyPerformanceScopeError(404, "Birim bulunamadı");
+    if (unit.companyId !== companyId) {
+      throw new EnergyPerformanceScopeError(403, "Bu birim için yetkiniz yok");
+    }
+  }
+
+  return { companyId, unitId, empty: false };
+}
+
+function assertParentUnitScope(scope: EnergyPerformanceScope, parentUnitId: number | null) {
+  if (scope.unitId !== undefined && parentUnitId !== scope.unitId) {
+    throw new EnergyPerformanceScopeError(403, "Erişim yetkisi yok");
+  }
+}
+
+async function assertVariablesBelongToCompany(variableIds: Array<number | null>, companyId: number) {
+  const ids = [...new Set(variableIds.filter((id): id is number => id !== null))];
+  if (ids.length === 0) return;
+  const variables = await db.select({ id: variablesTable.id }).from(variablesTable).where(and(
+    eq(variablesTable.companyId, companyId),
+    inArray(variablesTable.id, ids),
+  ));
+  if (variables.length !== ids.length) {
+    throw new EnergyPerformanceScopeError(403, "Değişken kapsamı şirketle uyuşmuyor");
+  }
+}
+
+function handleEnergyPerformanceScopeError(res: Response, err: unknown) {
+  if (!(err instanceof EnergyPerformanceScopeError)) return false;
+  res.status(err.status).json({ error: err.message });
+  return true;
+}
 
 // ── Değişken normalizasyon yardımcısı ────────────────────────────────────────
 // HDD ve CDD her zaman tam sayıya yuvarlanır (MGM yayınları tam sayıdır;
@@ -159,8 +318,17 @@ function olsRegression(X: number[][], y: number[]) {
 // Kabul edilmiş (accepted_as_seu) ÖEK kalemlerini döndürür
 router.get("/energy-performance/seu-items", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const unitId = req.query.unitId ? parseInt(req.query.unitId as string) : null;
+    const scope = await resolveEnergyPerformanceScope(req, "empty");
+    if (scope.empty) {
+      res.json([]);
+      return;
+    }
+
+    const conditions: SQL[] = [
+      eq(seuAssessmentsTable.companyId, scope.companyId),
+      eq(seuAssessmentItemsTable.userDecision, "accepted_as_seu"),
+    ];
+    if (scope.unitId !== undefined) conditions.push(eq(seuAssessmentsTable.unitId, scope.unitId));
 
     const rows = await db
       .select({
@@ -185,24 +353,15 @@ router.get("/energy-performance/seu-items", requireAuth, async (req, res) => {
       })
       .from(seuAssessmentItemsTable)
       .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
-      .leftJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
-      .leftJoin(energySourcesTable, eq(seuAssessmentItemsTable.energySourceId, energySourcesTable.id))
-      .leftJoin(energyUseGroupsTable, eq(seuAssessmentItemsTable.energyUseGroupId, energyUseGroupsTable.id))
-      .where(
-        and(
-          eq(seuAssessmentsTable.companyId, sessionCompanyId),
-          eq(seuAssessmentItemsTable.userDecision, "accepted_as_seu"),
-          ...(role === "user" && sessionUnitId
-            ? [eq(seuAssessmentsTable.unitId, sessionUnitId)]
-            : unitId
-              ? [eq(seuAssessmentsTable.unitId, unitId)]
-              : []),
-        )
-      )
+      .leftJoin(unitsTable, and(eq(seuAssessmentsTable.unitId, unitsTable.id), eq(unitsTable.companyId, scope.companyId)))
+      .leftJoin(energySourcesTable, and(eq(seuAssessmentItemsTable.energySourceId, energySourcesTable.id), eq(energySourcesTable.companyId, scope.companyId)))
+      .leftJoin(energyUseGroupsTable, and(eq(seuAssessmentItemsTable.energyUseGroupId, energyUseGroupsTable.id), eq(energyUseGroupsTable.companyId, scope.companyId)))
+      .where(and(...conditions))
       .orderBy(desc(seuAssessmentsTable.year), asc(seuAssessmentItemsTable.priorityResult));
 
     res.json(rows);
   } catch (err) {
+    if (handleEnergyPerformanceScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -212,11 +371,11 @@ router.get("/energy-performance/seu-items", requireAuth, async (req, res) => {
 // Seçilen ÖEK kalemi için tüketim + HDD/CDD veri seti (öncelik: meter > energyUseGroup > subUnit > unit)
 router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const seuItemId = req.query.seuItemId ? parseInt(req.query.seuItemId as string) : null;
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const scope = await resolveEnergyPerformanceScope(req, "forbid");
+    const seuItemId = parseRequestPositiveInteger(req, "seuItemId");
+    const year = parseRequestYear(req, false) ?? new Date().getFullYear();
 
-    if (!seuItemId) {
+    if (seuItemId === undefined) {
       res.status(400).json({ error: "seuItemId zorunludur" });
       return;
     }
@@ -242,7 +401,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
       .where(
         and(
           eq(seuAssessmentItemsTable.id, seuItemId),
-          eq(seuAssessmentsTable.companyId, sessionCompanyId),
+          eq(seuAssessmentsTable.companyId, scope.companyId),
         )
       );
 
@@ -253,10 +412,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
 
     // Tenant + rol güvenliği — assessment.unitId kullan (item.unitId genellikle null)
     const assessmentUnitId = seuItem.assessmentUnitId;
-    if (role === "user" && sessionUnitId && assessmentUnitId !== sessionUnitId) {
-      res.status(403).json({ error: "Erişim yetkisi yok" });
-      return;
-    }
+    assertParentUnitScope(scope, assessmentUnitId);
 
     // ── Öncelik sırasına göre eşleşen meter ID listesini belirle ──────────
     type MatchType = "meter" | "energyUseGroup" | "subUnit" | "unit" | "manual_unlinked";
@@ -267,7 +423,12 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
     if (seuItem.meterId) {
       // 1. Öncelik: doğrudan meterId
       matchType = "meter";
-      matchedMeterIds = [seuItem.meterId];
+      const [meter] = await db.select({ id: metersTable.id }).from(metersTable).where(and(
+        eq(metersTable.id, seuItem.meterId),
+        eq(metersTable.companyId, scope.companyId),
+        ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+      ));
+      matchedMeterIds = meter ? [meter.id] : [];
 
     } else if (seuItem.energyUseGroupId) {
       // 2. Öncelik: energyUseGroupId → bu gruba bağlı sayaçlar
@@ -278,7 +439,8 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
         .where(
           and(
             eq(metersTable.energyUseGroupId, seuItem.energyUseGroupId),
-            ...(assessmentUnitId ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+            eq(metersTable.companyId, scope.companyId),
+            ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
           )
         );
       matchedMeterIds = meters.map(m => m.id);
@@ -295,6 +457,8 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
         .where(
           and(
             eq(metersTable.subUnitId, seuItem.itemSubUnitId),
+            eq(metersTable.companyId, scope.companyId),
+            ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
             ...(seuItem.energySourceId ? [eq(metersTable.energySourceId, seuItem.energySourceId)] : []),
           )
         );
@@ -309,6 +473,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
         .where(
           and(
             eq(metersTable.unitId, assessmentUnitId),
+            eq(metersTable.companyId, scope.companyId),
             ...(seuItem.energySourceId ? [eq(metersTable.energySourceId, seuItem.energySourceId)] : []),
           )
         );
@@ -345,12 +510,14 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
         })
         .from(consumptionTable)
         .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-        .leftJoin(energySourcesTable, eq(metersTable.energySourceId, energySourcesTable.id))
+        .leftJoin(energySourcesTable, and(eq(metersTable.energySourceId, energySourcesTable.id), eq(energySourcesTable.companyId, scope.companyId)))
         .where(
           and(
-            eq(consumptionTable.companyId, sessionCompanyId),
+            eq(consumptionTable.companyId, scope.companyId),
+            eq(metersTable.companyId, scope.companyId),
             eq(consumptionTable.year, year),
             inArray(consumptionTable.meterId, matchedMeterIds),
+            ...(scope.unitId !== undefined ? [eq(metersTable.unitId, scope.unitId)] : []),
           )
         )
         .orderBy(asc(consumptionTable.year), asc(consumptionTable.month));
@@ -435,6 +602,7 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
       consumptionUnit: consumptionDataset[0]?.consumptionUnit ?? null,
     });
   } catch (err) {
+    if (handleEnergyPerformanceScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -444,7 +612,11 @@ router.get("/energy-performance/dataset", requireAuth, async (req, res) => {
 // Seçilebilir değişkenler (variablesTable + HDD/CDD sabit değişkenler)
 router.get("/energy-performance/variables", requireAuth, async (req, res) => {
   try {
-    const { companyId: sessionCompanyId } = req.user!;
+    const scope = await resolveEnergyPerformanceScope(req, "empty");
+    if (scope.empty) {
+      res.json({ systemVariables: [], userVariables: [] });
+      return;
+    }
 
     const dbVars = await db
       .select({
@@ -459,7 +631,7 @@ router.get("/energy-performance/variables", requireAuth, async (req, res) => {
       .from(variablesTable)
       .where(
         and(
-          eq(variablesTable.companyId, sessionCompanyId),
+          eq(variablesTable.companyId, scope.companyId),
           eq(variablesTable.isActive, true),
         )
       )
@@ -486,6 +658,7 @@ router.get("/energy-performance/variables", requireAuth, async (req, res) => {
       userVariables: dbVars,
     });
   } catch (err) {
+    if (handleEnergyPerformanceScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -494,17 +667,21 @@ router.get("/energy-performance/variables", requireAuth, async (req, res) => {
 // ── POST /api/energy-performance/regression/run ───────────
 router.post("/energy-performance/regression/run", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const { seuItemId, year, selectedVariables } = req.body as {
-      seuItemId: number;
-      year: number;
-      selectedVariables: string[];
-    };
-
-    if (!seuItemId || !year || !selectedVariables || selectedVariables.length === 0) {
+    const scope = await resolveEnergyPerformanceScope(req, "forbid");
+    const seuItemId = parseRequestPositiveInteger(req, "seuItemId");
+    const year = parseRequestYear(req, true)!;
+    const selectedVariablesValue = getBodyValue(req, "selectedVariables");
+    if (seuItemId === undefined || !Array.isArray(selectedVariablesValue) || selectedVariablesValue.length === 0) {
       res.status(400).json({ error: "seuItemId, year ve selectedVariables zorunludur" });
       return;
     }
+    const selectedVariables = selectedVariablesValue.map(code => {
+      if (typeof code !== "string" || code.length === 0) {
+        throw new EnergyPerformanceScopeError(400, "Geçersiz selectedVariables");
+      }
+      parseUserVariableId(code);
+      return code;
+    });
 
     // ÖEK kalemi + assessment bilgileri
     const [seuItem] = await db
@@ -523,15 +700,13 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
       .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
       .where(and(
         eq(seuAssessmentItemsTable.id, seuItemId),
-        eq(seuAssessmentsTable.companyId, sessionCompanyId),
+        eq(seuAssessmentsTable.companyId, scope.companyId),
       ));
 
     if (!seuItem) { res.status(404).json({ error: "ÖEK kalemi bulunamadı" }); return; }
 
     const assessmentUnitId = seuItem.assessmentUnitId;
-    if (role === "user" && sessionUnitId && assessmentUnitId !== sessionUnitId) {
-      res.status(403).json({ error: "Erişim yetkisi yok" }); return;
-    }
+    assertParentUnitScope(scope, assessmentUnitId);
 
     // Bağımlı değişken birimi: enerji kaynağının ham birimi (m³, kWh, ton, litre vb.)
     let dependentVariableUnit = "ham tüketim";
@@ -539,27 +714,41 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
       const [esrc] = await db
         .select({ unit: energySourcesTable.unit })
         .from(energySourcesTable)
-        .where(eq(energySourcesTable.id, seuItem.energySourceId));
+        .where(and(
+          eq(energySourcesTable.id, seuItem.energySourceId),
+          eq(energySourcesTable.companyId, scope.companyId),
+        ));
       if (esrc?.unit) dependentVariableUnit = esrc.unit;
     }
 
     // Eşleşen sayaç ID'leri (dataset endpoint ile aynı öncelik zinciri)
     let matchedMeterIds: number[] = [];
     if (seuItem.meterId) {
-      matchedMeterIds = [seuItem.meterId];
+      const [meter] = await db.select({ id: metersTable.id }).from(metersTable).where(and(
+        eq(metersTable.id, seuItem.meterId),
+        eq(metersTable.companyId, scope.companyId),
+        ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+      ));
+      matchedMeterIds = meter ? [meter.id] : [];
     } else if (seuItem.energyUseGroupId) {
       const ms = await db.select({ id: metersTable.id }).from(metersTable).where(and(
         eq(metersTable.energyUseGroupId, seuItem.energyUseGroupId),
-        ...(assessmentUnitId ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+        eq(metersTable.companyId, scope.companyId),
+        ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
       ));
       matchedMeterIds = ms.map(m => m.id);
     } else if (seuItem.itemSubUnitId) {
-      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(
-        eq(metersTable.subUnitId, seuItem.itemSubUnitId));
+      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(and(
+        eq(metersTable.subUnitId, seuItem.itemSubUnitId),
+        eq(metersTable.companyId, scope.companyId),
+        ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+      ));
       matchedMeterIds = ms.map(m => m.id);
     } else if (assessmentUnitId) {
-      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(
-        eq(metersTable.unitId, assessmentUnitId));
+      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(and(
+        eq(metersTable.unitId, assessmentUnitId),
+        eq(metersTable.companyId, scope.companyId),
+      ));
       matchedMeterIds = ms.map(m => m.id);
     }
 
@@ -574,7 +763,11 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         subUnitId: metersTable.subUnitId,
       })
       .from(metersTable)
-      .where(inArray(metersTable.id, matchedMeterIds));
+      .where(and(
+        inArray(metersTable.id, matchedMeterIds),
+        eq(metersTable.companyId, scope.companyId),
+        ...(scope.unitId !== undefined ? [eq(metersTable.unitId, scope.unitId)] : []),
+      ));
 
     const matchedMeterIdSet = new Set(matchedMeterIds);
     const matchedSubUnitIdSet = new Set<number>(
@@ -600,10 +793,13 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         cdd: consumptionTable.cdd,
       })
       .from(consumptionTable)
+      .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
       .where(and(
-        eq(consumptionTable.companyId, sessionCompanyId),
+        eq(consumptionTable.companyId, scope.companyId),
+        eq(metersTable.companyId, scope.companyId),
         eq(consumptionTable.year, year),
         inArray(consumptionTable.meterId, matchedMeterIds),
+        ...(scope.unitId !== undefined ? [eq(metersTable.unitId, scope.unitId)] : []),
       ))
       .orderBy(asc(consumptionTable.month));
 
@@ -639,10 +835,8 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
     }> = [];
 
     const getPeriodMonth = (periodStart: string): number | null => {
-      const parts = periodStart.split("-");
-      if (parts.length < 2 || parseInt(parts[0], 10) !== year) return null;
-      const month = parseInt(parts[1], 10);
-      return month >= 1 && month <= 12 ? month : null;
+      const period = parsePeriodYearMonth(periodStart);
+      return period?.year === year ? period.month : null;
     };
 
     const pickVariableValueForMonth = (
@@ -711,24 +905,27 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
       if (code === "HDD") {
         varValueMap["HDD"] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
-          const mn = parseInt(m);
+          const mn = Number(m);
           if (agg.hddN > 0) varValueMap["HDD"][mn] = normalizeRegressionVariable("HDD", agg.hddSum / agg.hddN);
         }
       } else if (code === "CDD") {
         varValueMap["CDD"] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
-          const mn = parseInt(m);
+          const mn = Number(m);
           if (agg.cddN > 0) varValueMap["CDD"][mn] = normalizeRegressionVariable("CDD", agg.cddSum / agg.cddN);
         }
       } else if (code.startsWith("user-")) {
-        const varId = parseInt(code.replace("user-", ""));
+        const varId = parseUserVariableId(code)!;
         const [selectedVariable] = await db
           .select({ name: variablesTable.name })
           .from(variablesTable)
           .where(and(
-            eq(variablesTable.companyId, sessionCompanyId),
+            eq(variablesTable.companyId, scope.companyId),
             eq(variablesTable.id, varId),
           ));
+        if (!selectedVariable) {
+          throw new EnergyPerformanceScopeError(404, "Değişken bulunamadı");
+        }
         const vvals = await db
           .select({
             value: variableValuesTable.value,
@@ -739,7 +936,7 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
           })
           .from(variableValuesTable)
           .where(and(
-            eq(variableValuesTable.companyId, sessionCompanyId),
+            eq(variableValuesTable.companyId, scope.companyId),
             eq(variableValuesTable.variableId, varId),
           ))
           .orderBy(asc(variableValuesTable.periodStart), desc(variableValuesTable.id));
@@ -749,7 +946,7 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         const sysVars = await db
           .select({ id: variablesTable.id, name: variablesTable.name })
           .from(variablesTable)
-          .where(and(eq(variablesTable.companyId, sessionCompanyId), eq(variablesTable.code ?? variablesTable.name, code)));
+          .where(and(eq(variablesTable.companyId, scope.companyId), eq(variablesTable.code ?? variablesTable.name, code)));
         if (sysVars.length > 0) {
           const vvals = await db
             .select({
@@ -761,7 +958,7 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
             })
             .from(variableValuesTable)
             .where(and(
-              eq(variableValuesTable.companyId, sessionCompanyId),
+              eq(variableValuesTable.companyId, scope.companyId),
               eq(variableValuesTable.variableId, sysVars[0].id),
             ))
             .orderBy(asc(variableValuesTable.periodStart), desc(variableValuesTable.id));
@@ -808,7 +1005,7 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
         error: msg,
         sampleSize,
         missingVariableMonths: Object.entries(missingVarByMonth).map(([m, codes]) => ({
-          month: MONTH_LABELS[parseInt(m)] ?? m,
+          month: MONTH_LABELS[Number(m)] ?? m,
           missingVariables: codes,
         })),
       });
@@ -898,13 +1095,14 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
       formulaText,
       usedMonths,
       missingVariableMonths: Object.entries(missingVarByMonth).map(([m, codes]) => ({
-        month: MONTH_LABELS[parseInt(m)] ?? m,
+        month: MONTH_LABELS[Number(m)] ?? m,
         missingVariables: codes,
       })),
       dependentVariableUnit,
       dependentVariableType: "raw_consumption",
     });
   } catch (err) {
+    if (handleEnergyPerformanceScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -914,12 +1112,16 @@ router.post("/energy-performance/regression/run", requireAuth, async (req, res) 
 // Hesaplanmış aylık EnPG sonuçlarını getir
 router.get("/energy-performance/results", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const baselineId = req.query.baselineId ? parseInt(req.query.baselineId as string) : null;
-    const year = req.query.year ? parseInt(req.query.year as string) : null;
+    const baselineId = parseRequestPositiveInteger(req, "baselineId");
+    const year = parseRequestYear(req, true)!;
+    const scope = await resolveEnergyPerformanceScope(req, "empty");
 
-    if (!baselineId || !year) {
+    if (baselineId === undefined) {
       res.status(400).json({ error: "baselineId ve year zorunludur" });
+      return;
+    }
+    if (scope.empty) {
+      res.json([]);
       return;
     }
 
@@ -932,11 +1134,24 @@ router.get("/energy-performance/results", requireAuth, async (req, res) => {
         seuAssessmentItemId: energyBaselinesTable.seuAssessmentItemId,
       })
       .from(energyBaselinesTable)
-      .where(and(eq(energyBaselinesTable.id, baselineId), eq(energyBaselinesTable.companyId, sessionCompanyId)));
+      .where(and(
+        eq(energyBaselinesTable.id, baselineId),
+        eq(energyBaselinesTable.companyId, scope.companyId),
+        ...(scope.unitId !== undefined ? [eq(energyBaselinesTable.unitId, scope.unitId)] : []),
+      ));
 
     if (!baseline) { res.status(404).json({ error: "EnRÇ bulunamadı" }); return; }
-    if (role === "user" && sessionUnitId && baseline.unitId !== sessionUnitId) {
-      res.status(403).json({ error: "Erişim yetkisi yok" }); return;
+    assertParentUnitScope(scope, baseline.unitId);
+    if (baseline.seuAssessmentItemId !== null) {
+      const [parent] = await db.select({ unitId: seuAssessmentsTable.unitId })
+        .from(seuAssessmentItemsTable)
+        .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+        .where(and(
+          eq(seuAssessmentItemsTable.id, baseline.seuAssessmentItemId),
+          eq(seuAssessmentsTable.companyId, scope.companyId),
+        ));
+      if (!parent) { res.status(404).json({ error: "ÖEK kalemi bulunamadı" }); return; }
+      assertParentUnitScope(scope, parent.unitId);
     }
 
     const results = await db
@@ -945,12 +1160,14 @@ router.get("/energy-performance/results", requireAuth, async (req, res) => {
       .where(and(
         eq(energyPerformanceResultsTable.baselineId, baselineId),
         eq(energyPerformanceResultsTable.year, year),
-        eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+        eq(energyPerformanceResultsTable.companyId, scope.companyId),
+        ...(scope.unitId !== undefined ? [eq(energyPerformanceResultsTable.unitId, scope.unitId)] : []),
       ))
       .orderBy(asc(energyPerformanceResultsTable.month));
 
     res.json(results);
   } catch (err) {
+    if (handleEnergyPerformanceScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -960,14 +1177,12 @@ router.get("/energy-performance/results", requireAuth, async (req, res) => {
 // Aktif EnRÇ formülüne göre aylık EnPG sonuçlarını hesapla ve kaydet
 router.post("/energy-performance/results/calculate", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const { baselineId, year, months: requestedMonths } = req.body as {
-      baselineId: number;
-      year: number;
-      months?: number[];
-    };
+    const baselineId = parseRequestPositiveInteger(req, "baselineId");
+    const year = parseRequestYear(req, true)!;
+    const requestedMonths = parseMonths(getBodyValue(req, "months"));
+    const scope = await resolveEnergyPerformanceScope(req, "forbid");
 
-    if (!baselineId || !year) {
+    if (baselineId === undefined) {
       res.status(400).json({ error: "baselineId ve year zorunludur" });
       return;
     }
@@ -984,17 +1199,20 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
         status: energyBaselinesTable.status,
       })
       .from(energyBaselinesTable)
-      .where(and(eq(energyBaselinesTable.id, baselineId), eq(energyBaselinesTable.companyId, sessionCompanyId)));
+      .where(and(
+        eq(energyBaselinesTable.id, baselineId),
+        eq(energyBaselinesTable.companyId, scope.companyId),
+        ...(scope.unitId !== undefined ? [eq(energyBaselinesTable.unitId, scope.unitId)] : []),
+      ));
 
     if (!baseline) { res.status(404).json({ error: "EnRÇ bulunamadı" }); return; }
-    if (role === "user" && sessionUnitId && baseline.unitId !== sessionUnitId) {
-      res.status(403).json({ error: "Erişim yetkisi yok" }); return;
-    }
+    assertParentUnitScope(scope, baseline.unitId);
 
     const bvars = await db
       .select()
       .from(energyBaselineVariablesTable)
       .where(eq(energyBaselineVariablesTable.baselineId, baselineId));
+    await assertVariablesBelongToCompany(bvars.map(variable => variable.variableId), scope.companyId);
 
     // SEU item → meters
     const seuItemId = baseline.seuAssessmentItemId;
@@ -1016,28 +1234,45 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
       .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
       .where(and(
         eq(seuAssessmentItemsTable.id, seuItemId),
-        eq(seuAssessmentsTable.companyId, sessionCompanyId),
+        eq(seuAssessmentsTable.companyId, scope.companyId),
       ));
 
     if (!seuItem) { res.status(404).json({ error: "ÖEK kalemi bulunamadı" }); return; }
 
     const assessmentUnitId = seuItem.assessmentUnitId;
+    assertParentUnitScope(scope, assessmentUnitId);
+    if (baseline.unitId !== assessmentUnitId) {
+      throw new EnergyPerformanceScopeError(403, "EnRÇ birim kapsamı ÖEK kalemiyle uyuşmuyor");
+    }
 
     // Meter ID'leri çöz
     let matchedMeterIds: number[] = [];
     if (seuItem.meterId) {
-      matchedMeterIds = [seuItem.meterId];
+      const [meter] = await db.select({ id: metersTable.id }).from(metersTable).where(and(
+        eq(metersTable.id, seuItem.meterId),
+        eq(metersTable.companyId, scope.companyId),
+        ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+      ));
+      matchedMeterIds = meter ? [meter.id] : [];
     } else if (seuItem.energyUseGroupId) {
       const ms = await db.select({ id: metersTable.id }).from(metersTable).where(and(
         eq(metersTable.energyUseGroupId, seuItem.energyUseGroupId),
-        ...(assessmentUnitId ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+        eq(metersTable.companyId, scope.companyId),
+        ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
       ));
       matchedMeterIds = ms.map(m => m.id);
     } else if (seuItem.itemSubUnitId) {
-      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(eq(metersTable.subUnitId, seuItem.itemSubUnitId));
+      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(and(
+        eq(metersTable.subUnitId, seuItem.itemSubUnitId),
+        eq(metersTable.companyId, scope.companyId),
+        ...(assessmentUnitId !== null ? [eq(metersTable.unitId, assessmentUnitId)] : []),
+      ));
       matchedMeterIds = ms.map(m => m.id);
     } else if (assessmentUnitId) {
-      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(eq(metersTable.unitId, assessmentUnitId));
+      const ms = await db.select({ id: metersTable.id }).from(metersTable).where(and(
+        eq(metersTable.unitId, assessmentUnitId),
+        eq(metersTable.companyId, scope.companyId),
+      ));
       matchedMeterIds = ms.map(m => m.id);
     }
 
@@ -1050,10 +1285,13 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
     const consumptionRows = await db
       .select({ month: consumptionTable.month, kwh: consumptionTable.kwh, tep: consumptionTable.tep, hdd: consumptionTable.hdd, cdd: consumptionTable.cdd })
       .from(consumptionTable)
+      .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
       .where(and(
-        eq(consumptionTable.companyId, sessionCompanyId),
+        eq(consumptionTable.companyId, scope.companyId),
+        eq(metersTable.companyId, scope.companyId),
         eq(consumptionTable.year, year),
         inArray(consumptionTable.meterId, matchedMeterIds),
+        ...(scope.unitId !== undefined ? [eq(metersTable.unitId, scope.unitId)] : []),
       ))
       .orderBy(asc(consumptionTable.month));
 
@@ -1073,52 +1311,55 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
       if (code === "HDD") {
         varValueMap[code] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
-          const mn = parseInt(m);
+          const mn = Number(m);
           if (agg.hddN > 0) varValueMap[code][mn] = normalizeRegressionVariable("HDD", agg.hddSum / agg.hddN);
         }
       } else if (code === "CDD") {
         varValueMap[code] = {};
         for (const [m, agg] of Object.entries(monthAgg)) {
-          const mn = parseInt(m);
+          const mn = Number(m);
           if (agg.cddN > 0) varValueMap[code][mn] = normalizeRegressionVariable("CDD", agg.cddSum / agg.cddN);
         }
       } else if (code.startsWith("user-")) {
-        const varId = parseInt(code.replace("user-", ""));
+        const varId = parseUserVariableId(code)!;
+        const [variable] = await db.select({ id: variablesTable.id }).from(variablesTable).where(and(
+          eq(variablesTable.id, varId),
+          eq(variablesTable.companyId, scope.companyId),
+        ));
+        if (!variable) throw new EnergyPerformanceScopeError(404, "Değişken bulunamadı");
         const vvals = await db
           .select({ value: variableValuesTable.value, periodStart: variableValuesTable.periodStart })
           .from(variableValuesTable)
           .where(and(
-            eq(variableValuesTable.companyId, sessionCompanyId),
+            eq(variableValuesTable.companyId, scope.companyId),
             eq(variableValuesTable.variableId, varId),
             ...(assessmentUnitId ? [eq(variableValuesTable.unitId, assessmentUnitId)] : []),
           ));
         varValueMap[code] = {};
         for (const vv of vvals) {
-          const parts = vv.periodStart.split("-");
-          if (parts.length >= 2 && parseInt(parts[0]) === year) {
-            const mn = parseInt(parts[1]);
-            if (mn >= 1 && mn <= 12) varValueMap[code][mn] = normalizeRegressionVariable(code, vv.value);
+          const period = parsePeriodYearMonth(vv.periodStart);
+          if (period?.year === year) {
+            varValueMap[code][period.month] = normalizeRegressionVariable(code, vv.value);
           }
         }
       } else {
         // Sistem kodu → variable_values tablosundan çek
         const sysVars = await db.select({ id: variablesTable.id }).from(variablesTable)
-          .where(and(eq(variablesTable.companyId, sessionCompanyId), eq(variablesTable.code ?? variablesTable.name, code)));
+          .where(and(eq(variablesTable.companyId, scope.companyId), eq(variablesTable.code ?? variablesTable.name, code)));
         varValueMap[code] = {};
         if (sysVars.length > 0) {
           const vvals = await db
             .select({ value: variableValuesTable.value, periodStart: variableValuesTable.periodStart })
             .from(variableValuesTable)
             .where(and(
-              eq(variableValuesTable.companyId, sessionCompanyId),
+              eq(variableValuesTable.companyId, scope.companyId),
               eq(variableValuesTable.variableId, sysVars[0].id),
               ...(assessmentUnitId ? [eq(variableValuesTable.unitId, assessmentUnitId)] : []),
             ));
           for (const vv of vvals) {
-            const parts = vv.periodStart.split("-");
-            if (parts.length >= 2 && parseInt(parts[0]) === year) {
-              const mn = parseInt(parts[1]);
-              if (mn >= 1 && mn <= 12) varValueMap[code][mn] = normalizeRegressionVariable(code, vv.value);
+            const period = parsePeriodYearMonth(vv.periodStart);
+            if (period?.year === year) {
+              varValueMap[code][period.month] = normalizeRegressionVariable(code, vv.value);
             }
           }
         }
@@ -1230,15 +1471,22 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
         .where(and(
           eq(energyPerformanceResultsTable.baselineId, baselineId),
           eq(energyPerformanceResultsTable.year, year),
-          eq(energyPerformanceResultsTable.companyId, sessionCompanyId),
+          eq(energyPerformanceResultsTable.companyId, scope.companyId),
           inArray(energyPerformanceResultsTable.month, monthsToDelete),
+          ...(scope.unitId !== undefined ? [eq(energyPerformanceResultsTable.unitId, scope.unitId)] : []),
         ));
 
       if (existingRows.length > 0) {
         const existingIds = existingRows.map(r => r.id);
         // Teker teker sil (drizzle bulk delete desteklemez)
         for (const id of existingIds) {
-          await db.delete(energyPerformanceResultsTable).where(eq(energyPerformanceResultsTable.id, id));
+          await db.delete(energyPerformanceResultsTable).where(and(
+            eq(energyPerformanceResultsTable.id, id),
+            eq(energyPerformanceResultsTable.companyId, scope.companyId),
+            eq(energyPerformanceResultsTable.baselineId, baselineId),
+            eq(energyPerformanceResultsTable.year, year),
+            ...(scope.unitId !== undefined ? [eq(energyPerformanceResultsTable.unitId, scope.unitId)] : []),
+          ));
         }
       }
     }
@@ -1248,7 +1496,7 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
     if (finalRows.length > 0) {
       inserted = await db.insert(energyPerformanceResultsTable).values(
         finalRows.map(r => ({
-          companyId: sessionCompanyId,
+          companyId: scope.companyId,
           unitId: assessmentUnitId ?? null,
           seuAssessmentItemId: seuItemId,
           baselineId,
@@ -1272,6 +1520,7 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
       results: inserted.sort((a, b) => a.month - b.month),
     });
   } catch (err) {
+    if (handleEnergyPerformanceScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -1281,11 +1530,15 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
 // Seçilen ÖEK için kayıtlı EnRÇ listesi
 router.get("/energy-performance/baselines", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const seuItemId = req.query.seuItemId ? parseInt(req.query.seuItemId as string) : null;
+    const seuItemId = parseRequestPositiveInteger(req, "seuItemId");
+    const scope = await resolveEnergyPerformanceScope(req, "empty");
 
-    if (!seuItemId) {
+    if (seuItemId === undefined) {
       res.status(400).json({ error: "seuItemId zorunludur" });
+      return;
+    }
+    if (scope.empty) {
+      res.json([]);
       return;
     }
 
@@ -1296,13 +1549,11 @@ router.get("/energy-performance/baselines", requireAuth, async (req, res) => {
       .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
       .where(and(
         eq(seuAssessmentItemsTable.id, seuItemId),
-        eq(seuAssessmentsTable.companyId, sessionCompanyId),
+        eq(seuAssessmentsTable.companyId, scope.companyId),
       ));
 
     if (!seuItem) { res.status(404).json({ error: "ÖEK kalemi bulunamadı" }); return; }
-    if (role === "user" && sessionUnitId && seuItem.assessmentUnitId !== sessionUnitId) {
-      res.status(403).json({ error: "Erişim yetkisi yok" }); return;
-    }
+    assertParentUnitScope(scope, seuItem.assessmentUnitId);
 
     const baselines = await db
       .select({
@@ -1327,10 +1578,14 @@ router.get("/energy-performance/baselines", requireAuth, async (req, res) => {
         dependentVariableUnit: energyBaselinesTable.dependentVariableUnit,
       })
       .from(energyBaselinesTable)
-      .leftJoin(usersTable, eq(energyBaselinesTable.createdByUserId, usersTable.id))
+      .leftJoin(usersTable, and(
+        eq(energyBaselinesTable.createdByUserId, usersTable.id),
+        eq(usersTable.companyId, scope.companyId),
+      ))
       .where(and(
-        eq(energyBaselinesTable.companyId, sessionCompanyId),
+        eq(energyBaselinesTable.companyId, scope.companyId),
         eq(energyBaselinesTable.seuAssessmentItemId, seuItemId),
+        ...(scope.unitId !== undefined ? [eq(energyBaselinesTable.unitId, scope.unitId)] : []),
       ))
       .orderBy(desc(energyBaselinesTable.createdAt));
 
@@ -1342,6 +1597,7 @@ router.get("/energy-performance/baselines", requireAuth, async (req, res) => {
           .from(energyBaselineVariablesTable)
           .where(inArray(energyBaselineVariablesTable.baselineId, baselineIds))
       : [];
+    await assertVariablesBelongToCompany(allVariables.map(variable => variable.variableId), scope.companyId);
 
     const variablesByBaseline: Record<number, typeof allVariables> = {};
     for (const v of allVariables) {
@@ -1356,6 +1612,7 @@ router.get("/energy-performance/baselines", requireAuth, async (req, res) => {
 
     res.json(result);
   } catch (err) {
+    if (handleEnergyPerformanceScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -1365,11 +1622,12 @@ router.get("/energy-performance/baselines", requireAuth, async (req, res) => {
 // Yeni EnRÇ kaydı oluştur
 router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId, unitId: sessionUnitId, userId } = req.user!;
+    const scope = await resolveEnergyPerformanceScope(req, "forbid");
+    const { userId } = req.user!;
+    const seuItemId = parseRequestPositiveInteger(req, "seuItemId");
+    const year = parseRequestYear(req, true)!;
 
     const {
-      seuItemId,
-      year,
       baselinePeriodStart,
       baselinePeriodEnd,
       regressionResult,
@@ -1406,7 +1664,7 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
     };
 
     // Zorunlu alan kontrolü
-    if (!seuItemId || !year || !baselinePeriodStart || !baselinePeriodEnd || !regressionResult || !status) {
+    if (seuItemId === undefined || !baselinePeriodStart || !baselinePeriodEnd || !regressionResult || !status) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" });
       return;
     }
@@ -1414,6 +1672,38 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
     if (status !== "active" && status !== "draft") {
       res.status(400).json({ error: "status 'active' veya 'draft' olmalıdır" });
       return;
+    }
+
+    const sampleSize = parsePositiveInteger(regressionResult.sampleSize, "sampleSize");
+    if (sampleSize === undefined) throw new EnergyPerformanceScopeError(400, "Geçersiz sampleSize");
+    parseFiniteNumber(regressionResult.intercept, "intercept");
+    parseFiniteNumber(regressionResult.rSquared, "rSquared");
+    parseFiniteNumber(regressionResult.adjustedRSquared, "adjustedRSquared");
+    if (typeof regressionResult.isValid !== "boolean") {
+      throw new EnergyPerformanceScopeError(400, "Geçersiz isValid");
+    }
+    if (!Array.isArray(regressionResult.variables)) {
+      throw new EnergyPerformanceScopeError(400, "Geçersiz regressionResult.variables");
+    }
+    for (const variable of regressionResult.variables) {
+      if (!variable || typeof variable.variableName !== "string" || typeof variable.code !== "string") {
+        throw new EnergyPerformanceScopeError(400, "Geçersiz regression değişkeni");
+      }
+      parseFiniteNumber(variable.coefficient, "coefficient");
+      parseFiniteNumber(variable.standardError, "standardError");
+      parseFiniteNumber(variable.tStat, "tStat");
+      parseFiniteNumber(variable.pValue, "pValue");
+      if (typeof variable.isSignificant !== "boolean") {
+        throw new EnergyPerformanceScopeError(400, "Geçersiz isSignificant");
+      }
+      const variableId = parseUserVariableId(variable.code);
+      if (variableId !== undefined) {
+        const [scopedVariable] = await db.select({ id: variablesTable.id }).from(variablesTable).where(and(
+          eq(variablesTable.id, variableId),
+          eq(variablesTable.companyId, scope.companyId),
+        ));
+        if (!scopedVariable) throw new EnergyPerformanceScopeError(404, "Değişken bulunamadı");
+      }
     }
 
     // Aktif olarak kaydedilmek isteniyorsa model geçerli olmalı
@@ -1434,17 +1724,13 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
       .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
       .where(and(
         eq(seuAssessmentItemsTable.id, seuItemId),
-        eq(seuAssessmentsTable.companyId, sessionCompanyId),
+        eq(seuAssessmentsTable.companyId, scope.companyId),
       ));
 
     if (!seuItem) { res.status(404).json({ error: "ÖEK kalemi bulunamadı" }); return; }
 
     const assessmentUnitId = seuItem.assessmentUnitId;
-
-    // Rol güvenliği: user sadece kendi birimindeki ÖEK için kayıt ekleyebilir
-    if (role === "user" && sessionUnitId && assessmentUnitId !== sessionUnitId) {
-      res.status(403).json({ error: "Bu ÖEK için EnRÇ kaydetme yetkiniz yok" }); return;
-    }
+    assertParentUnitScope(scope, assessmentUnitId);
 
     // Admin sadece kendi firması kapsamındaki ÖEK için kayıt ekleyebilir (zaten companyId filtresi var)
 
@@ -1454,15 +1740,16 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
         .update(energyBaselinesTable)
         .set({ status: "archived", updatedAt: new Date() })
         .where(and(
-          eq(energyBaselinesTable.companyId, sessionCompanyId),
+          eq(energyBaselinesTable.companyId, scope.companyId),
           eq(energyBaselinesTable.seuAssessmentItemId, seuItemId),
           eq(energyBaselinesTable.status, "active"),
+          ...(scope.unitId !== undefined ? [eq(energyBaselinesTable.unitId, scope.unitId)] : []),
         ));
     }
 
     // Yeni baseline kaydı
     const [newBaseline] = await db.insert(energyBaselinesTable).values({
-      companyId: sessionCompanyId,
+      companyId: scope.companyId,
       unitId: assessmentUnitId ?? null,
       seuAssessmentItemId: seuItemId,
       baselineYear: year,
@@ -1472,7 +1759,7 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
       intercept: regressionResult.intercept,
       rSquared: regressionResult.rSquared,
       adjustedRSquared: regressionResult.adjustedRSquared,
-      sampleSize: regressionResult.sampleSize,
+      sampleSize,
       formulaText: regressionResult.formulaText,
       isValid: regressionResult.isValid,
       dependentVariableUnit: regressionResult.dependentVariableUnit ?? null,
@@ -1502,6 +1789,7 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
 
     res.status(201).json({ ...newBaseline, variables: regressionResult.variables });
   } catch (err) {
+    if (handleEnergyPerformanceScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
