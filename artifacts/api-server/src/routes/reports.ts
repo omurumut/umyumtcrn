@@ -20,6 +20,16 @@ function isSuperAdmin(role: string) {
   return role === "superadmin";
 }
 
+function escapeHtml(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function parsePositiveInteger(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
@@ -202,19 +212,19 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
     const swotHtml = includeSwot !== false && swotItems.length > 0
       ? `<h2>SWOT Analizi</h2>
          <table><tr><th>Kategori</th><th>Madde</th><th>Puan</th><th>Etki</th></tr>
-         ${swotItems.map(s => `<tr><td>${s.category}</td><td>${s.title}</td><td>${s.score}/5</td><td>${s.impact}</td></tr>`).join("")}
+         ${swotItems.map(s => `<tr><td>${escapeHtml(s.category)}</td><td>${escapeHtml(s.title)}</td><td>${s.score}/5</td><td>${escapeHtml(s.impact)}</td></tr>`).join("")}
          </table>` : "";
 
     const riskHtml = includeRisks !== false && riskItems.length > 0
       ? `<h2>Risk & Fırsat Analizi</h2>
          <table><tr><th>Tür</th><th>Başlık</th><th>Olasılık</th><th>Etki</th><th>Skor</th><th>Durum</th></tr>
-         ${riskItems.map(r => `<tr><td>${r.type}</td><td>${r.title}</td><td>${r.probability}/5</td><td>${r.severity}/5</td><td>${r.score}</td><td>${r.status}</td></tr>`).join("")}
+         ${riskItems.map(r => `<tr><td>${escapeHtml(r.type)}</td><td>${escapeHtml(r.title)}</td><td>${r.probability}/5</td><td>${r.severity}/5</td><td>${r.score}</td><td>${escapeHtml(r.status)}</td></tr>`).join("")}
          </table>` : "";
 
     const seuHtml = includeSeu !== false && seuItems.length > 0
       ? `<h2>Önemli Enerji Kullanımları (ÖEK)</h2>
          <table><tr><th>Öncelik</th><th>Ad</th><th>Kategori</th><th>Yıllık tüketim (kWh)</th><th>Yüzde (%)</th><th>Hedef İndirim (%)</th></tr>
-         ${seuItems.map(s => `<tr><td>${s.priority}</td><td>${s.name}</td><td>${s.category}</td><td>${Math.round(s.annualKwh).toLocaleString("tr-TR")}</td><td>${s.percentage}%</td><td>${s.targetReductionPercent ?? "-"}%</td></tr>`).join("")}
+         ${seuItems.map(s => `<tr><td>${s.priority}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.category)}</td><td>${Math.round(s.annualKwh).toLocaleString("tr-TR")}</td><td>${s.percentage}%</td><td>${s.targetReductionPercent ?? "-"}%</td></tr>`).join("")}
          </table>` : "";
 
     const unitLabel = resolvedUnitId !== null ? ` — Birim #${resolvedUnitId}` : "";
@@ -443,6 +453,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       const unitRow = targets.find((t) => t.unitId === resolvedUnitId);
       if (unitRow?.unitName) unitLabel = unitRow.unitName;
     }
+    const unitLabelHtml = escapeHtml(unitLabel);
 
     // ── Summary stats ─────────────────────────────────────────────────────────
     const totalTargets = targets.length;
@@ -460,11 +471,17 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     // ── HTML helpers ──────────────────────────────────────────────────────────
     const fmtNum = (n: number | null | undefined, dec = 0) =>
       n != null ? n.toLocaleString("tr-TR", { minimumFractionDigits: dec, maximumFractionDigits: dec }) : "—";
-    const fmtDate = (d: string | null | undefined) => d ?? "—";
-    const statusBadge = (s: string | null | undefined) =>
-      `<span class="badge badge-${s ?? "active"}">${TARGET_STATUS_LABELS[s ?? ""] ?? s ?? "—"}</span>`;
-    const actionBadge = (s: string | null | undefined) =>
-      `<span class="badge badge-${s ?? "planned"}">${ACTION_STATUS_LABELS[s ?? ""] ?? s ?? "—"}</span>`;
+    const fmtDate = (d: string | null | undefined) => escapeHtml(d ?? "—");
+    const statusBadge = (s: string | null | undefined) => {
+      const statusClass = escapeHtml(s ?? "active");
+      const statusText = escapeHtml(TARGET_STATUS_LABELS[s ?? ""] ?? s ?? "—");
+      return `<span class="badge badge-${statusClass}">${statusText}</span>`;
+    };
+    const actionBadge = (s: string | null | undefined) => {
+      const statusClass = escapeHtml(s ?? "planned");
+      const statusText = escapeHtml(ACTION_STATUS_LABELS[s ?? ""] ?? s ?? "—");
+      return `<span class="badge badge-${statusClass}">${statusText}</span>`;
+    };
 
     // ── Section: targets table ────────────────────────────────────────────────
     const targetsHtml = targets.length > 0
@@ -477,17 +494,17 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
           ${targets.map((t) => {
             const latest = progressLatestMap[t.id];
             const actualDisplay = latest
-              ? `${fmtNum(latest.actualValue, 2)} ${t.unitLabel ?? ""}`.trim()
+              ? `${fmtNum(latest.actualValue, 2)} ${escapeHtml(t.unitLabel ?? "")}`.trim()
               : "Gerçekleşme girilmedi";
             return `<tr>
-              <td><strong>${t.name}</strong></td>
-              <td>${t.objectiveText?.trim() || "Tanımlanmadı"}</td>
-              <td>${t.targetText?.trim() || "Tanımlanmadı"}</td>
-              <td>${t.unitName ?? "—"}</td>
+              <td><strong>${escapeHtml(t.name)}</strong></td>
+              <td>${escapeHtml(t.objectiveText?.trim() || "Tanımlanmadı")}</td>
+              <td>${escapeHtml(t.targetText?.trim() || "Tanımlanmadı")}</td>
+              <td>${escapeHtml(t.unitName ?? "—")}</td>
               <td>${t.baselineYear}</td>
               <td>${t.targetYear}</td>
-              <td>${fmtNum(t.baselineValue, 2)} ${t.unitLabel ?? ""}</td>
-              <td>${fmtNum(t.targetValue, 2)} ${t.unitLabel ?? ""}</td>
+              <td>${fmtNum(t.baselineValue, 2)} ${escapeHtml(t.unitLabel ?? "")}</td>
+              <td>${fmtNum(t.targetValue, 2)} ${escapeHtml(t.unitLabel ?? "")}</td>
               <td>${actualDisplay}</td>
               <td>${statusBadge(t.status)}</td>
             </tr>`;
@@ -506,12 +523,12 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
           ${actions.map((a) => {
             const targetName = targets.find((t) => t.id === a.targetId)?.name ?? "—";
             const saving = a.expectedSavingValue != null
-              ? `${fmtNum(a.expectedSavingValue, 2)} ${a.expectedSavingUnit ?? ""}`
+              ? `${fmtNum(a.expectedSavingValue, 2)} ${escapeHtml(a.expectedSavingUnit ?? "")}`
               : "—";
             return `<tr>
-              <td>${targetName}</td>
-              <td>${a.title}</td>
-              <td>${a.responsibleName ?? "—"}</td>
+              <td>${escapeHtml(targetName)}</td>
+              <td>${escapeHtml(a.title)}</td>
+              <td>${escapeHtml(a.responsibleName ?? "—")}</td>
               <td>${fmtDate(a.startDate)}</td>
               <td>${fmtDate(a.dueDate)}</td>
               <td>${actionBadge(a.status)}</td>
@@ -536,17 +553,17 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
             ${vapProjects.map((v) => {
               const linkedAction = actions.find((a) => a.id === v.actionPlanId);
               const energySaving = v.annualEnergySavingValue != null
-                ? `${fmtNum(v.annualEnergySavingValue, 2)} ${v.annualEnergySavingUnit ?? ""}`.trim()
+                ? `${fmtNum(v.annualEnergySavingValue, 2)} ${escapeHtml(v.annualEnergySavingUnit ?? "")}`.trim()
                 : "Henüz girilmedi";
               return `<tr>
-                <td>${v.projectCode ?? "—"}</td>
-                <td>${v.projectTitle}</td>
-                <td>${linkedAction?.title ?? "—"}</td>
+                <td>${escapeHtml(v.projectCode ?? "—")}</td>
+                <td>${escapeHtml(v.projectTitle)}</td>
+                <td>${escapeHtml(linkedAction?.title ?? "—")}</td>
                 <td>${fmtNum(v.investmentCost, 0)}</td>
                 <td>${fmtNum(v.annualCostSaving, 0)}</td>
                 <td>${energySaving}</td>
                 <td>${fmtNum(v.paybackMonths, 1)}</td>
-                <td>${FEASIBILITY_STATUS_LABELS[v.feasibilityStatus ?? ""] ?? v.feasibilityStatus ?? "—"}</td>
+                <td>${escapeHtml(FEASIBILITY_STATUS_LABELS[v.feasibilityStatus ?? ""] ?? v.feasibilityStatus ?? "—")}</td>
               </tr>`;
             }).join("")}
           </table>`
@@ -565,11 +582,11 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
               const targetName = targets.find((t) => t.id === p.targetId)?.name ?? "—";
               const period = p.periodMonth ? `${MONTH_NAMES[p.periodMonth]} ${p.periodYear}` : String(p.periodYear);
               return `<tr>
-                <td>${targetName}</td>
+                <td>${escapeHtml(targetName)}</td>
                 <td>${period}</td>
                 <td>${fmtNum(p.actualValue, 2)}</td>
                 <td>${p.actualSavingValue != null ? fmtNum(p.actualSavingValue, 2) : "—"}</td>
-                <td>${p.comment ?? "—"}</td>
+                <td>${escapeHtml(p.comment ?? "—")}</td>
               </tr>`;
             }).join("")}
           </table>`
@@ -611,7 +628,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
   <div class="cover">
     <h1>ISO 50001 Hedef, Eylem Planı ve VAP Yönetim Raporu</h1>
     <p><strong>Yıl:</strong> ${yearParam}</p>
-    <p><strong>Birim:</strong> ${unitLabel}</p>
+    <p><strong>Birim:</strong> ${unitLabelHtml}</p>
     <p><strong>Oluşturma Tarihi:</strong> ${new Date().toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" })}</p>
     <p style="margin-top:10px; padding:8px 12px; background:#f0fdf4; border-left:3px solid #0f766e; font-size:13px; color:#065f46;">
       Bu rapor, seçili yılda aktif olan hedefleri ve seçili yıla ait gerçekleşme kayıtlarını içerir.
@@ -642,7 +659,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
 
   <div class="footer">
     Bu rapor ISO 50001 Enerji Yönetim Sistemi kapsamında otomatik olarak üretilmiştir.
-    Referans Yıl: ${yearParam} | Birim: ${unitLabel} | Üretim: ${new Date().toLocaleString("tr-TR")}
+    Referans Yıl: ${yearParam} | Birim: ${unitLabelHtml} | Üretim: ${new Date().toLocaleString("tr-TR")}
   </div>
 </body>
 </html>`;
@@ -762,6 +779,13 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
     // ── Ham birim etiketi ─────────────────────────────────────────────────
     // rawUnit: consumptionTable.kwh alanının gerçek birimi — TEP değil, m³/kWh/vb.
     const rawUnit = baseline.rawUnit ?? "ham tüketim";
+    const seuItemNameHtml = escapeHtml(seuItemName);
+    const unitNameHtml = escapeHtml(unitName);
+    const energySourceNameHtml = escapeHtml(energySourceName);
+    const rawUnitHtml = escapeHtml(rawUnit);
+    const formulaTextHtml = escapeHtml(baseline.formulaText ?? "Formül kaydedilmemiş");
+    const periodStartHtml = escapeHtml(baseline.periodStart);
+    const periodEndHtml = escapeHtml(baseline.periodEnd);
 
     // ── KPI özet ─────────────────────────────────────────────────────────
     const totalActual = results.reduce((s, r) => s + (r.actualConsumption ?? 0), 0);
@@ -833,7 +857,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       ? `<table>
           <tr><th>Değişken</th><th>Katsayı</th><th>Std. Hata</th><th>t İstatistiği</th><th>p Değeri</th><th>Anlamlı?</th></tr>
           ${bvars.map(v => `<tr>
-            <td>${v.variableName}</td>
+            <td>${escapeHtml(v.variableName)}</td>
             <td style="text-align:right">${v.coefficient?.toFixed(6) ?? "—"}</td>
             <td style="text-align:right">${v.standardError?.toFixed(6) ?? "—"}</td>
             <td style="text-align:right">${v.tStat?.toFixed(4) ?? "—"}</td>
@@ -857,7 +881,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <title>EnPG İzleme Raporu — ${seuItemName} — ${year}</title>
+  <title>EnPG İzleme Raporu — ${seuItemNameHtml} — ${year}</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 1050px; margin: 0 auto; padding: 40px; color: #1a202c; }
     h1 { color: #0f766e; border-bottom: 3px solid #0f766e; padding-bottom: 10px; font-size: 20px; }
@@ -882,23 +906,23 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
 
   <h1>ISO 50001 — EnPG İzleme Raporu</h1>
   <div class="meta-grid">
-    <div class="meta-item"><div class="meta-label">ÖEK Kalemi</div><div class="meta-value">${seuItemName}</div></div>
-    <div class="meta-item"><div class="meta-label">Enerji Kaynağı</div><div class="meta-value">${energySourceName}</div></div>
-    <div class="meta-item"><div class="meta-label">Birim</div><div class="meta-value">${unitName}</div></div>
+    <div class="meta-item"><div class="meta-label">ÖEK Kalemi</div><div class="meta-value">${seuItemNameHtml}</div></div>
+    <div class="meta-item"><div class="meta-label">Enerji Kaynağı</div><div class="meta-value">${energySourceNameHtml}</div></div>
+    <div class="meta-item"><div class="meta-label">Birim</div><div class="meta-value">${unitNameHtml}</div></div>
     <div class="meta-item"><div class="meta-label">İzleme Yılı</div><div class="meta-value">${year}</div></div>
     <div class="meta-item"><div class="meta-label">Referans Yılı (EnRÇ)</div><div class="meta-value">${baseline.baselineYear}</div></div>
     <div class="meta-item"><div class="meta-label">Rapor Tarihi</div><div class="meta-value">${new Date().toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" })}</div></div>
   </div>
 
   <h2>Regresyon Modeli (EnRÇ Formülü)</h2>
-  <div class="formula-box">${baseline.formulaText ?? "Formül kaydedilmemiş"}</div>
+  <div class="formula-box">${formulaTextHtml}</div>
   <div class="meta-grid">
     <div class="meta-item"><div class="meta-label">Model Türü</div><div class="meta-value">${modelLabel}</div></div>
     <div class="meta-item"><div class="meta-label">R²</div><div class="meta-value">${baseline.rSquared?.toFixed(4) ?? "—"}</div></div>
     <div class="meta-item"><div class="meta-label">Ayarlı R²</div><div class="meta-value">${baseline.adjustedRSquared?.toFixed(4) ?? "—"}</div></div>
     <div class="meta-item"><div class="meta-label">Örnek Sayısı</div><div class="meta-value">${baseline.sampleSize ?? "—"} ay</div></div>
-    <div class="meta-item"><div class="meta-label">Referans Dönemi</div><div class="meta-value">${baseline.periodStart} / ${baseline.periodEnd}</div></div>
-    <div class="meta-item"><div class="meta-label">Bağımlı Değişken Birimi</div><div class="meta-value">${rawUnit}</div></div>
+    <div class="meta-item"><div class="meta-label">Referans Dönemi</div><div class="meta-value">${periodStartHtml} / ${periodEndHtml}</div></div>
+    <div class="meta-item"><div class="meta-label">Bağımlı Değişken Birimi</div><div class="meta-value">${rawUnitHtml}</div></div>
   </div>
 
   ${varsHtml ? `<h2>Model Değişkenleri</h2>${varsHtml}` : ""}
@@ -907,19 +931,19 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   <div class="kpi-grid">
     <div class="kpi-box">
       <div class="kpi-value">${fmtRaw(totalActual, 0)}</div>
-      <div class="kpi-label">Toplam Gerçekleşen (${rawUnit})</div>
+      <div class="kpi-label">Toplam Gerçekleşen (${rawUnitHtml})</div>
     </div>
     <div class="kpi-box">
       <div class="kpi-value">${fmtRaw(totalExpected, 0)}</div>
-      <div class="kpi-label">Toplam Beklenen (${rawUnit})</div>
+      <div class="kpi-label">Toplam Beklenen (${rawUnitHtml})</div>
     </div>
     <div class="kpi-box">
       <div class="kpi-value" style="color:${totalDiff < 0 ? "#059669" : "#dc2626"}">${(totalDiff >= 0 ? "+" : "") + fmtRaw(totalDiff, 0)}</div>
-      <div class="kpi-label">Net Sapma (${rawUnit})</div>
+      <div class="kpi-label">Net Sapma (${rawUnitHtml})</div>
     </div>
     <div class="kpi-box">
       <div class="kpi-value" style="color:${finalCusum < 0 ? "#059669" : "#dc2626"}">${fmtRaw(finalCusum)}</div>
-      <div class="kpi-label">CUSUM Son Değer (${rawUnit})</div>
+      <div class="kpi-label">CUSUM Son Değer (${rawUnitHtml})</div>
     </div>
     <div class="kpi-box">
       <div class="kpi-value" style="color:${avgEei != null && avgEei < 1 ? "#059669" : "#dc2626"}">${avgEei != null ? avgEei.toFixed(4) : "—"}</div>
@@ -934,11 +958,11 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   <table>
     <tr>
       <th>Ay</th>
-      <th style="text-align:right">Gerçekleşen (${rawUnit})</th>
-      <th style="text-align:right">Beklenen (${rawUnit})</th>
-      <th style="text-align:right">Sapma (${rawUnit})</th>
+      <th style="text-align:right">Gerçekleşen (${rawUnitHtml})</th>
+      <th style="text-align:right">Beklenen (${rawUnitHtml})</th>
+      <th style="text-align:right">Sapma (${rawUnitHtml})</th>
       <th style="text-align:right">Sapma (%)</th>
-      <th style="text-align:right">CUSUM (${rawUnit})</th>
+      <th style="text-align:right">CUSUM (${rawUnitHtml})</th>
       <th style="text-align:right">EEI</th>
       <th style="text-align:center">Durum</th>
     </tr>
@@ -948,7 +972,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
 
   <div class="footer">
     Bu rapor ISO 50001 Enerji Yönetim Sistemi kapsamında otomatik olarak üretilmiştir.<br>
-    Bağımlı değişken birimi: <strong>${rawUnit}</strong> — TEP dönüşümü bu raporda ana metrik olarak kullanılmamıştır.<br>
+    Bağımlı değişken birimi: <strong>${rawUnitHtml}</strong> — TEP dönüşümü bu raporda ana metrik olarak kullanılmamıştır.<br>
     Referans EnRÇ ID: ${baselineId} | İzleme Yılı: ${year} | Üretim: ${new Date().toLocaleString("tr-TR")}
   </div>
 </body>
