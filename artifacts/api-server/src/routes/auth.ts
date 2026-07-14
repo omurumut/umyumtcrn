@@ -135,6 +135,15 @@ router.post("/auth/login", async (req, res) => {
       return;
     }
 
+    const [company] = await db.select({ isActive: companiesTable.isActive })
+      .from(companiesTable)
+      .where(eq(companiesTable.id, user.companyId))
+      .limit(1);
+    if (!company || company.isActive !== true) {
+      res.status(401).json({ error: "Kullanıcı adı veya şifre hatalı" });
+      return;
+    }
+
     const token = randomUUID();
     sessions.set(token, {
       userId: user.id,

@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { db, usersTable } from "@workspace/db";
+import { db, usersTable, companiesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 export interface SessionUser {
@@ -83,6 +83,17 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
 
     if (!currentUser || !currentUser.active) {
+      destroyRequestSession(req, token);
+      res.status(401).json({ error: "Giriş yapmalısınız" });
+      return;
+    }
+
+    const [currentCompany] = await db.select({ isActive: companiesTable.isActive })
+      .from(companiesTable)
+      .where(eq(companiesTable.id, currentUser.companyId))
+      .limit(1);
+
+    if (!currentCompany || currentCompany.isActive !== true) {
       destroyRequestSession(req, token);
       res.status(401).json({ error: "Giriş yapmalısınız" });
       return;
