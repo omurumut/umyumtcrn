@@ -35,6 +35,15 @@ const SENSITIVE_ENV_NAMES = new Set([
   "PGSYSCONFDIR",
   "NODE_OPTIONS",
   "TEST_DB_CHILD_TIMEOUT_MS",
+  "E2E_ADMIN_USERNAME",
+  "E2E_KONTROL_ADMIN_USERNAME",
+  "E2E_STANDARD_USERNAME",
+  "E2E_STANDARD_B_USERNAME",
+  "E2E_NULL_UNIT_USERNAME",
+  "E2E_INACTIVE_USERNAME",
+  "E2E_SUPERADMIN_USERNAME",
+  "E2E_TEST_PASSWORD",
+  "E2E_BASE_URL",
 ]);
 const UNSAFE_ENV_NAME = /(SEED|BOOTSTRAP|DEMO|MGM|IMPORT|EXPORT|SYNC|DOTENV)/i;
 const CLEANUP_WATCHDOG_SOURCE = String.raw`
@@ -83,7 +92,7 @@ interface ManagedProcess {
 }
 
 interface Invocation {
-  mode: "smoke" | "with-child";
+  mode: "smoke" | "with-child" | "fixtures" | "with-fixtures";
   childCommand: string[] | null;
 }
 
@@ -311,24 +320,55 @@ function disposableEnvironment(
   };
 }
 
+function fixtureEnvironment(
+  env: NodeJS.ProcessEnv,
+  password: string,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    E2E_ADMIN_USERNAME: "e2e_admin_a",
+    E2E_KONTROL_ADMIN_USERNAME: "e2e_kontrol_admin_a",
+    E2E_STANDARD_USERNAME: "e2e_user_a1",
+    E2E_STANDARD_B_USERNAME: "e2e_user_b1",
+    E2E_NULL_UNIT_USERNAME: "e2e_user_null_unit",
+    E2E_INACTIVE_USERNAME: "e2e_inactive_user_a1",
+    E2E_SUPERADMIN_USERNAME: "e2e_superadmin",
+    E2E_TEST_PASSWORD: password,
+  };
+}
+
 function parseInvocation(): Invocation {
   const [modeArg, ...rest] = process.argv.slice(2);
-  if (modeArg !== "--smoke" && modeArg !== "--with-child") {
+  if (
+    modeArg !== "--smoke" &&
+    modeArg !== "--with-child" &&
+    modeArg !== "--fixtures" &&
+    modeArg !== "--with-fixtures"
+  ) {
     throw new Error(
-      "Kullanım: test-db.ts --smoke | --with-child -- <executable> [args...]",
+      "Kullanım: test-db.ts --smoke | --fixtures | --with-child -- <executable> [args...] | --with-fixtures -- <executable> [args...]",
     );
   }
 
   const command = [...rest];
   while (command[0] === "--") command.shift();
-  if (modeArg === "--smoke") {
+  if (modeArg === "--smoke" || modeArg === "--fixtures") {
     if (command.length > 0)
-      throw new Error("test:db:smoke child command kabul etmez.");
-    return { mode: "smoke", childCommand: null };
+      throw new Error(
+        modeArg === "--smoke"
+          ? "test:db:smoke child command kabul etmez."
+          : "test:fixtures child command kabul etmez.",
+      );
+    return {
+      mode: modeArg === "--smoke" ? "smoke" : "fixtures",
+      childCommand: null,
+    };
   }
   if (command.length === 0) {
     throw new Error(
-      "Kullanım: pnpm run test:with-db -- <executable> [args...]",
+      modeArg === "--with-child"
+        ? "Kullanım: pnpm run test:with-db -- <executable> [args...]"
+        : "Kullanım: pnpm run test:with-fixtures -- <executable> [args...]",
     );
   }
   if (
@@ -341,7 +381,10 @@ function parseInvocation(): Invocation {
   }
 
   // Child commands are trusted repository test entrypoints; this is not a filesystem sandbox.
-  return { mode: "with-child", childCommand: command };
+  return {
+    mode: modeArg === "--with-child" ? "with-child" : "with-fixtures",
+    childCommand: command,
+  };
 }
 
 function optionalChildTimeoutMs(): number | undefined {
@@ -583,6 +626,27 @@ async function runSmokeChild(
   }
 }
 
+async function runFixtureChild(
+  env: NodeJS.ProcessEnv,
+  mode: "apply" | "assert",
+): Promise<void> {
+  const require = createRequire(import.meta.url);
+  const tsxCli = require.resolve("tsx/cli");
+  const fixtureFile = fileURLToPath(
+    new URL("./test-fixtures.ts", import.meta.url),
+  );
+  const result = await runProcess(
+    process.execPath,
+    [tsxCli, fixtureFile, `--${mode}`],
+    { env, inherit: true },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Test fixture ${mode} child işlemi ${result.exitCode} koduyla başarısız oldu.`,
+    );
+  }
+}
+
 async function cleanupContainer(
   containerId: string,
   runId: string,
@@ -630,6 +694,7 @@ async function main(): Promise<number> {
   const containerName = `iso50001-test-db-${runId}`;
   const cidFile = join(tmpdir(), `${containerName}.cid`);
   const password = randomBytes(32).toString("base64url");
+  const fixturePassword = randomBytes(32).toString("base64url");
   let containerId: string | null = null;
   let cleanupWatchdog: ChildProcess | null = null;
   let intendedExitCode = 0;
@@ -710,7 +775,21 @@ async function main(): Promise<number> {
     );
     await runSmokeChild(childEnv, "migrate");
 
-    if (invocation.mode === "with-child" && invocation.childCommand) {
+    let executionEnv = childEnv;
+    if (invocation.mode === "fixtures" || invocation.mode === "with-fixtures") {
+      executionEnv = fixtureEnvironment(childEnv, fixturePassword);
+      console.log("[test-db] Migration smoke doğrulanıyor.");
+      await runSmokeChild(executionEnv, "assert");
+      console.log("[test-db] İzole fixture uygulanıyor ve doğrulanıyor.");
+      await runFixtureChild(executionEnv, "apply");
+      await runFixtureChild(executionEnv, "assert");
+    }
+
+    if (
+      (invocation.mode === "with-child" ||
+        invocation.mode === "with-fixtures") &&
+      invocation.childCommand
+    ) {
       console.log(
         `[test-db] Child komutu çalıştırılıyor: ${invocation.childCommand[0]}`,
       );
@@ -718,16 +797,18 @@ async function main(): Promise<number> {
         invocation.childCommand[0],
         invocation.childCommand.slice(1),
         {
-          env: childEnv,
+          env: executionEnv,
           inherit: true,
           processTree: true,
           timeoutMs: childTimeoutMs,
         },
       );
       intendedExitCode = result.exitCode;
-    } else {
+    } else if (invocation.mode === "smoke") {
       console.log("[test-db] Salt-okuma child smoke çalıştırılıyor.");
       await runSmokeChild(childEnv, "assert");
+    } else {
+      console.log("[test-db] Fixture yaşam döngüsü doğrulandı.");
     }
   } catch (error) {
     if (signalExitCode === null) {

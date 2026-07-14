@@ -13,6 +13,9 @@
     "replit:web": "pnpm --filter @workspace/ems-dashboard run dev",
     "test:db:smoke": "pnpm --filter @workspace/scripts run test:db:smoke",
     "test:with-db": "pnpm --filter @workspace/scripts run test:with-db",
+    "test:fixtures": "pnpm --filter @workspace/scripts run test:fixtures",
+    "test:with-fixtures": "pnpm --filter @workspace/scripts run test:with-fixtures",
+    "test:e2e": "pnpm --filter @workspace/scripts run test:e2e",
     "start": "ts-node scripts/index.ts",
     "dev": "ts-node-dev scripts/index.ts"
   },
