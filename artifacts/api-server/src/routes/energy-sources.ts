@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, energySourcesTable, unitsTable } from "@workspace/db";
+import { db, energySourcesTable, unitsTable, metersTable, consumptionTable, energyUseGroupsTable, seuAssessmentsTable, seuAssessmentItemsTable, energyTargetsTable, energyPerformanceIndicatorsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
@@ -166,15 +166,95 @@ router.delete("/energy-sources/:id", requireAuth, async (req, res) => {
     const conditions = [eq(energySourcesTable.id, id)];
     if (!isSuperAdmin(role)) conditions.push(eq(energySourcesTable.companyId, sessionCompanyId));
     if (isStandard(role)) conditions.push(eq(energySourcesTable.unitId, sessionUnitId!));
-    const [existing] = await db.select().from(energySourcesTable).where(and(...conditions));
-    if (!existing) { res.status(404).send(); return; }
-    if (isStandard(role) && sessionUnitId !== existing.unitId) {
-      res.status(403).json({ error: "Yetki yok" }); return;
+    const standard = isStandard(role);
+    const deleteResult = await db.transaction(async (tx) => {
+      const [existing] = await tx.select({
+        id: energySourcesTable.id,
+        companyId: energySourcesTable.companyId,
+        unitId: energySourcesTable.unitId,
+      }).from(energySourcesTable).where(and(...conditions)).limit(1).for("update");
+      if (!existing) return "not_found" as const;
+
+      const meterConditions = [
+        eq(metersTable.energySourceId, id),
+        eq(metersTable.companyId, existing.companyId),
+      ];
+      const consumptionConditions = [
+        eq(metersTable.energySourceId, id),
+        eq(metersTable.companyId, existing.companyId),
+        eq(consumptionTable.companyId, existing.companyId),
+      ];
+      const groupConditions = [
+        eq(energyUseGroupsTable.energySourceId, id),
+        eq(energyUseGroupsTable.companyId, existing.companyId),
+      ];
+      const assessmentConditions = [
+        eq(seuAssessmentsTable.energySourceId, id),
+        eq(seuAssessmentsTable.companyId, existing.companyId),
+      ];
+      const assessmentItemConditions = [
+        eq(seuAssessmentItemsTable.energySourceId, id),
+        eq(seuAssessmentsTable.companyId, existing.companyId),
+      ];
+      const targetConditions = [
+        eq(energyTargetsTable.energySourceId, id),
+        eq(energyTargetsTable.companyId, existing.companyId),
+      ];
+      const indicatorConditions = [
+        eq(energyPerformanceIndicatorsTable.energySourceId, id),
+        eq(energyPerformanceIndicatorsTable.companyId, existing.companyId),
+      ];
+      if (standard) {
+        meterConditions.push(eq(metersTable.unitId, sessionUnitId!));
+        consumptionConditions.push(eq(metersTable.unitId, sessionUnitId!));
+        groupConditions.push(eq(energyUseGroupsTable.unitId, sessionUnitId!));
+        assessmentConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
+        assessmentItemConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
+        targetConditions.push(eq(energyTargetsTable.unitId, sessionUnitId!));
+        indicatorConditions.push(eq(energyPerformanceIndicatorsTable.unitId, sessionUnitId!));
+      }
+
+      const [meter] = await tx.select({ id: metersTable.id }).from(metersTable)
+        .where(and(...meterConditions)).limit(1);
+      const [consumption] = await tx.select({ id: consumptionTable.id })
+        .from(consumptionTable)
+        .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+        .where(and(...consumptionConditions))
+        .limit(1);
+      const [group] = await tx.select({ id: energyUseGroupsTable.id }).from(energyUseGroupsTable)
+        .where(and(...groupConditions)).limit(1);
+      const [assessment] = await tx.select({ id: seuAssessmentsTable.id }).from(seuAssessmentsTable)
+        .where(and(...assessmentConditions)).limit(1);
+      const [assessmentItem] = await tx.select({ id: seuAssessmentItemsTable.id })
+        .from(seuAssessmentItemsTable)
+        .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+        .where(and(...assessmentItemConditions))
+        .limit(1);
+      const [target] = await tx.select({ id: energyTargetsTable.id }).from(energyTargetsTable)
+        .where(and(...targetConditions)).limit(1);
+      const [indicator] = await tx.select({ id: energyPerformanceIndicatorsTable.id })
+        .from(energyPerformanceIndicatorsTable)
+        .where(and(...indicatorConditions)).limit(1);
+      if (meter || consumption || group || assessment || assessmentItem || target || indicator) {
+        return "dependent" as const;
+      }
+
+      const deleteConditions = [
+        eq(energySourcesTable.id, id),
+        eq(energySourcesTable.companyId, existing.companyId),
+      ];
+      if (standard) deleteConditions.push(eq(energySourcesTable.unitId, sessionUnitId!));
+      const [deleted] = await tx.delete(energySourcesTable)
+        .where(and(...deleteConditions))
+        .returning({ id: energySourcesTable.id });
+      return deleted ? "deleted" as const : "not_found" as const;
+    });
+
+    if (deleteResult === "not_found") { res.status(404).send(); return; }
+    if (deleteResult === "dependent") {
+      res.status(409).json({ error: "Bu enerji kaynağına bağlı kayıtlar bulunduğu için silinemez." });
+      return;
     }
-    if (isCompanyAdmin(role) && existing.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu enerji kaynağını silme yetkiniz yok" }); return;
-    }
-    await db.delete(energySourcesTable).where(and(...conditions));
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

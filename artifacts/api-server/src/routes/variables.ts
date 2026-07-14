@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, variablesTable, variableValuesTable, weatherDegreeDaysTable, companiesTable, unitsTable, subUnitsTable, metersTable, mgmStationsTable, mgmDegreeDataTable } from "@workspace/db";
+import { db, variablesTable, variableValuesTable, energyBaselineVariablesTable, energyBaselinesTable, weatherDegreeDaysTable, companiesTable, unitsTable, subUnitsTable, metersTable, mgmStationsTable, mgmDegreeDataTable } from "@workspace/db";
 import { eq, and, or, ne, isNull, inArray, sql, SQL } from "drizzle-orm";
 import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 import { parseIlIlce, findStationByIlIlce } from "../services/mgm-stations-data.js";
@@ -255,14 +255,49 @@ router.delete("/variables/:id", requireAuth, async (req, res) => {
 
     const scopeConditions = [eq(variablesTable.id, id)];
     if (!isSuperAdmin(role)) scopeConditions.push(eq(variablesTable.companyId, sessionCompanyId));
-    const [existing] = await db.select().from(variablesTable).where(and(...scopeConditions));
-    if (!existing) { res.status(404).send(); return; }
+    const deleteResult = await db.transaction(async (tx) => {
+      const [existing] = await tx.select({
+        id: variablesTable.id,
+        companyId: variablesTable.companyId,
+        isSystemVariable: variablesTable.isSystemVariable,
+      }).from(variablesTable).where(and(...scopeConditions)).limit(1).for("update");
+      if (!existing) return "not_found" as const;
+      if (existing.isSystemVariable) return "system" as const;
 
-    if (existing.isSystemVariable) {
+      const [value] = await tx.select({ id: variableValuesTable.id })
+        .from(variableValuesTable)
+        .where(and(
+          eq(variableValuesTable.variableId, id),
+          eq(variableValuesTable.companyId, existing.companyId),
+        ))
+        .limit(1);
+      const [baselineVariable] = await tx.select({ id: energyBaselineVariablesTable.id })
+        .from(energyBaselineVariablesTable)
+        .innerJoin(energyBaselinesTable, eq(energyBaselineVariablesTable.baselineId, energyBaselinesTable.id))
+        .where(and(
+          eq(energyBaselineVariablesTable.variableId, id),
+          eq(energyBaselinesTable.companyId, existing.companyId),
+        ))
+        .limit(1);
+      if (value || baselineVariable) return "dependent" as const;
+
+      const [deleted] = await tx.delete(variablesTable)
+        .where(and(
+          eq(variablesTable.id, id),
+          eq(variablesTable.companyId, existing.companyId),
+        ))
+        .returning({ id: variablesTable.id });
+      return deleted ? "deleted" as const : "not_found" as const;
+    });
+
+    if (deleteResult === "not_found") { res.status(404).send(); return; }
+    if (deleteResult === "system") {
       res.status(403).json({ error: "Sistem değişkenleri silinemez" }); return;
     }
-
-    await db.delete(variablesTable).where(and(...scopeConditions));
+    if (deleteResult === "dependent") {
+      res.status(409).json({ error: "Bu değişkene bağlı kayıtlar bulunduğu için silinemez." });
+      return;
+    }
     res.status(204).send();
   } catch (err) {
     if (handleInvalidId(res, err)) return;

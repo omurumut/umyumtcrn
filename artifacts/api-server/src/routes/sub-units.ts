@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, subUnitsTable, unitsTable } from "@workspace/db";
+import { db, subUnitsTable, unitsTable, metersTable, consumptionTable, energyUseGroupsTable, seuAssessmentsTable, seuAssessmentItemsTable, variableValuesTable, energyTargetsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
@@ -192,15 +192,87 @@ router.delete("/sub-units/:id", requireAuth, async (req, res) => {
     const conditions = [eq(subUnitsTable.id, id)];
     if (!isSuperAdmin(role)) conditions.push(eq(subUnitsTable.companyId, sessionCompanyId));
     if (isStandard(role)) conditions.push(eq(subUnitsTable.unitId, sessionUnitId!));
-    const [existing] = await db.select().from(subUnitsTable).where(and(...conditions));
-    if (!existing) { res.status(404).send(); return; }
-    if (isStandard(role) && sessionUnitId !== existing.unitId) {
-      res.status(403).json({ error: "Yetki yok" }); return;
+    const standard = isStandard(role);
+    const deleteResult = await db.transaction(async (tx) => {
+      const [existing] = await tx.select({
+        id: subUnitsTable.id,
+        companyId: subUnitsTable.companyId,
+        unitId: subUnitsTable.unitId,
+      }).from(subUnitsTable).where(and(...conditions)).limit(1).for("update");
+      if (!existing) return "not_found" as const;
+
+      const meterConditions = [
+        eq(metersTable.subUnitId, id),
+        eq(metersTable.companyId, existing.companyId),
+      ];
+      const consumptionConditions = [
+        eq(metersTable.subUnitId, id),
+        eq(metersTable.companyId, existing.companyId),
+        eq(consumptionTable.companyId, existing.companyId),
+      ];
+      const groupConditions = [
+        eq(energyUseGroupsTable.subUnitId, id),
+        eq(energyUseGroupsTable.companyId, existing.companyId),
+      ];
+      const assessmentConditions = [
+        eq(seuAssessmentItemsTable.subUnitId, id),
+        eq(seuAssessmentsTable.companyId, existing.companyId),
+      ];
+      const valueConditions = [
+        eq(variableValuesTable.subUnitId, id),
+        eq(variableValuesTable.companyId, existing.companyId),
+      ];
+      const targetConditions = [
+        eq(energyTargetsTable.subUnitId, id),
+        eq(energyTargetsTable.companyId, existing.companyId),
+      ];
+      if (standard) {
+        meterConditions.push(eq(metersTable.unitId, sessionUnitId!));
+        consumptionConditions.push(eq(metersTable.unitId, sessionUnitId!));
+        groupConditions.push(eq(energyUseGroupsTable.unitId, sessionUnitId!));
+        assessmentConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
+        valueConditions.push(eq(variableValuesTable.unitId, sessionUnitId!));
+        targetConditions.push(eq(energyTargetsTable.unitId, sessionUnitId!));
+      }
+
+      const [meter] = await tx.select({ id: metersTable.id }).from(metersTable)
+        .where(and(...meterConditions)).limit(1);
+      const [consumption] = await tx.select({ id: consumptionTable.id })
+        .from(consumptionTable)
+        .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
+        .where(and(...consumptionConditions))
+        .limit(1);
+      const [group] = await tx.select({ id: energyUseGroupsTable.id }).from(energyUseGroupsTable)
+        .where(and(...groupConditions)).limit(1);
+      const [assessmentItem] = await tx.select({ id: seuAssessmentItemsTable.id })
+        .from(seuAssessmentItemsTable)
+        .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+        .where(and(...assessmentConditions))
+        .limit(1);
+      const [variableValue] = await tx.select({ id: variableValuesTable.id }).from(variableValuesTable)
+        .where(and(...valueConditions)).limit(1);
+      const [target] = await tx.select({ id: energyTargetsTable.id }).from(energyTargetsTable)
+        .where(and(...targetConditions)).limit(1);
+      if (meter || consumption || group || assessmentItem || variableValue || target) {
+        return "dependent" as const;
+      }
+
+      const deleteConditions = [
+        eq(subUnitsTable.id, id),
+        eq(subUnitsTable.companyId, existing.companyId),
+      ];
+      if (standard) deleteConditions.push(eq(subUnitsTable.unitId, sessionUnitId!));
+      const [deleted] = await tx.delete(subUnitsTable)
+        .where(and(...deleteConditions))
+        .returning({ id: subUnitsTable.id });
+      return deleted ? "deleted" as const : "not_found" as const;
+    });
+
+    if (deleteResult === "not_found") { res.status(404).send(); return; }
+    if (deleteResult === "dependent") {
+      res.status(409).json({ error: "Bu alt birime bağlı kayıtlar bulunduğu için silinemez." });
+      return;
     }
-    if (isCompanyAdmin(role) && existing.companyId !== sessionCompanyId) {
-      res.status(403).json({ error: "Bu alt birimi silme yetkiniz yok" }); return;
-    }
-    await db.delete(subUnitsTable).where(and(...conditions));
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

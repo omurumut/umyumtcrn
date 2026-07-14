@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, energyUseGroupsTable, metersTable, unitsTable, subUnitsTable, energySourcesTable } from "@workspace/db";
+import { db, energyUseGroupsTable, metersTable, unitsTable, subUnitsTable, energySourcesTable, seuAssessmentsTable, seuAssessmentItemsTable, energyPerformanceIndicatorsTable } from "@workspace/db";
 import { eq, and, isNull, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
@@ -312,10 +312,63 @@ router.delete("/energy-use-groups/:id", requireAuth, async (req, res) => {
     const recordConditions = [eq(energyUseGroupsTable.id, id)];
     if (!isSuperAdmin(role)) recordConditions.push(eq(energyUseGroupsTable.companyId, sessionCompanyId));
     if (standard) recordConditions.push(eq(energyUseGroupsTable.unitId, sessionUnitId!));
-    const [existing] = await db.select({ id: energyUseGroupsTable.id }).from(energyUseGroupsTable)
-      .where(and(...recordConditions));
-    if (!existing) { res.status(404).json({ error: "Grup bulunamadı" }); return; }
-    await db.delete(energyUseGroupsTable).where(and(...recordConditions));
+    const deleteResult = await db.transaction(async (tx) => {
+      const [existing] = await tx.select({
+        id: energyUseGroupsTable.id,
+        companyId: energyUseGroupsTable.companyId,
+      }).from(energyUseGroupsTable)
+        .where(and(...recordConditions))
+        .limit(1)
+        .for("update");
+      if (!existing) return "not_found" as const;
+
+      const meterConditions = [
+        eq(metersTable.energyUseGroupId, id),
+        eq(metersTable.companyId, existing.companyId),
+      ];
+      const assessmentConditions = [
+        eq(seuAssessmentItemsTable.energyUseGroupId, id),
+        eq(seuAssessmentsTable.companyId, existing.companyId),
+      ];
+      const indicatorConditions = [
+        eq(energyPerformanceIndicatorsTable.energyUseGroupId, id),
+        eq(energyPerformanceIndicatorsTable.companyId, existing.companyId),
+      ];
+      if (standard) {
+        meterConditions.push(eq(metersTable.unitId, sessionUnitId!));
+        assessmentConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
+        indicatorConditions.push(eq(energyPerformanceIndicatorsTable.unitId, sessionUnitId!));
+      }
+
+      const [meter] = await tx.select({ id: metersTable.id }).from(metersTable)
+        .where(and(...meterConditions)).limit(1);
+      const [assessmentItem] = await tx.select({ id: seuAssessmentItemsTable.id })
+        .from(seuAssessmentItemsTable)
+        .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+        .where(and(...assessmentConditions))
+        .limit(1);
+      const [indicator] = await tx.select({ id: energyPerformanceIndicatorsTable.id })
+        .from(energyPerformanceIndicatorsTable)
+        .where(and(...indicatorConditions))
+        .limit(1);
+      if (meter || assessmentItem || indicator) return "dependent" as const;
+
+      const deleteConditions = [
+        eq(energyUseGroupsTable.id, id),
+        eq(energyUseGroupsTable.companyId, existing.companyId),
+      ];
+      if (standard) deleteConditions.push(eq(energyUseGroupsTable.unitId, sessionUnitId!));
+      const [deleted] = await tx.delete(energyUseGroupsTable)
+        .where(and(...deleteConditions))
+        .returning({ id: energyUseGroupsTable.id });
+      return deleted ? "deleted" as const : "not_found" as const;
+    });
+
+    if (deleteResult === "not_found") { res.status(404).json({ error: "Grup bulunamadı" }); return; }
+    if (deleteResult === "dependent") {
+      res.status(409).json({ error: "Bu enerji kullanım grubuna bağlı kayıtlar bulunduğu için silinemez." });
+      return;
+    }
     res.status(204).send();
   } catch (err) {
     if (handleScopeError(res, err)) return;
