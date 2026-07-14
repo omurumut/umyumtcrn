@@ -437,18 +437,26 @@ router.get("/seu/assessments/:id", requireAuth, async (req, res) => {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parsePositiveInteger(req.params.id);
     if (id === null) { res.status(400).json({ error: "Geçersiz assessmentId" }); return; }
+    const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+    if (standardUser && sessionUnitId === null) {
+      res.status(403).json({ error: "Yetki yok" }); return;
+    }
+
+    const assessmentConditions = [
+      eq(seuAssessmentsTable.id, id),
+      eq(seuAssessmentsTable.companyId, sessionCompanyId),
+    ];
+    if (standardUser) assessmentConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
+
     const [assessment] = await db
       .select()
       .from(seuAssessmentsTable)
-      .where(and(eq(seuAssessmentsTable.id, id), eq(seuAssessmentsTable.companyId, sessionCompanyId)));
+      .where(and(...assessmentConditions));
     if (!assessment) { res.status(404).json({ error: "Bulunamadı" }); return; }
-    if (role === "user" && assessment.unitId !== sessionUnitId) {
-      res.status(403).json({ error: "Yetki yok" }); return;
-    }
     const items = await db
       .select()
       .from(seuAssessmentItemsTable)
-      .where(eq(seuAssessmentItemsTable.assessmentId, id))
+      .where(eq(seuAssessmentItemsTable.assessmentId, assessment.id))
       .orderBy(seuAssessmentItemsTable.consumptionSharePercent);
     res.json({ ...assessment, items });
   } catch (err) {
