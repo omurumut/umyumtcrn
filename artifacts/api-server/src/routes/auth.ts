@@ -1,21 +1,15 @@
 import { Router } from "express";
-import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { db } from "@workspace/db";
 import { usersTable, unitsTable, companiesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { sessions, requireAuth } from "../middlewares/auth.js";
+import { hashPassword, needsPasswordRehash, verifyPassword } from "../security/passwords.js";
 
 const router = Router();
 
 const COMPANY_ADMIN_ROLES = new Set(["user", "admin", "kontrol_admin"]);
 const SUPERADMIN_ROLES = new Set([...COMPANY_ADMIN_ROLES, "superadmin"]);
-const SCRYPT_VERSION = 1;
-const SCRYPT_N = 16384;
-const SCRYPT_R = 8;
-const SCRYPT_P = 1;
-const SCRYPT_SALT_LENGTH = 16;
-const SCRYPT_KEY_LENGTH = 64;
-const SCRYPT_MAX_MEMORY = 64 * 1024 * 1024;
 const LOGIN_RATE_LIMIT_WINDOW_MS = readPositiveSafeIntegerEnv("LOGIN_RATE_LIMIT_WINDOW_MS", 15 * 60 * 1000);
 const LOGIN_RATE_LIMIT_MAX_PER_IP = readPositiveSafeIntegerEnv("LOGIN_RATE_LIMIT_MAX_PER_IP", 20);
 const LOGIN_RATE_LIMIT_MAX_PER_USERNAME = readPositiveSafeIntegerEnv("LOGIN_RATE_LIMIT_MAX_PER_USERNAME", 8);
@@ -129,84 +123,6 @@ async function unitBelongsToCompany(unitId: number, companyId: number) {
     .from(unitsTable)
     .where(and(eq(unitsTable.id, unitId), eq(unitsTable.companyId, companyId)));
   return !!unit;
-}
-
-// Legacy SHA-256 compatibility only; never use this helper for new hashes.
-function hashLegacyPassword(password: string): string {
-  return createHash("sha256").update(password + "eys_salt_2024").digest("hex");
-}
-
-function deriveScryptKey(password: string, salt: Buffer): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    scrypt(password, salt, SCRYPT_KEY_LENGTH, {
-      N: SCRYPT_N,
-      r: SCRYPT_R,
-      p: SCRYPT_P,
-      maxmem: SCRYPT_MAX_MEMORY,
-    }, (err, derivedKey) => {
-      if (err) reject(err);
-      else resolve(derivedKey);
-    });
-  });
-}
-
-function decodeCanonicalBase64(value: string): Buffer | null {
-  if (value.length === 0 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
-  const decoded = Buffer.from(value, "base64");
-  return decoded.toString("base64") === value ? decoded : null;
-}
-
-async function hashPassword(password: string): Promise<string> {
-  const salt = randomBytes(SCRYPT_SALT_LENGTH);
-  const derivedKey = await deriveScryptKey(password, salt);
-  return [
-    "scrypt",
-    `v=${SCRYPT_VERSION}`,
-    `N=${SCRYPT_N}`,
-    `r=${SCRYPT_R}`,
-    `p=${SCRYPT_P}`,
-    salt.toString("base64"),
-    derivedKey.toString("base64"),
-  ].join("$");
-}
-
-function isLegacyPasswordHash(storedHash: string): boolean {
-  return /^[a-f0-9]{64}$/i.test(storedHash);
-}
-
-function needsPasswordRehash(storedHash: string): boolean {
-  return isLegacyPasswordHash(storedHash);
-}
-
-async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
-  try {
-    if (isLegacyPasswordHash(storedHash)) {
-      const expected = Buffer.from(storedHash, "hex");
-      const actual = Buffer.from(hashLegacyPassword(password), "hex");
-      return expected.length === actual.length && timingSafeEqual(expected, actual);
-    }
-
-    const parts = storedHash.split("$");
-    if (parts.length !== 7 ||
-        parts[0] !== "scrypt" ||
-        parts[1] !== `v=${SCRYPT_VERSION}` ||
-        parts[2] !== `N=${SCRYPT_N}` ||
-        parts[3] !== `r=${SCRYPT_R}` ||
-        parts[4] !== `p=${SCRYPT_P}`) {
-      return false;
-    }
-
-    const salt = decodeCanonicalBase64(parts[5]);
-    const expected = decodeCanonicalBase64(parts[6]);
-    if (!salt || salt.length !== SCRYPT_SALT_LENGTH || !expected || expected.length !== SCRYPT_KEY_LENGTH) {
-      return false;
-    }
-
-    const actual = await deriveScryptKey(password, salt);
-    return timingSafeEqual(expected, actual);
-  } catch {
-    return false;
-  }
 }
 
 export class SuperAdminBootstrapError extends Error {

@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { createHash } from "crypto";
 import { db } from "@workspace/db";
 import {
   usersTable,
@@ -15,7 +14,8 @@ import {
   energyTargetsTable,
   companiesTable,
 } from "@workspace/db";
-import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
+import { requireAuth, requireCompanyAdmin, requireSuperAdmin } from "../middlewares/auth.js";
+import { hashPassword } from "../security/passwords.js";
 import { eq, inArray, ne, and } from "drizzle-orm";
 
 
@@ -37,8 +37,35 @@ async function companyExists(companyId: number) {
   return !!company;
 }
 
-function hashPassword(password: string): string {
-  return createHash("sha256").update(password + "eys_salt_2024").digest("hex");
+type DemoSeedUserCredential = {
+  username: string;
+  password: string;
+  name: string;
+  unitIndex: number;
+};
+
+const demoSeedUserDefinitions = [
+  { usernameEnv: "DEMO_SEED_ISTANBUL_USERNAME", passwordEnv: "DEMO_SEED_ISTANBUL_PASSWORD", name: "Mehmet Yılmaz", unitIndex: 0 },
+  { usernameEnv: "DEMO_SEED_ANKARA_USERNAME", passwordEnv: "DEMO_SEED_ANKARA_PASSWORD", name: "Ayşe Kaya", unitIndex: 1 },
+  { usernameEnv: "DEMO_SEED_IZMIR_USERNAME", passwordEnv: "DEMO_SEED_IZMIR_PASSWORD", name: "Fatih Demir", unitIndex: 2 },
+] as const;
+
+function readDemoSeedUserCredentials(): DemoSeedUserCredential[] | null {
+  if (process.env["ENABLE_DEMO_SEED_USERS"] !== "true") return [];
+
+  const credentials: DemoSeedUserCredential[] = [];
+  for (const definition of demoSeedUserDefinitions) {
+    const username = process.env[definition.usernameEnv]?.trim();
+    const password = process.env[definition.passwordEnv];
+    if (!username || password === undefined || password.trim().length === 0 || password.length < 12) {
+      return null;
+    }
+    credentials.push({ username, password, name: definition.name, unitIndex: definition.unitIndex });
+  }
+
+  return new Set(credentials.map((credential) => credential.username)).size === credentials.length
+    ? credentials
+    : null;
 }
 
 const weatherProfiles: Record<string, { hdd: number[]; cdd: number[] }> = {
@@ -67,9 +94,17 @@ function gasFactor(month: number, city: string): number {
   return 0.2 + (w.hdd[month - 1] / 450) * 1.2;
 }
 
-router.post("/admin/seed", requireAuth, requireCompanyAdmin, async (req, res) => {
+router.post("/admin/seed", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
-    const { role, companyId: sessionCompanyId } = req.user!;
+    if (process.env["ENABLE_DEMO_SEED"] !== "true") {
+      res.status(403).json({ ok: false, error: "Demo veri oluşturma özelliği devre dışı." }); return;
+    }
+
+    const demoUserCredentials = readDemoSeedUserCredentials();
+    if (demoUserCredentials === null) {
+      res.status(400).json({ ok: false, error: "Demo kullanıcı credential yapılandırması eksik veya geçersiz." }); return;
+    }
+
     const bodyCompanyId = parsePositiveInteger(req.body?.companyId);
     const queryCompanyId = parsePositiveInteger(req.query.companyId);
     if ((req.body?.companyId !== undefined && bodyCompanyId === undefined) ||
@@ -80,21 +115,32 @@ router.post("/admin/seed", requireAuth, requireCompanyAdmin, async (req, res) =>
       res.status(400).json({ ok: false, error: "Çelişkili companyId" }); return;
     }
     const requestedCompanyId = bodyCompanyId ?? queryCompanyId;
-    if (!isSuperAdmin(role) && requestedCompanyId !== undefined && requestedCompanyId !== sessionCompanyId) {
-      res.status(403).json({ ok: false, error: "Yetki yok" }); return;
-    }
-    if (isSuperAdmin(role) && requestedCompanyId === undefined) {
+    if (requestedCompanyId === undefined) {
       res.status(400).json({ ok: false, error: "companyId zorunludur" }); return;
     }
-    const companyId = isSuperAdmin(role) ? requestedCompanyId! : sessionCompanyId;
+    const companyId = requestedCompanyId;
     if (!await companyExists(companyId)) {
       res.status(404).json({ ok: false, error: "Şirket bulunamadı" }); return;
     }
 
+    if (demoUserCredentials.length > 0) {
+      const [existingDemoUsername] = await db.select({ id: usersTable.id })
+        .from(usersTable)
+        .where(inArray(usersTable.username, demoUserCredentials.map((credential) => credential.username)))
+        .limit(1);
+      if (existingDemoUsername) {
+        res.status(409).json({ ok: false, error: "Demo kullanıcı adı zaten kullanımda." }); return;
+      }
+    }
+
+    const preparedDemoUsers = await Promise.all(demoUserCredentials.map(async (credential) => ({
+      ...credential,
+      passwordHash: await hashPassword(credential.password),
+    })));
+
     const summary = await db.transaction(async (db) => {
 
     // ── Mevcut demo verileri temizle (sadece aynı firma) ────────────────────
-    await db.delete(usersTable).where(and(eq(usersTable.isDemo, true), eq(usersTable.companyId, companyId)));
     const existingDemoUnits = await db
       .select({ id: unitsTable.id })
       .from(unitsTable)
@@ -113,12 +159,18 @@ router.post("/admin/seed", requireAuth, requireCompanyAdmin, async (req, res) =>
     ]).returning();
 
     // ── Demo kullanıcılar ───────────────────────────────────────────────────
-    const userSuffix = companyId !== 1 ? `_c${companyId}` : "";
-    await db.insert(usersTable).values([
-      { username: `istanbul_yonetici${userSuffix}`, passwordHash: hashPassword("demo123"), name: "Mehmet Yılmaz", role: "user", unitId: units[0].id, active: true, isDemo: true, companyId },
-      { username: `ankara_yonetici${userSuffix}`,   passwordHash: hashPassword("demo123"), name: "Ayşe Kaya",    role: "user", unitId: units[1].id, active: true, isDemo: true, companyId },
-      { username: `izmir_yonetici${userSuffix}`,    passwordHash: hashPassword("demo123"), name: "Fatih Demir",  role: "user", unitId: units[2].id, active: true, isDemo: true, companyId },
-    ]).onConflictDoNothing();
+    if (preparedDemoUsers.length > 0) {
+      await db.insert(usersTable).values(preparedDemoUsers.map((user) => ({
+        username: user.username,
+        passwordHash: user.passwordHash,
+        name: user.name,
+        role: "user",
+        unitId: units[user.unitIndex].id,
+        active: true,
+        isDemo: true,
+        companyId,
+      })));
+    }
 
     // ── Alt Birimler ────────────────────────────────────────────────────────
     const subUnits = await db.insert(subUnitsTable).values([
@@ -391,12 +443,16 @@ router.post("/admin/seed", requireAuth, requireCompanyAdmin, async (req, res) =>
         energySources: sources.length,
         meters: meters.length,
         consumptionRecords: rows.length,
+        users: preparedDemoUsers.length,
       };
     });
     res.json({ ok: true, summary });
   } catch (err: any) {
-    console.error("[seed] Hata:", err);
-    res.status(500).json({ ok: false, error: err?.message ?? "Bilinmeyen hata" });
+    if (err?.code === "23505") {
+      res.status(409).json({ ok: false, error: "Demo kullanıcı adı zaten kullanımda." }); return;
+    }
+    req.log.error(err);
+    res.status(500).json({ ok: false, error: "Sunucu hatası" });
   }
 });
 
