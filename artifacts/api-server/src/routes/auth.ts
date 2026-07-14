@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createHash, randomUUID } from "crypto";
+import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from "crypto";
 import { db } from "@workspace/db";
 import { usersTable, unitsTable, companiesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
@@ -9,6 +9,13 @@ const router = Router();
 
 const COMPANY_ADMIN_ROLES = new Set(["user", "admin", "kontrol_admin"]);
 const SUPERADMIN_ROLES = new Set([...COMPANY_ADMIN_ROLES, "superadmin"]);
+const SCRYPT_VERSION = 1;
+const SCRYPT_N = 16384;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_SALT_LENGTH = 16;
+const SCRYPT_KEY_LENGTH = 64;
+const SCRYPT_MAX_MEMORY = 64 * 1024 * 1024;
 
 function isCompanyAdmin(role: string) {
   return role === "admin" || role === "kontrol_admin";
@@ -41,8 +48,82 @@ async function unitBelongsToCompany(unitId: number, companyId: number) {
   return !!unit;
 }
 
-function hashPassword(password: string): string {
+// Legacy SHA-256 compatibility only; never use this helper for new hashes.
+function hashLegacyPassword(password: string): string {
   return createHash("sha256").update(password + "eys_salt_2024").digest("hex");
+}
+
+function deriveScryptKey(password: string, salt: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, SCRYPT_KEY_LENGTH, {
+      N: SCRYPT_N,
+      r: SCRYPT_R,
+      p: SCRYPT_P,
+      maxmem: SCRYPT_MAX_MEMORY,
+    }, (err, derivedKey) => {
+      if (err) reject(err);
+      else resolve(derivedKey);
+    });
+  });
+}
+
+function decodeCanonicalBase64(value: string): Buffer | null {
+  if (value.length === 0 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+  const decoded = Buffer.from(value, "base64");
+  return decoded.toString("base64") === value ? decoded : null;
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(SCRYPT_SALT_LENGTH);
+  const derivedKey = await deriveScryptKey(password, salt);
+  return [
+    "scrypt",
+    `v=${SCRYPT_VERSION}`,
+    `N=${SCRYPT_N}`,
+    `r=${SCRYPT_R}`,
+    `p=${SCRYPT_P}`,
+    salt.toString("base64"),
+    derivedKey.toString("base64"),
+  ].join("$");
+}
+
+function isLegacyPasswordHash(storedHash: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(storedHash);
+}
+
+function needsPasswordRehash(storedHash: string): boolean {
+  return isLegacyPasswordHash(storedHash);
+}
+
+async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
+  try {
+    if (isLegacyPasswordHash(storedHash)) {
+      const expected = Buffer.from(storedHash, "hex");
+      const actual = Buffer.from(hashLegacyPassword(password), "hex");
+      return expected.length === actual.length && timingSafeEqual(expected, actual);
+    }
+
+    const parts = storedHash.split("$");
+    if (parts.length !== 7 ||
+        parts[0] !== "scrypt" ||
+        parts[1] !== `v=${SCRYPT_VERSION}` ||
+        parts[2] !== `N=${SCRYPT_N}` ||
+        parts[3] !== `r=${SCRYPT_R}` ||
+        parts[4] !== `p=${SCRYPT_P}`) {
+      return false;
+    }
+
+    const salt = decodeCanonicalBase64(parts[5]);
+    const expected = decodeCanonicalBase64(parts[6]);
+    if (!salt || salt.length !== SCRYPT_SALT_LENGTH || !expected || expected.length !== SCRYPT_KEY_LENGTH) {
+      return false;
+    }
+
+    const actual = await deriveScryptKey(password, salt);
+    return timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  }
 }
 
 export class SuperAdminBootstrapError extends Error {
@@ -105,7 +186,7 @@ export async function bootstrapSuperAdminIfEnabled() {
   await db.insert(usersTable).values({
     companyId,
     username,
-    passwordHash: hashPassword(password),
+    passwordHash: await hashPassword(password),
     name: displayName,
     role: "superadmin",
     unitId: null,
@@ -118,7 +199,7 @@ export async function bootstrapSuperAdminIfEnabled() {
 router.post("/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
+    if (!username || typeof password !== "string" || password.length === 0) {
       res.status(400).json({ error: "Kullanıcı adı ve şifre gerekli" });
       return;
     }
@@ -129,8 +210,7 @@ router.post("/auth/login", async (req, res) => {
       return;
     }
 
-    const hash = hashPassword(password);
-    if (user.passwordHash !== hash) {
+    if (!await verifyPassword(password, user.passwordHash)) {
       res.status(401).json({ error: "Kullanıcı adı veya şifre hatalı" });
       return;
     }
@@ -142,6 +222,17 @@ router.post("/auth/login", async (req, res) => {
     if (!company || company.isActive !== true) {
       res.status(401).json({ error: "Kullanıcı adı veya şifre hatalı" });
       return;
+    }
+
+    if (needsPasswordRehash(user.passwordHash)) {
+      try {
+        const upgradedHash = await hashPassword(password);
+        await db.update(usersTable)
+          .set({ passwordHash: upgradedHash })
+          .where(and(eq(usersTable.id, user.id), eq(usersTable.passwordHash, user.passwordHash)));
+      } catch {
+        req.log.warn("Legacy parola hash yükseltmesi başarısız oldu");
+      }
     }
 
     const token = randomUUID();
@@ -237,7 +328,7 @@ router.post("/users", requireAuth, async (req, res) => {
     }
 
     const { username, password, name, role: newRole, unitId, companyId: bodyCompanyId } = req.body;
-    if (!username || !password || !name) {
+    if (!username || typeof password !== "string" || password.length === 0 || !name) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" });
       return;
     }
@@ -275,7 +366,7 @@ router.post("/users", requireAuth, async (req, res) => {
 
     const [user] = await db.insert(usersTable).values({
       username,
-      passwordHash: hashPassword(password),
+      passwordHash: await hashPassword(password),
       name,
       role: targetRole,
       unitId: targetUnitId,
@@ -327,6 +418,9 @@ router.patch("/users/:id", requireAuth, async (req, res) => {
     }
 
     const { name, password, role: newRole, unitId, companyId: bodyCompanyId, active } = req.body;
+    if (password !== undefined && password !== null && typeof password !== "string") {
+      res.status(400).json({ error: "Geçersiz parola" }); return;
+    }
     if (hasInvalidPositiveInteger(bodyCompanyId)) {
       res.status(400).json({ error: "Geçersiz companyId" }); return;
     }
@@ -352,7 +446,7 @@ router.patch("/users/:id", requireAuth, async (req, res) => {
 
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
-    if (password) updates.passwordHash = hashPassword(password);
+    if (password) updates.passwordHash = await hashPassword(password);
     if (newRole !== undefined) updates.role = newRole;
     if (unitId !== undefined) updates.unitId = effectiveUnitId;
     if (role === "superadmin" && requestedCompanyId !== undefined) updates.companyId = effectiveCompanyId;
