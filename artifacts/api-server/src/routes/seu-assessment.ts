@@ -10,6 +10,10 @@ import {
   companiesTable,
   seuAssessmentsTable,
   seuAssessmentItemsTable,
+  energyTargetsTable,
+  energyPerformanceIndicatorsTable,
+  energyBaselinesTable,
+  energyPerformanceResultsTable,
   seuTable,
 } from "@workspace/db";
 import { eq, and, gte, lte, sql, desc, inArray } from "drizzle-orm";
@@ -754,15 +758,78 @@ router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
     ];
     if (standardUser) assessmentConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
 
-    const [assessment] = await db
-      .select()
-      .from(seuAssessmentsTable)
-      .where(and(...assessmentConditions));
-    if (!assessment) { res.status(404).send(); return; }
-    if (isCompanyAdmin(role) && assessment.recordType === "unit_official") {
+    const deleteResult = await db.transaction(async (tx) => {
+      const [assessment] = await tx
+        .select({
+          id: seuAssessmentsTable.id,
+          companyId: seuAssessmentsTable.companyId,
+          recordType: seuAssessmentsTable.recordType,
+        })
+        .from(seuAssessmentsTable)
+        .where(and(...assessmentConditions))
+        .limit(1)
+        .for("update");
+      if (!assessment) return "not_found" as const;
+      if (isCompanyAdmin(role) && assessment.recordType === "unit_official") {
+        return "official" as const;
+      }
+
+      const assessmentItems = await tx.select({ id: seuAssessmentItemsTable.id })
+        .from(seuAssessmentItemsTable)
+        .where(eq(seuAssessmentItemsTable.assessmentId, assessment.id))
+        .for("update");
+      const itemIds = assessmentItems.map((item) => item.id);
+
+      const [target] = await tx.select({ id: energyTargetsTable.id })
+        .from(energyTargetsTable)
+        .where(and(
+          eq(energyTargetsTable.companyId, assessment.companyId),
+          eq(energyTargetsTable.seuAssessmentId, assessment.id),
+        ))
+        .limit(1);
+
+      let hasItemDependency = false;
+      if (itemIds.length > 0) {
+        const [indicator] = await tx.select({ id: energyPerformanceIndicatorsTable.id })
+          .from(energyPerformanceIndicatorsTable)
+          .where(and(
+            eq(energyPerformanceIndicatorsTable.companyId, assessment.companyId),
+            inArray(energyPerformanceIndicatorsTable.seuAssessmentItemId, itemIds),
+          ))
+          .limit(1);
+        const [baseline] = await tx.select({ id: energyBaselinesTable.id })
+          .from(energyBaselinesTable)
+          .where(and(
+            eq(energyBaselinesTable.companyId, assessment.companyId),
+            inArray(energyBaselinesTable.seuAssessmentItemId, itemIds),
+          ))
+          .limit(1);
+        const [performanceResult] = await tx.select({ id: energyPerformanceResultsTable.id })
+          .from(energyPerformanceResultsTable)
+          .where(and(
+            eq(energyPerformanceResultsTable.companyId, assessment.companyId),
+            inArray(energyPerformanceResultsTable.seuAssessmentItemId, itemIds),
+          ))
+          .limit(1);
+        hasItemDependency = Boolean(indicator || baseline || performanceResult);
+      }
+
+      if (target || hasItemDependency) return "dependent" as const;
+
+      const [deleted] = await tx.delete(seuAssessmentsTable)
+        .where(and(...assessmentConditions))
+        .returning({ id: seuAssessmentsTable.id });
+      return deleted ? "deleted" as const : "not_found" as const;
+    });
+
+    if (deleteResult === "not_found") { res.status(404).send(); return; }
+    if (deleteResult === "official") {
       res.status(403).json({ error: "Admin resmi kayıtları silemez" }); return;
     }
-    await db.delete(seuAssessmentsTable).where(and(...assessmentConditions));
+    if (deleteResult === "dependent") {
+      res.status(409).json({ error: "Bu ÖEK değerlendirmesine bağlı kayıtlar bulunduğu için silinemez." });
+      return;
+    }
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Response } from "express";
-import { db, energyTargetsTable, consumptionTable, metersTable, energyActionPlansTable, unitsTable, subUnitsTable, energySourcesTable, seuAssessmentsTable } from "@workspace/db";
+import { db, energyTargetsTable, consumptionTable, metersTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, seuAssessmentsTable } from "@workspace/db";
 import { eq, and, SQL, inArray, sql } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import {
@@ -533,13 +533,63 @@ router.delete("/targets/:id", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parseRequiredId(req.params.id, "targetId");
-    if (!isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null) {
+    const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+    if (standardUser && sessionUnitId === null) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
     const targetScope = scopedTargetCondition(id, role, sessionCompanyId, sessionUnitId ?? undefined);
-    const [existing] = await db.select().from(energyTargetsTable).where(targetScope);
-    if (!existing) { res.status(404).send(); return; }
-    await db.delete(energyTargetsTable).where(targetScope);
+
+    const deleteResult = await db.transaction(async (tx) => {
+      const [existing] = await tx.select({
+        id: energyTargetsTable.id,
+        companyId: energyTargetsTable.companyId,
+      }).from(energyTargetsTable).where(targetScope).limit(1).for("update");
+      if (!existing) return "not_found" as const;
+
+      const [actionPlan] = await tx.select({ id: energyActionPlansTable.id })
+        .from(energyActionPlansTable)
+        .where(and(
+          eq(energyActionPlansTable.targetId, id),
+          eq(energyActionPlansTable.companyId, existing.companyId),
+        ))
+        .limit(1);
+      const [progress] = await tx.select({ id: energyTargetProgressTable.id })
+        .from(energyTargetProgressTable)
+        .where(and(
+          eq(energyTargetProgressTable.targetId, id),
+          eq(energyTargetProgressTable.companyId, existing.companyId),
+        ))
+        .limit(1);
+      const [vapProject] = await tx.select({ id: vapProjectsTable.id })
+        .from(vapProjectsTable)
+        .innerJoin(energyActionPlansTable, and(
+          eq(vapProjectsTable.actionPlanId, energyActionPlansTable.id),
+          eq(energyActionPlansTable.companyId, existing.companyId),
+        ))
+        .where(and(
+          eq(energyActionPlansTable.targetId, id),
+          eq(vapProjectsTable.companyId, existing.companyId),
+        ))
+        .limit(1);
+
+      if (actionPlan || progress || vapProject) return "dependent" as const;
+
+      const deleteConditions = [
+        eq(energyTargetsTable.id, id),
+        eq(energyTargetsTable.companyId, existing.companyId),
+      ];
+      if (standardUser) deleteConditions.push(eq(energyTargetsTable.unitId, sessionUnitId!));
+      const [deleted] = await tx.delete(energyTargetsTable)
+        .where(and(...deleteConditions))
+        .returning({ id: energyTargetsTable.id });
+      return deleted ? "deleted" as const : "not_found" as const;
+    });
+
+    if (deleteResult === "not_found") { res.status(404).send(); return; }
+    if (deleteResult === "dependent") {
+      res.status(409).json({ error: "Bu hedefe bağlı kayıtlar bulunduğu için silinemez." });
+      return;
+    }
     res.status(204).send();
   } catch (err) {
     if (handleBadRequest(res, err)) return;
