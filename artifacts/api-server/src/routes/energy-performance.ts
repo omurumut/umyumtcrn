@@ -1461,56 +1461,49 @@ router.post("/energy-performance/results/calculate", requireAuth, async (req, re
       return { ...r, cusum: cumsum };
     });
 
-    // Mevcut hesaplı ayları sil (upsert yerine delete+insert — tablo unique constraint yok)
-    const monthsToDelete = finalRows.map(r => r.month);
-    if (monthsToDelete.length > 0) {
-      // Önce mevcut satırları sil
-      const existingRows = await db
-        .select({ id: energyPerformanceResultsTable.id, month: energyPerformanceResultsTable.month })
-        .from(energyPerformanceResultsTable)
-        .where(and(
-          eq(energyPerformanceResultsTable.baselineId, baselineId),
-          eq(energyPerformanceResultsTable.year, year),
-          eq(energyPerformanceResultsTable.companyId, scope.companyId),
-          inArray(energyPerformanceResultsTable.month, monthsToDelete),
-          ...(scope.unitId !== undefined ? [eq(energyPerformanceResultsTable.unitId, scope.unitId)] : []),
-        ));
+    let inserted: typeof energyPerformanceResultsTable.$inferSelect[] = [];
+    if (finalRows.length > 0) {
+      inserted = await db.transaction(async (tx) => {
+        const monthsToDelete = finalRows.map(r => r.month);
+        const existingRows = await tx
+          .select({ id: energyPerformanceResultsTable.id })
+          .from(energyPerformanceResultsTable)
+          .where(and(
+            eq(energyPerformanceResultsTable.baselineId, baselineId),
+            eq(energyPerformanceResultsTable.year, year),
+            eq(energyPerformanceResultsTable.companyId, scope.companyId),
+            inArray(energyPerformanceResultsTable.month, monthsToDelete),
+            ...(scope.unitId !== undefined ? [eq(energyPerformanceResultsTable.unitId, scope.unitId)] : []),
+          ));
 
-      if (existingRows.length > 0) {
-        const existingIds = existingRows.map(r => r.id);
-        // Teker teker sil (drizzle bulk delete desteklemez)
-        for (const id of existingIds) {
-          await db.delete(energyPerformanceResultsTable).where(and(
-            eq(energyPerformanceResultsTable.id, id),
+        for (const existingRow of existingRows) {
+          await tx.delete(energyPerformanceResultsTable).where(and(
+            eq(energyPerformanceResultsTable.id, existingRow.id),
             eq(energyPerformanceResultsTable.companyId, scope.companyId),
             eq(energyPerformanceResultsTable.baselineId, baselineId),
             eq(energyPerformanceResultsTable.year, year),
             ...(scope.unitId !== undefined ? [eq(energyPerformanceResultsTable.unitId, scope.unitId)] : []),
           ));
         }
-      }
-    }
 
-    // Yeni satırları ekle
-    let inserted: typeof energyPerformanceResultsTable.$inferSelect[] = [];
-    if (finalRows.length > 0) {
-      inserted = await db.insert(energyPerformanceResultsTable).values(
-        finalRows.map(r => ({
-          companyId: scope.companyId,
-          unitId: assessmentUnitId ?? null,
-          seuAssessmentItemId: seuItemId,
-          baselineId,
-          year,
-          month: r.month,
-          actualConsumption: r.actualConsumption,
-          expectedConsumption: r.expectedConsumption,
-          difference: r.difference,
-          cusum: r.cusum,
-          eei: r.eei,
-          setValue: r.setValue ?? null,
-          status: r.status,
-        }))
-      ).returning();
+        return tx.insert(energyPerformanceResultsTable).values(
+          finalRows.map(r => ({
+            companyId: scope.companyId,
+            unitId: assessmentUnitId ?? null,
+            seuAssessmentItemId: seuItemId,
+            baselineId,
+            year,
+            month: r.month,
+            actualConsumption: r.actualConsumption,
+            expectedConsumption: r.expectedConsumption,
+            difference: r.difference,
+            cusum: r.cusum,
+            eei: r.eei,
+            setValue: r.setValue ?? null,
+            status: r.status,
+          }))
+        ).returning();
+      });
     }
 
     res.json({
@@ -1682,7 +1675,7 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
     if (typeof regressionResult.isValid !== "boolean") {
       throw new EnergyPerformanceScopeError(400, "Geçersiz isValid");
     }
-    if (!Array.isArray(regressionResult.variables)) {
+    if (!Array.isArray(regressionResult.variables) || regressionResult.variables.length === 0) {
       throw new EnergyPerformanceScopeError(400, "Geçersiz regressionResult.variables");
     }
     for (const variable of regressionResult.variables) {
@@ -1734,47 +1727,44 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
 
     // Admin sadece kendi firması kapsamındaki ÖEK için kayıt ekleyebilir (zaten companyId filtresi var)
 
-    // Aktif kayıt ekleniyorsa: mevcut aktif kayıtları archived yap
-    if (status === "active") {
-      await db
-        .update(energyBaselinesTable)
-        .set({ status: "archived", updatedAt: new Date() })
-        .where(and(
-          eq(energyBaselinesTable.companyId, scope.companyId),
-          eq(energyBaselinesTable.seuAssessmentItemId, seuItemId),
-          eq(energyBaselinesTable.status, "active"),
-          ...(scope.unitId !== undefined ? [eq(energyBaselinesTable.unitId, scope.unitId)] : []),
-        ));
-    }
+    const newBaseline = await db.transaction(async (tx) => {
+      if (status === "active") {
+        await tx
+          .update(energyBaselinesTable)
+          .set({ status: "archived", updatedAt: new Date() })
+          .where(and(
+            eq(energyBaselinesTable.companyId, scope.companyId),
+            eq(energyBaselinesTable.seuAssessmentItemId, seuItemId),
+            eq(energyBaselinesTable.status, "active"),
+            ...(scope.unitId !== undefined ? [eq(energyBaselinesTable.unitId, scope.unitId)] : []),
+          ));
+      }
 
-    // Yeni baseline kaydı
-    const [newBaseline] = await db.insert(energyBaselinesTable).values({
-      companyId: scope.companyId,
-      unitId: assessmentUnitId ?? null,
-      seuAssessmentItemId: seuItemId,
-      baselineYear: year,
-      periodStart: baselinePeriodStart,
-      periodEnd: baselinePeriodEnd,
-      modelType: regressionResult.modelType === "single_regression" ? "single_regression" : "multiple_regression",
-      intercept: regressionResult.intercept,
-      rSquared: regressionResult.rSquared,
-      adjustedRSquared: regressionResult.adjustedRSquared,
-      sampleSize,
-      formulaText: regressionResult.formulaText,
-      isValid: regressionResult.isValid,
-      dependentVariableUnit: regressionResult.dependentVariableUnit ?? null,
-      dependentVariableType: regressionResult.dependentVariableUnit ? "raw_consumption" : null,
-      status,
-      updateReason: updateReason ?? null,
-      notes: notes ?? null,
-      createdByUserId: userId,
-    }).returning();
+      const [createdBaseline] = await tx.insert(energyBaselinesTable).values({
+        companyId: scope.companyId,
+        unitId: assessmentUnitId ?? null,
+        seuAssessmentItemId: seuItemId,
+        baselineYear: year,
+        periodStart: baselinePeriodStart,
+        periodEnd: baselinePeriodEnd,
+        modelType: regressionResult.modelType === "single_regression" ? "single_regression" : "multiple_regression",
+        intercept: regressionResult.intercept,
+        rSquared: regressionResult.rSquared,
+        adjustedRSquared: regressionResult.adjustedRSquared,
+        sampleSize,
+        formulaText: regressionResult.formulaText,
+        isValid: regressionResult.isValid,
+        dependentVariableUnit: regressionResult.dependentVariableUnit ?? null,
+        dependentVariableType: regressionResult.dependentVariableUnit ? "raw_consumption" : null,
+        status,
+        updateReason: updateReason ?? null,
+        notes: notes ?? null,
+        createdByUserId: userId,
+      }).returning();
 
-    // Değişken kayıtları
-    if (regressionResult.variables && regressionResult.variables.length > 0) {
-      await db.insert(energyBaselineVariablesTable).values(
+      await tx.insert(energyBaselineVariablesTable).values(
         regressionResult.variables.map(v => ({
-          baselineId: newBaseline.id,
+          baselineId: createdBaseline.id,
           variableName: v.variableName,
           variableCode: v.code,
           variableSource: "regression",
@@ -1785,7 +1775,9 @@ router.post("/energy-performance/baselines", requireAuth, async (req, res) => {
           isSignificant: v.isSignificant,
         }))
       );
-    }
+
+      return createdBaseline;
+    });
 
     res.status(201).json({ ...newBaseline, variables: regressionResult.variables });
   } catch (err) {
