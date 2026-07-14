@@ -88,20 +88,26 @@ router.post("/energy-target-progress", requireAuth, async (req, res) => {
         ? parseFloat(actualSavingValue)
         : null;
 
-    const [item] = await db.insert(energyTargetProgressTable).values({
-      companyId: sessionCompanyId,
-      targetId: parsedTargetId,
-      periodYear: parsedPeriodYear,
-      periodMonth: parsedPeriodMonth,
-      actualValue: parseFloat(actualValue),
-      actualSavingValue: parsedActualSaving,
-      comment: comment || null,
-      recordedBy: userName,
-    }).returning();
+    const item = await db.transaction(async (tx) => {
+      const [insertedItem] = await tx.insert(energyTargetProgressTable).values({
+        companyId: sessionCompanyId,
+        targetId: parsedTargetId,
+        periodYear: parsedPeriodYear,
+        periodMonth: parsedPeriodMonth,
+        actualValue: parseFloat(actualValue),
+        actualSavingValue: parsedActualSaving,
+        comment: comment || null,
+        recordedBy: userName,
+      }).returning();
 
-    // Son kaydı hedefin actual_value alanına yansıt
-    await db.update(energyTargetsTable).set({ actualValue: parseFloat(actualValue), updatedAt: new Date() })
-      .where(and(...targetConditions));
+      // Son kaydı hedefin actual_value alanına yansıt
+      const [updatedTarget] = await tx.update(energyTargetsTable).set({ actualValue: parseFloat(actualValue), updatedAt: new Date() })
+        .where(and(...targetConditions))
+        .returning({ id: energyTargetsTable.id });
+      if (!updatedTarget) throw new Error("Target update failed");
+
+      return insertedItem;
+    });
 
     res.status(201).json(item);
   } catch (err) {

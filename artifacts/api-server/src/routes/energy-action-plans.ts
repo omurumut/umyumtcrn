@@ -173,7 +173,12 @@ router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
 
     const recordConditions = [eq(energyActionPlansTable.id, id), eq(energyActionPlansTable.companyId, sessionCompanyId)];
     const [existing] = await db
-      .select({ id: energyActionPlansTable.id, companyId: energyActionPlansTable.companyId, targetId: energyActionPlansTable.targetId })
+      .select({
+        id: energyActionPlansTable.id,
+        companyId: energyActionPlansTable.companyId,
+        targetId: energyActionPlansTable.targetId,
+        isVap: energyActionPlansTable.isVap,
+      })
       .from(energyActionPlansTable).where(and(...recordConditions));
     if (!existing) { res.status(404).json({ error: "Bulunamadı" }); return; }
     if (existing.companyId !== sessionCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
@@ -218,33 +223,38 @@ router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
     if (notes !== undefined) updates.notes = notes || null;
 
     recordConditions.push(eq(energyActionPlansTable.targetId, existing.targetId));
-    const [item] = await db.update(energyActionPlansTable).set(updates).where(and(...recordConditions)).returning();
+    const item = await db.transaction(async (tx) => {
+      const [updatedItem] = await tx.update(energyActionPlansTable).set(updates).where(and(...recordConditions)).returning();
+      if (!updatedItem) throw new Error("Action plan update failed");
 
-    // isVap değişti ise VAP kaydını güncelle
-    if (isVap !== undefined) {
-      if (Boolean(isVap)) {
-        // isVap true → bağlı VAP yoksa oluştur
-        const [existingVap] = await db.select({ id: vapProjectsTable.id })
-          .from(vapProjectsTable)
-          .where(and(eq(vapProjectsTable.actionPlanId, id), eq(vapProjectsTable.companyId, sessionCompanyId)));
-        if (!existingVap) {
-          const { name: userName } = req.user!;
-          await db.insert(vapProjectsTable).values({
-            companyId: sessionCompanyId,
-            actionPlanId: id,
-            projectTitle: item.title,
-            annualCostSaving: item.expectedCostSaving,
-            investmentCost: item.investmentCost,
-            paybackMonths: item.paybackMonths,
-            status: "idea",
-            createdBy: userName,
-          });
+      // isVap değişti ise VAP kaydını güncelle
+      if (isVap !== undefined && Boolean(isVap) !== Boolean(existing.isVap)) {
+        if (Boolean(isVap)) {
+          // isVap true → bağlı VAP yoksa oluştur
+          const [existingVap] = await tx.select({ id: vapProjectsTable.id })
+            .from(vapProjectsTable)
+            .where(and(eq(vapProjectsTable.actionPlanId, id), eq(vapProjectsTable.companyId, sessionCompanyId)));
+          if (!existingVap) {
+            const { name: userName } = req.user!;
+            await tx.insert(vapProjectsTable).values({
+              companyId: sessionCompanyId,
+              actionPlanId: id,
+              projectTitle: updatedItem.title,
+              annualCostSaving: updatedItem.expectedCostSaving,
+              investmentCost: updatedItem.investmentCost,
+              paybackMonths: updatedItem.paybackMonths,
+              status: "idea",
+              createdBy: userName,
+            });
+          }
+        } else {
+          // isVap false → phantom VAP kaydını temizle
+          await tx.delete(vapProjectsTable).where(and(eq(vapProjectsTable.actionPlanId, id), eq(vapProjectsTable.companyId, sessionCompanyId)));
         }
-      } else {
-        // isVap false → phantom VAP kaydını temizle
-        await db.delete(vapProjectsTable).where(and(eq(vapProjectsTable.actionPlanId, id), eq(vapProjectsTable.companyId, sessionCompanyId)));
       }
-    }
+
+      return updatedItem;
+    });
 
     res.json(item);
   } catch (err) {
