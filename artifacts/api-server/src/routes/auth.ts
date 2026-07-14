@@ -45,36 +45,73 @@ function hashPassword(password: string): string {
   return createHash("sha256").update(password + "eys_salt_2024").digest("hex");
 }
 
-export async function seedAdminUser() {
-  try {
-    const [existingCompany] = await db.select().from(companiesTable).where(eq(companiesTable.id, 1));
-    if (!existingCompany) {
-      await db.insert(companiesTable).values({
-        name: "Varsayılan Şirket",
-        subdomain: "default",
-        isActive: true,
-      });
-      console.log("[Auth] Varsayılan şirket oluşturuldu");
-    }
-
-    const [existing] = await db.select().from(usersTable).where(eq(usersTable.username, "admin"));
-    if (!existing) {
-      await db.insert(usersTable).values({
-        username: "admin",
-        passwordHash: hashPassword("admin123"),
-        name: "Sistem Yöneticisi",
-        role: "superadmin",
-        unitId: null,
-        active: true,
-      });
-      console.log("[Auth] Admin kullanıcı oluşturuldu: admin / admin123");
-    } else if (existing.role === "admin") {
-      await db.update(usersTable).set({ role: "superadmin" }).where(eq(usersTable.username, "admin"));
-      console.log("[Auth] Admin kullanıcı rolü superadmin'e güncellendi");
-    }
-  } catch (err) {
-    console.error("[Auth] Admin seed hatası:", err);
+export class SuperAdminBootstrapError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SuperAdminBootstrapError";
   }
+}
+
+export async function bootstrapSuperAdminIfEnabled() {
+  if (process.env["ENABLE_SUPERADMIN_BOOTSTRAP"] !== "true") return;
+
+  const username = process.env["BOOTSTRAP_SUPERADMIN_USERNAME"]?.trim();
+  const password = process.env["BOOTSTRAP_SUPERADMIN_PASSWORD"];
+  const displayName = process.env["BOOTSTRAP_SUPERADMIN_NAME"]?.trim() || "Sistem Yöneticisi";
+
+  if (!username) {
+    throw new SuperAdminBootstrapError(
+      "Superadmin bootstrap yapılandırması geçersiz: BOOTSTRAP_SUPERADMIN_USERNAME zorunludur.",
+    );
+  }
+  if (password === undefined || password.trim().length === 0) {
+    throw new SuperAdminBootstrapError(
+      "Superadmin bootstrap yapılandırması geçersiz: BOOTSTRAP_SUPERADMIN_PASSWORD zorunludur.",
+    );
+  }
+  if (password.length < 12) {
+    throw new SuperAdminBootstrapError(
+      "Superadmin bootstrap yapılandırması geçersiz: bootstrap parolası en az 12 karakter olmalıdır.",
+    );
+  }
+
+  const [existingSuperAdmin] = await db.select({ id: usersTable.id })
+    .from(usersTable)
+    .where(eq(usersTable.role, "superadmin"))
+    .limit(1);
+  if (existingSuperAdmin) {
+    console.info("Superadmin bootstrap atlandı: sistemde superadmin mevcut.");
+    return;
+  }
+
+  const [usernameOwner] = await db.select({ id: usersTable.id })
+    .from(usersTable)
+    .where(eq(usersTable.username, username))
+    .limit(1);
+  if (usernameOwner) {
+    throw new SuperAdminBootstrapError("Bootstrap kullanıcı adı zaten kullanımda.");
+  }
+
+  const companyId = parsePositiveInteger(process.env["BOOTSTRAP_SUPERADMIN_COMPANY_ID"]);
+  if (companyId === undefined) {
+    throw new SuperAdminBootstrapError(
+      "Superadmin bootstrap yapılandırması geçersiz: geçerli BOOTSTRAP_SUPERADMIN_COMPANY_ID zorunludur.",
+    );
+  }
+  if (!await companyExists(companyId)) {
+    throw new SuperAdminBootstrapError("Superadmin bootstrap şirketi bulunamadı.");
+  }
+
+  await db.insert(usersTable).values({
+    companyId,
+    username,
+    passwordHash: hashPassword(password),
+    name: displayName,
+    role: "superadmin",
+    unitId: null,
+    active: true,
+  });
+  console.info("İlk superadmin hesabı oluşturuldu. Bootstrap environment ayarlarını devre dışı bırakın.");
 }
 
 // POST /api/auth/login

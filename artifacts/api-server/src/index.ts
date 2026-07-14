@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import app from "./app";
 import { logger } from "./lib/logger";
 import { runMigrations } from "@workspace/db";
-import { seedAdminUser } from "./routes/auth.js";
+import { bootstrapSuperAdminIfEnabled, SuperAdminBootstrapError } from "./routes/auth.js";
 import { seedStationsIfEmpty, seedDegreeDataIfEmpty, startMgmDailyScheduler } from "./services/mgm-sync.js";
 import { bootstrapMgmReferenceData } from "./services/mgm-bootstrap.js";
 
@@ -29,13 +29,23 @@ runMigrations(migrationsFolder)
   .then(async () => {
     logger.info("Migrations complete");
 
+    try {
+      await bootstrapSuperAdminIfEnabled();
+    } catch (err) {
+      const message = err instanceof SuperAdminBootstrapError
+        ? err.message
+        : "Superadmin bootstrap sırasında beklenmeyen bir hata oluştu.";
+      logger.error(message);
+      process.exit(1);
+      return;
+    }
+
     app.listen(port, (err) => {
       if (err) {
         logger.error({ err }, "Error listening on port");
         process.exit(1);
       }
       logger.info({ port }, "Server listening");
-      seedAdminUser();
 
       // MGM resmi referans veri bootstrap — app.listen'dan SONRA çalışır (arka planda).
       // Başarısız olursa API yine de çalışır, lookup'lar "bootstrap_failed" durumunu raporlar.
