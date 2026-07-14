@@ -16,6 +16,89 @@ const SCRYPT_P = 1;
 const SCRYPT_SALT_LENGTH = 16;
 const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_MAX_MEMORY = 64 * 1024 * 1024;
+const LOGIN_RATE_LIMIT_WINDOW_MS = readPositiveSafeIntegerEnv("LOGIN_RATE_LIMIT_WINDOW_MS", 15 * 60 * 1000);
+const LOGIN_RATE_LIMIT_MAX_PER_IP = readPositiveSafeIntegerEnv("LOGIN_RATE_LIMIT_MAX_PER_IP", 20);
+const LOGIN_RATE_LIMIT_MAX_PER_USERNAME = readPositiveSafeIntegerEnv("LOGIN_RATE_LIMIT_MAX_PER_USERNAME", 8);
+const LOGIN_RATE_LIMIT_MAX_ENTRIES = 10_000;
+const LOGIN_RATE_LIMIT_EVICTION_COUNT = 1_000;
+
+type LoginAttempt = {
+  count: number;
+  windowStartedAt: number;
+  expiresAt: number;
+};
+
+const loginAttemptsByIp = new Map<string, LoginAttempt>();
+const loginAttemptsByUsername = new Map<string, LoginAttempt>();
+
+function readPositiveSafeIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+function getLoginUsernameKey(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length === 0) return null;
+  return `username:${createHash("sha256").update(normalized).digest("base64url")}`;
+}
+
+function cleanupExpiredLoginAttempts(attempts: Map<string, LoginAttempt>, now: number): void {
+  for (const [key, attempt] of attempts) {
+    if (attempt.expiresAt <= now) attempts.delete(key);
+  }
+}
+
+function ensureLoginAttemptCapacity(attempts: Map<string, LoginAttempt>, now: number): void {
+  if (attempts.size < LOGIN_RATE_LIMIT_MAX_ENTRIES) return;
+  cleanupExpiredLoginAttempts(attempts, now);
+  if (attempts.size < LOGIN_RATE_LIMIT_MAX_ENTRIES) return;
+
+  let deleted = 0;
+  for (const key of attempts.keys()) {
+    attempts.delete(key);
+    deleted += 1;
+    if (deleted >= LOGIN_RATE_LIMIT_EVICTION_COUNT) break;
+  }
+}
+
+function checkLoginRateLimit(
+  attempts: Map<string, LoginAttempt>,
+  key: string,
+  maxAttempts: number,
+  now: number,
+): number | null {
+  const attempt = attempts.get(key);
+  if (!attempt) return null;
+  if (attempt.expiresAt <= now) {
+    attempts.delete(key);
+    return null;
+  }
+  if (attempt.count < maxAttempts) return null;
+  return Math.max(1, Math.ceil((attempt.expiresAt - now) / 1000));
+}
+
+function registerFailedLogin(
+  attempts: Map<string, LoginAttempt>,
+  key: string,
+  now: number,
+): void {
+  const existing = attempts.get(key);
+  if (existing && existing.expiresAt > now) {
+    existing.count += 1;
+    return;
+  }
+
+  if (existing) attempts.delete(key);
+  ensureLoginAttemptCapacity(attempts, now);
+  attempts.set(key, {
+    count: 1,
+    windowStartedAt: now,
+    expiresAt: now + LOGIN_RATE_LIMIT_WINDOW_MS,
+  });
+}
 
 function isCompanyAdmin(role: string) {
   return role === "admin" || role === "kontrol_admin";
@@ -198,19 +281,42 @@ export async function bootstrapSuperAdminIfEnabled() {
 // POST /api/auth/login
 router.post("/auth/login", async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password } = req.body ?? {};
+    const ipKey = `ip:${req.ip || "unknown"}`;
+    const usernameKey = getLoginUsernameKey(username);
+    const now = Date.now();
+    const ipRetryAfter = checkLoginRateLimit(loginAttemptsByIp, ipKey, LOGIN_RATE_LIMIT_MAX_PER_IP, now);
+    const usernameRetryAfter = usernameKey
+      ? checkLoginRateLimit(loginAttemptsByUsername, usernameKey, LOGIN_RATE_LIMIT_MAX_PER_USERNAME, now)
+      : null;
+    const retryAfter = Math.max(ipRetryAfter ?? 0, usernameRetryAfter ?? 0);
+    if (retryAfter > 0) {
+      res.set("Retry-After", String(retryAfter));
+      res.status(429).json({ error: "Çok fazla giriş denemesi yapıldı. Lütfen daha sonra tekrar deneyin." });
+      return;
+    }
+
+    const registerFailedAttempt = () => {
+      const failedAt = Date.now();
+      registerFailedLogin(loginAttemptsByIp, ipKey, failedAt);
+      if (usernameKey) registerFailedLogin(loginAttemptsByUsername, usernameKey, failedAt);
+    };
+
     if (!username || typeof password !== "string" || password.length === 0) {
+      registerFailedAttempt();
       res.status(400).json({ error: "Kullanıcı adı ve şifre gerekli" });
       return;
     }
 
     const [user] = await db.select().from(usersTable).where(eq(usersTable.username, username));
     if (!user || !user.active) {
+      registerFailedAttempt();
       res.status(401).json({ error: "Kullanıcı adı veya şifre hatalı" });
       return;
     }
 
     if (!await verifyPassword(password, user.passwordHash)) {
+      registerFailedAttempt();
       res.status(401).json({ error: "Kullanıcı adı veya şifre hatalı" });
       return;
     }
@@ -220,6 +326,7 @@ router.post("/auth/login", async (req, res) => {
       .where(eq(companiesTable.id, user.companyId))
       .limit(1);
     if (!company || company.isActive !== true) {
+      registerFailedAttempt();
       res.status(401).json({ error: "Kullanıcı adı veya şifre hatalı" });
       return;
     }
@@ -234,6 +341,8 @@ router.post("/auth/login", async (req, res) => {
         req.log.warn("Legacy parola hash yükseltmesi başarısız oldu");
       }
     }
+
+    if (usernameKey) loginAttemptsByUsername.delete(usernameKey);
 
     const token = randomUUID();
     sessions.set(token, {
