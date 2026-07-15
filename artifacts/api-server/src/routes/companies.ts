@@ -60,6 +60,22 @@ function handleInvalidCompanyId(res: Response, err: unknown) {
   return true;
 }
 
+function normalizeRequiredText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 3 && current && typeof current === "object"; depth += 1) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (candidate.code === "23505") return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
 router.get("/companies", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const companies = await db.select().from(companiesTable).orderBy(companiesTable.id);
@@ -73,18 +89,20 @@ router.get("/companies", requireAuth, requireSuperAdmin, async (req, res) => {
 router.post("/companies", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const { name, subdomain, isActive } = req.body;
-    if (!name || !subdomain) {
+    const normalizedName = normalizeRequiredText(name);
+    const normalizedSubdomain = normalizeRequiredText(subdomain);
+    if (normalizedName === undefined || normalizedSubdomain === undefined) {
       res.status(400).json({ error: "Firma adı ve subdomain zorunludur" });
       return;
     }
     const [company] = await db.insert(companiesTable).values({
-      name,
-      subdomain: (subdomain as string).toLowerCase().trim(),
+      name: normalizedName,
+      subdomain: normalizedSubdomain.toLowerCase(),
       isActive: isActive !== false,
     }).returning();
     res.status(201).json(company);
-  } catch (err: any) {
-    if (err.code === "23505") {
+  } catch (err: unknown) {
+    if (isUniqueViolation(err)) {
       res.status(400).json({ error: "Bu subdomain zaten kullanılıyor" });
       return;
     }
@@ -110,8 +128,16 @@ router.patch("/companies/:id", requireAuth, requireSuperAdmin, async (req, res) 
     }
     const { name, subdomain, isActive } = req.body;
     const updates: Record<string, unknown> = {};
-    if (name !== undefined) updates.name = name;
-    if (subdomain !== undefined) updates.subdomain = (subdomain as string).toLowerCase().trim();
+    if (name !== undefined) {
+      const normalizedName = normalizeRequiredText(name);
+      if (normalizedName === undefined) { res.status(400).json({ error: "Firma adı boş olamaz" }); return; }
+      updates.name = normalizedName;
+    }
+    if (subdomain !== undefined) {
+      const normalizedSubdomain = normalizeRequiredText(subdomain);
+      if (normalizedSubdomain === undefined) { res.status(400).json({ error: "Subdomain boş olamaz" }); return; }
+      updates.subdomain = normalizedSubdomain.toLowerCase();
+    }
     if (isActive !== undefined) updates.isActive = Boolean(isActive);
     const [company] = await db.update(companiesTable).set(updates).where(eq(companiesTable.id, id)).returning();
     if (!company) {
@@ -119,9 +145,9 @@ router.patch("/companies/:id", requireAuth, requireSuperAdmin, async (req, res) 
       return;
     }
     res.json(company);
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (handleInvalidCompanyId(res, err)) return;
-    if (err.code === "23505") {
+    if (isUniqueViolation(err)) {
       res.status(400).json({ error: "Bu subdomain zaten kullanılıyor" });
       return;
     }

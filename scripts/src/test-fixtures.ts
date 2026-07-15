@@ -1,6 +1,7 @@
 import {
   companiesTable,
   db,
+  energySourcesTable,
   pool,
   subUnitsTable,
   unitsTable,
@@ -175,6 +176,30 @@ async function applyFixtures(): Promise<void> {
       },
     ]);
 
+    await tx.insert(energySourcesTable).values([
+      {
+        companyId: tenantA.id,
+        unitId: unitA1.id,
+        type: "elektrik",
+        name: `${COMPANY_PREFIX} Common Source`,
+        unit: "kWh",
+      },
+      {
+        companyId: tenantA.id,
+        unitId: unitA2.id,
+        type: "dogalgaz",
+        name: `${COMPANY_PREFIX} Source A2`,
+        unit: "m3",
+      },
+      {
+        companyId: tenantB.id,
+        unitId: unitB1.id,
+        type: "elektrik",
+        name: `${COMPANY_PREFIX} Common Source`,
+        unit: "kWh",
+      },
+    ]);
+
     await tx.insert(usersTable).values([
       {
         companyId: tenantA.id,
@@ -269,7 +294,7 @@ async function applyFixtures(): Promise<void> {
   });
 
   console.log(
-    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 3 sub-unit, 11 user.",
+    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 3 sub-unit, 3 energy source, 11 user.",
   );
 }
 
@@ -342,6 +367,34 @@ async function assertFixtures(): Promise<void> {
       invalidSubUnits.rowCount !== 0
     ) {
       throw new Error("Fixture sub-unit sayısı veya tenant ilişkisi geçersiz.");
+    }
+
+    const energySources = await client.query<{
+      company_id: number;
+      unit_id: number;
+      name: string;
+    }>(
+      `SELECT company_id, unit_id, name
+       FROM energy_sources
+       WHERE name LIKE $1
+       ORDER BY id`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    if (energySources.rowCount !== 3) {
+      throw new Error("Fixture energy source sayısı 3 değil.");
+    }
+    const expectedSourceScopes = new Set([
+      `${tenantAId}:${unitA1.id}:${COMPANY_PREFIX} Common Source`,
+      `${tenantAId}:${unitA2.id}:${COMPANY_PREFIX} Source A2`,
+      `${tenantBId}:${unitB1.id}:${COMPANY_PREFIX} Common Source`,
+    ]);
+    for (const source of energySources.rows) {
+      if (!expectedSourceScopes.delete(`${source.company_id}:${source.unit_id}:${source.name}`)) {
+        throw new Error("Fixture energy source tenant ilişkisi geçersiz.");
+      }
+    }
+    if (expectedSourceScopes.size !== 0) {
+      throw new Error("Fixture energy source sözleşmesi eksik.");
     }
 
     const users = await client.query<{
@@ -465,7 +518,7 @@ async function assertFixtures(): Promise<void> {
   }
 
   console.log(
-    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 3 sub-unit, 11 user.",
+    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 3 sub-unit, 3 energy source, 11 user.",
   );
 }
 

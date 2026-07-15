@@ -17,6 +17,12 @@ function parsePositiveInteger(value: unknown): number | undefined {
   return undefined;
 }
 
+function normalizeRequiredText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 async function validateUnit(unitId: number, companyId?: number) {
   const conditions = [eq(unitsTable.id, unitId)];
   if (companyId !== undefined) conditions.push(eq(unitsTable.companyId, companyId));
@@ -76,7 +82,8 @@ router.post("/sub-units", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const { unitId, name, city, description, active } = req.body;
-    if (!unitId || !name) {
+    const normalizedName = normalizeRequiredText(name);
+    if (!unitId || normalizedName === undefined) {
       res.status(400).json({ error: "Birim ve ad zorunludur" });
       return;
     }
@@ -110,7 +117,7 @@ router.post("/sub-units", requireAuth, async (req, res) => {
 
     const [row] = await db.insert(subUnitsTable).values({
       unitId: parsedUnitId,
-      name,
+      name: normalizedName,
       city: city || "Istanbul",
       description: description || null,
       active: active !== undefined ? Boolean(active) : true,
@@ -170,7 +177,11 @@ router.patch("/sub-units/:id", requireAuth, async (req, res) => {
     }
     const { name, city, description, active } = req.body;
     const updates: Record<string, unknown> = {};
-    if (name !== undefined) updates.name = name;
+    if (name !== undefined) {
+      const normalizedName = normalizeRequiredText(name);
+      if (normalizedName === undefined) { res.status(400).json({ error: "Ad boş olamaz" }); return; }
+      updates.name = normalizedName;
+    }
     if (city !== undefined) updates.city = city;
     if (description !== undefined) updates.description = description;
     if (active !== undefined) updates.active = Boolean(active);

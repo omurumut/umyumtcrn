@@ -22,6 +22,12 @@ function parsePositiveInteger(value: unknown): number | undefined {
   return undefined;
 }
 
+function normalizeRequiredText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 async function companyExists(companyId: number) {
   const [company] = await db.select({ id: companiesTable.id }).from(companiesTable)
     .where(eq(companiesTable.id, companyId));
@@ -103,14 +109,16 @@ router.post("/units", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId } = req.user!;
     const { name, location, type, city, responsible, description, active, companyId } = req.body;
-    if (!name || !location) { res.status(400).json({ error: "Ad ve lokasyon zorunludur" }); return; }
+    const normalizedName = normalizeRequiredText(name);
+    const normalizedLocation = normalizeRequiredText(location);
+    if (normalizedName === undefined || normalizedLocation === undefined) { res.status(400).json({ error: "Ad ve lokasyon zorunludur" }); return; }
     // Admin kendi firmasına ekler; superadmin body'deki companyId'yi kullanır
     const parsedCompanyId = parsePositiveInteger(companyId);
     if (companyId !== undefined && parsedCompanyId === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
     const targetCompanyId = isSuperAdmin(role) ? (parsedCompanyId ?? sessionCompanyId) : sessionCompanyId;
     if (!await companyExists(targetCompanyId)) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
     const [unit] = await db.insert(unitsTable).values({
-      name, location, type: type || "fabrika", city: city || "Istanbul",
+      name: normalizedName, location: normalizedLocation, type: type || "fabrika", city: city || "Istanbul",
       responsible: responsible || null, description: description || null,
       active: active !== undefined ? Boolean(active) : true,
       companyId: targetCompanyId,
@@ -168,8 +176,16 @@ router.patch("/units/:id", requireAuth, requireCompanyAdmin, async (req, res) =>
     }
     const { name, location, type, city, responsible, description, active } = req.body;
     const updates: Record<string, unknown> = {};
-    if (name !== undefined) updates.name = name;
-    if (location !== undefined) updates.location = location;
+    if (name !== undefined) {
+      const normalizedName = normalizeRequiredText(name);
+      if (normalizedName === undefined) { res.status(400).json({ error: "Ad boş olamaz" }); return; }
+      updates.name = normalizedName;
+    }
+    if (location !== undefined) {
+      const normalizedLocation = normalizeRequiredText(location);
+      if (normalizedLocation === undefined) { res.status(400).json({ error: "Lokasyon boş olamaz" }); return; }
+      updates.location = normalizedLocation;
+    }
     if (type !== undefined) updates.type = type;
     if (city !== undefined) updates.city = city;
     if (responsible !== undefined) updates.responsible = responsible;

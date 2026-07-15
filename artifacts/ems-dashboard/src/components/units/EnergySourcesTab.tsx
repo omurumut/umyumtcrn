@@ -43,7 +43,8 @@ export default function EnergySourcesTab({ unitId }: { unitId?: number }) {
   const [editingId, setEditingId] = useState<number | null>(null);
 
   const isSuperAdmin = user?.role === "superadmin";
-  const effectiveUnitId = user?.role !== "admin" && user?.role !== "superadmin" ? user?.unitId : unitId;
+  const isAdmin = user?.role === "admin" || user?.role === "kontrol_admin" || isSuperAdmin;
+  const effectiveUnitId = isAdmin ? unitId : user?.unitId;
   const EMPTY: ESForm = { unitId: effectiveUnitId?.toString() ?? "", type: "elektrik", name: "Elektrik", unit: "kWh", active: true };
   const [form, setForm] = useState<ESForm>(EMPTY);
 
@@ -144,7 +145,7 @@ export default function EnergySourcesTab({ unitId }: { unitId?: number }) {
         <DialogContent className="sm:max-w-md">
           <DialogHeader><DialogTitle>{editingId ? "Enerji Kaynağı Düzenle" : "Enerji Kaynağı Ekle"}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
-            {(user?.role === "admin" || user?.role === "superadmin") && !unitId && (
+            {isAdmin && !unitId && (
               <div className="space-y-1.5">
                 <Label>Birim *</Label>
                 <Select value={form.unitId} onValueChange={v => setForm(f => ({ ...f, unitId: v }))}>

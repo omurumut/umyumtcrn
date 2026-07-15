@@ -5,6 +5,8 @@ import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
+const ENERGY_SOURCE_TYPES = new Set(["elektrik", "dogalgaz", "buhar", "su", "diger"]);
+
 function isCompanyAdmin(role: string) { return role === "admin" || role === "kontrol_admin"; }
 function isSuperAdmin(role: string) { return role === "superadmin"; }
 function isStandard(role: string) { return !isCompanyAdmin(role) && !isSuperAdmin(role); }
@@ -15,6 +17,11 @@ function parsePositiveInteger(value: unknown): number | undefined {
     const parsed = Number(value); if (Number.isSafeInteger(parsed)) return parsed;
   }
   return undefined;
+}
+function normalizeRequiredText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
 }
 async function validateUnit(unitId: number, companyId?: number) {
   const conditions = [eq(unitsTable.id, unitId)];
@@ -75,9 +82,14 @@ router.post("/energy-sources", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const { unitId, type, name, unit, active } = req.body;
-    if (!unitId || !type || !name) {
+    const normalizedType = normalizeRequiredText(type);
+    const normalizedName = normalizeRequiredText(name);
+    if (!unitId || normalizedType === undefined || normalizedName === undefined) {
       res.status(400).json({ error: "Birim, tür ve ad zorunludur" });
       return;
+    }
+    if (!ENERGY_SOURCE_TYPES.has(normalizedType)) {
+      res.status(400).json({ error: "Geçersiz enerji kaynağı türü" }); return;
     }
     if (req.body.companyId !== undefined && parsePositiveInteger(req.body.companyId) === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
     const requestedUnitId = parsePositiveInteger(unitId);
@@ -109,8 +121,8 @@ router.post("/energy-sources", requireAuth, async (req, res) => {
 
     const [row] = await db.insert(energySourcesTable).values({
       unitId: parsedUnitId,
-      type,
-      name,
+      type: normalizedType,
+      name: normalizedName,
       unit: unit || "kWh",
       active: active !== undefined ? Boolean(active) : true,
       companyId: targetCompanyId,
@@ -144,8 +156,18 @@ router.patch("/energy-sources/:id", requireAuth, async (req, res) => {
     }
     const { type, name, unit, active } = req.body;
     const updates: Record<string, unknown> = {};
-    if (type !== undefined) updates.type = type;
-    if (name !== undefined) updates.name = name;
+    if (type !== undefined) {
+      const normalizedType = normalizeRequiredText(type);
+      if (normalizedType === undefined || !ENERGY_SOURCE_TYPES.has(normalizedType)) {
+        res.status(400).json({ error: "Geçersiz enerji kaynağı türü" }); return;
+      }
+      updates.type = normalizedType;
+    }
+    if (name !== undefined) {
+      const normalizedName = normalizeRequiredText(name);
+      if (normalizedName === undefined) { res.status(400).json({ error: "Ad boş olamaz" }); return; }
+      updates.name = normalizedName;
+    }
     if (unit !== undefined) updates.unit = unit;
     if (active !== undefined) updates.active = Boolean(active);
     const [row] = await db.update(energySourcesTable).set(updates).where(and(...conditions)).returning();

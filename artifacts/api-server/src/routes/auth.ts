@@ -112,6 +112,12 @@ function hasInvalidPositiveInteger(value: unknown) {
   return value !== undefined && value !== null && parsePositiveInteger(value) === undefined;
 }
 
+function normalizeRequiredText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 async function companyExists(companyId: number) {
   const [company] = await db.select({ id: companiesTable.id })
     .from(companiesTable).where(eq(companiesTable.id, companyId));
@@ -353,7 +359,9 @@ router.post("/users", requireAuth, async (req, res) => {
     }
 
     const { username, password, name, role: newRole, unitId, companyId: bodyCompanyId } = req.body;
-    if (!username || typeof password !== "string" || password.length === 0 || !name) {
+    const normalizedUsername = normalizeRequiredText(username);
+    const normalizedName = normalizeRequiredText(name);
+    if (normalizedUsername === undefined || typeof password !== "string" || password.length === 0 || normalizedName === undefined) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" });
       return;
     }
@@ -383,16 +391,16 @@ router.post("/users", requireAuth, async (req, res) => {
       res.status(400).json({ error: "Birim seçilen şirkete ait değil" }); return;
     }
 
-    const [existing] = await db.select().from(usersTable).where(eq(usersTable.username, username));
+    const [existing] = await db.select().from(usersTable).where(eq(usersTable.username, normalizedUsername));
     if (existing) {
       res.status(400).json({ error: "Bu kullanıcı adı zaten kullanılıyor" });
       return;
     }
 
     const [user] = await db.insert(usersTable).values({
-      username,
+      username: normalizedUsername,
       passwordHash: await hashPassword(password),
-      name,
+      name: normalizedName,
       role: targetRole,
       unitId: targetUnitId,
       companyId: targetCompanyId,
@@ -443,6 +451,10 @@ router.patch("/users/:id", requireAuth, async (req, res) => {
     }
 
     const { name, password, role: newRole, unitId, companyId: bodyCompanyId, active } = req.body;
+    const normalizedName = name === undefined ? undefined : normalizeRequiredText(name);
+    if (name !== undefined && normalizedName === undefined) {
+      res.status(400).json({ error: "Ad boş olamaz" }); return;
+    }
     if (password !== undefined && password !== null && typeof password !== "string") {
       res.status(400).json({ error: "Geçersiz parola" }); return;
     }
@@ -470,7 +482,7 @@ router.patch("/users/:id", requireAuth, async (req, res) => {
     }
 
     const updates: Record<string, unknown> = {};
-    if (name !== undefined) updates.name = name;
+    if (normalizedName !== undefined) updates.name = normalizedName;
     if (password) updates.passwordHash = await hashPassword(password);
     if (newRole !== undefined) updates.role = newRole;
     if (unitId !== undefined) updates.unitId = effectiveUnitId;

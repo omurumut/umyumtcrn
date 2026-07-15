@@ -35,7 +35,8 @@ export default function SubUnitsTab({ unitId }: { unitId?: number }) {
   const [editingId, setEditingId] = useState<number | null>(null);
 
   const isSuperAdmin = user?.role === "superadmin";
-  const effectiveUnitId = user?.role !== "admin" && user?.role !== "superadmin" ? user?.unitId : unitId;
+  const isAdmin = user?.role === "admin" || user?.role === "kontrol_admin" || isSuperAdmin;
+  const effectiveUnitId = isAdmin ? unitId : user?.unitId;
   const EMPTY: SubUnitForm = { unitId: effectiveUnitId?.toString() ?? "", name: "", city: "İstanbul", il: "İstanbul", ilce: "", description: "", active: true };
   const [form, setForm] = useState<SubUnitForm>(EMPTY);
 
@@ -146,7 +147,7 @@ export default function SubUnitsTab({ unitId }: { unitId?: number }) {
         <DialogContent className="sm:max-w-md">
           <DialogHeader><DialogTitle>{editingId ? "Alt Birim Düzenle" : "Alt Birim Ekle"}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
-            {(user?.role === "admin" || user?.role === "superadmin") && !unitId && (
+            {isAdmin && !unitId && (
               <div className="space-y-1.5">
                 <Label>Birim *</Label>
                 <Select value={form.unitId} onValueChange={v => setForm(f => ({ ...f, unitId: v }))}>
