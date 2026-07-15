@@ -12,6 +12,7 @@ const COMPANY_PREFIX = "[E2E]";
 const USER_PREFIX = "e2e_";
 const TENANT_A_SUBDOMAIN = "e2e-tenant-a";
 const TENANT_B_SUBDOMAIN = "e2e-tenant-b";
+const TENANT_C_SUBDOMAIN = "e2e-tenant-c-inactive";
 
 const USERS = {
   admin: "e2e_admin_a",
@@ -20,6 +21,8 @@ const USERS = {
   standardA2: "e2e_user_a2",
   nullUnit: "e2e_user_null_unit",
   inactive: "e2e_inactive_user_a1",
+  inactiveCompany: "e2e_inactive_company_user",
+  session: "e2e_session_user",
   standardB1: "e2e_user_b1",
   adminB: "e2e_admin_b",
   superadmin: "e2e_superadmin",
@@ -115,7 +118,15 @@ async function applyFixtures(): Promise<void> {
         subdomain: TENANT_B_SUBDOMAIN,
       })
       .returning({ id: companiesTable.id });
-    if (!tenantA || !tenantB) {
+    const [tenantC] = await tx
+      .insert(companiesTable)
+      .values({
+        name: `${COMPANY_PREFIX} Tenant C Inactive`,
+        subdomain: TENANT_C_SUBDOMAIN,
+        isActive: false,
+      })
+      .returning({ id: companiesTable.id });
+    if (!tenantA || !tenantB || !tenantC) {
       throw new Error("Fixture company kayıtları oluşturulamadı.");
     }
 
@@ -215,6 +226,22 @@ async function applyFixtures(): Promise<void> {
         active: false,
       },
       {
+        companyId: tenantC.id,
+        username: USERS.inactiveCompany,
+        passwordHash,
+        name: "E2E Inactive Company User",
+        role: "user",
+        unitId: null,
+      },
+      {
+        companyId: tenantA.id,
+        username: USERS.session,
+        passwordHash,
+        name: "E2E Session User",
+        role: "user",
+        unitId: unitA1.id,
+      },
+      {
         companyId: tenantB.id,
         username: USERS.standardB1,
         passwordHash,
@@ -242,7 +269,7 @@ async function applyFixtures(): Promise<void> {
   });
 
   console.log(
-    "[test-fixtures] Fixture oluşturuldu: 2 company, 3 unit, 3 sub-unit, 9 user.",
+    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 3 sub-unit, 11 user.",
   );
 }
 
@@ -252,19 +279,27 @@ async function assertFixtures(): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN TRANSACTION READ ONLY");
-    const companies = await client.query<{ id: number; subdomain: string }>(
-      "SELECT id, subdomain FROM companies WHERE subdomain = ANY($1::text[]) ORDER BY subdomain",
-      [[TENANT_A_SUBDOMAIN, TENANT_B_SUBDOMAIN]],
+    const companies = await client.query<{
+      id: number;
+      subdomain: string;
+      is_active: boolean;
+    }>(
+      "SELECT id, subdomain, is_active FROM companies WHERE subdomain = ANY($1::text[]) ORDER BY subdomain",
+      [[TENANT_A_SUBDOMAIN, TENANT_B_SUBDOMAIN, TENANT_C_SUBDOMAIN]],
     );
-    if (companies.rowCount !== 2) {
-      throw new Error("Fixture company sayısı 2 değil.");
+    if (companies.rowCount !== 3) {
+      throw new Error("Fixture company sayısı 3 değil.");
     }
     const companyBySubdomain = new Map(
       companies.rows.map((row) => [row.subdomain, row.id]),
     );
     const tenantAId = companyBySubdomain.get(TENANT_A_SUBDOMAIN);
     const tenantBId = companyBySubdomain.get(TENANT_B_SUBDOMAIN);
-    if (!tenantAId || !tenantBId) {
+    const tenantCId = companyBySubdomain.get(TENANT_C_SUBDOMAIN);
+    const tenantC = companies.rows.find(
+      (company) => company.subdomain === TENANT_C_SUBDOMAIN,
+    );
+    if (!tenantAId || !tenantBId || !tenantCId || tenantC?.is_active !== false) {
       throw new Error("Fixture tenant kimlikleri çözülemedi.");
     }
 
@@ -320,7 +355,7 @@ async function assertFixtures(): Promise<void> {
       "SELECT username, company_id, unit_id, role, active, password_hash FROM users WHERE username LIKE $1 ORDER BY username",
       [`${USER_PREFIX}%`],
     );
-    if (users.rowCount !== 9) throw new Error("Fixture user sayısı 9 değil.");
+    if (users.rowCount !== 11) throw new Error("Fixture user sayısı 11 değil.");
     const userByName = new Map(users.rows.map((row) => [row.username, row]));
     const expected = new Map<
       string,
@@ -364,6 +399,19 @@ async function assertFixtures(): Promise<void> {
           role: "user",
           active: false,
         },
+      ],
+      [
+        USERS.inactiveCompany,
+        {
+          companyId: tenantCId,
+          unitId: null,
+          role: "user",
+          active: true,
+        },
+      ],
+      [
+        USERS.session,
+        { companyId: tenantAId, unitId: unitA1.id, role: "user", active: true },
       ],
       [
         USERS.standardB1,
@@ -417,7 +465,7 @@ async function assertFixtures(): Promise<void> {
   }
 
   console.log(
-    "[test-fixtures] Salt-okuma doğrulama başarılı: 2 company, 3 unit, 3 sub-unit, 9 user.",
+    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 3 sub-unit, 11 user.",
   );
 }
 

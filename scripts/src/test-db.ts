@@ -41,6 +41,8 @@ const SENSITIVE_ENV_NAMES = new Set([
   "E2E_STANDARD_B_USERNAME",
   "E2E_NULL_UNIT_USERNAME",
   "E2E_INACTIVE_USERNAME",
+  "E2E_INACTIVE_COMPANY_USERNAME",
+  "E2E_SESSION_USERNAME",
   "E2E_SUPERADMIN_USERNAME",
   "E2E_TEST_PASSWORD",
   "E2E_BASE_URL",
@@ -332,6 +334,8 @@ function fixtureEnvironment(
     E2E_STANDARD_B_USERNAME: "e2e_user_b1",
     E2E_NULL_UNIT_USERNAME: "e2e_user_null_unit",
     E2E_INACTIVE_USERNAME: "e2e_inactive_user_a1",
+    E2E_INACTIVE_COMPANY_USERNAME: "e2e_inactive_company_user",
+    E2E_SESSION_USERNAME: "e2e_session_user",
     E2E_SUPERADMIN_USERNAME: "e2e_superadmin",
     E2E_TEST_PASSWORD: password,
   };
