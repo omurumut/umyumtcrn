@@ -1,11 +1,16 @@
 import { Router } from "express";
-import { db, risksTable, riskNotesTable, unitsTable } from "@workspace/db";
+import { companiesTable, db, risksTable, riskNotesTable, unitsTable } from "@workspace/db";
 import { eq, and, inArray, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
 class BadRequestError extends Error {}
+
+const RISK_TITLE_MAX_LENGTH = 255;
+const RISK_TYPES = new Set(["risk", "firsat"]);
+const RISK_STATUSES = new Set(["acik", "devam", "kapali"]);
+const RISK_RESPONSE_TYPES = new Set(["izleme", "aksiyon"]);
 
 function isCompanyAdmin(role: string) {
   return role === "admin" || role === "kontrol_admin";
@@ -29,6 +34,38 @@ function parseRequiredId(value: unknown, field: string): number {
   return parsePositiveInteger(value, field) ?? (() => { throw new BadRequestError(`Geçersiz ${field}`); })();
 }
 
+function parseRiskScale(value: unknown, field: string): number {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= 5) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (/^[1-5]$/.test(normalized)) return Number(normalized);
+  }
+  throw new BadRequestError(`Geçersiz ${field}`);
+}
+
+function parseNullableRiskScale(value: unknown, field: string): number | null {
+  if (value === null || value === undefined) return null;
+  return parseRiskScale(value, field);
+}
+
+function normalizeRiskTitle(value: unknown): string {
+  if (typeof value !== "string") throw new BadRequestError("Geçersiz title");
+  const normalized = value.trim();
+  if (!normalized || normalized.length > RISK_TITLE_MAX_LENGTH) {
+    throw new BadRequestError("Geçersiz title");
+  }
+  return normalized;
+}
+
+function parseEnum(value: unknown, allowed: Set<string>, field: string): string {
+  if (typeof value !== "string" || !allowed.has(value)) {
+    throw new BadRequestError(`Geçersiz ${field}`);
+  }
+  return value;
+}
+
 function scopedRiskCondition(id: number, role: string, companyId: number) {
   return isSuperAdmin(role)
     ? eq(risksTable.id, id)
@@ -39,6 +76,12 @@ async function validateUnitCompany(unitId: number, companyId: number) {
   const [unit] = await db.select({ companyId: unitsTable.companyId })
     .from(unitsTable).where(eq(unitsTable.id, unitId));
   return !!unit && unit.companyId === companyId;
+}
+
+async function companyExists(companyId: number) {
+  const [company] = await db.select({ id: companiesTable.id })
+    .from(companiesTable).where(eq(companiesTable.id, companyId));
+  return !!company;
 }
 
 function handleBadRequest(res: Parameters<typeof requireAuth>[1], err: unknown) {
@@ -123,46 +166,58 @@ router.post("/risks", requireAuth, async (req, res) => {
       type, title, description, foreseenImpact,
       probability, severity, responseType, mitigationPlan,
       targetProbability, targetSeverity,
-      owner, status, unitId,
+      owner, status, unitId, companyId,
     } = req.body;
-    if (!title || !probability || !severity) {
-      res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
-    }
-    if (responseType === "aksiyon" && !mitigationPlan) {
+    const normalizedTitle = normalizeRiskTitle(title);
+    const resolvedType = type === undefined ? "risk" : parseEnum(type, RISK_TYPES, "type");
+    const resolvedResponseType = responseType === undefined
+      ? "izleme"
+      : parseEnum(responseType, RISK_RESPONSE_TYPES, "responseType");
+    const resolvedStatus = status === undefined ? "acik" : parseEnum(status, RISK_STATUSES, "status");
+    if (resolvedResponseType === "aksiyon" && !mitigationPlan) {
       res.status(400).json({ error: "Aksiyon seçildiğinde eylem planı zorunludur" }); return;
     }
-    const prob = parseInt(probability);
-    const sev = parseInt(severity);
+    const prob = parseRiskScale(probability, "probability");
+    const sev = parseRiskScale(severity, "severity");
     const requestedUnitId = unitId !== undefined && unitId !== null
       ? parseRequiredId(unitId, "unitId")
       : null;
     if (!isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
+    const effectiveCompanyId = isSuperAdmin(role)
+      ? parseRequiredId(companyId, "companyId")
+      : sessionCompanyId;
+    if (isSuperAdmin(role) && !await companyExists(effectiveCompanyId)) {
+      res.status(400).json({ error: "Geçersiz companyId" }); return;
+    }
     if (isCompanyAdmin(role) && requestedUnitId !== null && !await validateUnitCompany(requestedUnitId, sessionCompanyId)) {
+      res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+    }
+    if (isSuperAdmin(role) && requestedUnitId !== null && !await validateUnitCompany(requestedUnitId, effectiveCompanyId)) {
       res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
     }
     const resolvedUnitId = isCompanyAdmin(role) || isSuperAdmin(role)
       ? requestedUnitId
       : sessionUnitId;
 
-    const tProb = targetProbability ? parseInt(targetProbability) : null;
-    const tSev = targetSeverity ? parseInt(targetSeverity) : null;
+    const tProb = parseNullableRiskScale(targetProbability, "targetProbability");
+    const tSev = parseNullableRiskScale(targetSeverity, "targetSeverity");
 
     const [item] = await db.insert(risksTable).values({
-      type: type || "risk", title,
+      type: resolvedType, title: normalizedTitle,
       description: description || null,
       foreseenImpact: foreseenImpact || null,
       probability: prob, severity: sev, score: prob * sev,
-      responseType: responseType || "izleme",
+      responseType: resolvedResponseType,
       mitigationPlan: mitigationPlan || null,
       targetProbability: tProb,
       targetSeverity: tSev,
-      targetScore: (tProb && tSev) ? tProb * tSev : null,
+      targetScore: tProb !== null && tSev !== null ? tProb * tSev : null,
       owner: owner || null,
-      status: status || "acik",
+      status: resolvedStatus,
       unitId: resolvedUnitId,
-      companyId: sessionCompanyId,
+      companyId: effectiveCompanyId,
     }).returning();
     res.status(201).json({ ...item, notes: [] });
   } catch (err) {
@@ -201,11 +256,31 @@ router.patch("/risks/:id", requireAuth, async (req, res) => {
       if (requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
         res.status(403).json({ error: "Yetki yok" }); return;
       }
-    } else if (isCompanyAdmin(role) && effectiveUnitId !== null && !await validateUnitCompany(effectiveUnitId, sessionCompanyId)) {
-      res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+    } else if ((isCompanyAdmin(role) || isSuperAdmin(role)) && effectiveUnitId !== null) {
+      const effectiveCompanyId = isSuperAdmin(role) ? existing.companyId : sessionCompanyId;
+      if (!await validateUnitCompany(effectiveUnitId, effectiveCompanyId)) {
+        res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+      }
     }
 
-    const resolvedResponseType = responseType ?? existing.responseType;
+    const normalizedTitle = title !== undefined ? normalizeRiskTitle(title) : undefined;
+    const resolvedType = type !== undefined ? parseEnum(type, RISK_TYPES, "type") : existing.type;
+    const resolvedStatus = status !== undefined ? parseEnum(status, RISK_STATUSES, "status") : existing.status;
+    const resolvedResponseType = responseType !== undefined
+      ? parseEnum(responseType, RISK_RESPONSE_TYPES, "responseType")
+      : existing.responseType;
+    const effectiveProbability = probability !== undefined
+      ? parseRiskScale(probability, "probability")
+      : existing.probability;
+    const effectiveSeverity = severity !== undefined
+      ? parseRiskScale(severity, "severity")
+      : existing.severity;
+    const effectiveTargetProbability = targetProbability !== undefined
+      ? parseNullableRiskScale(targetProbability, "targetProbability")
+      : existing.targetProbability;
+    const effectiveTargetSeverity = targetSeverity !== undefined
+      ? parseNullableRiskScale(targetSeverity, "targetSeverity")
+      : existing.targetSeverity;
     if (resolvedResponseType === "aksiyon") {
       const resolvedPlan = mitigationPlan ?? existing.mitigationPlan;
       if (!resolvedPlan) {
@@ -214,28 +289,31 @@ router.patch("/risks/:id", requireAuth, async (req, res) => {
     }
 
     const updates: Record<string, unknown> = {};
-    if (type !== undefined) updates.type = type;
-    if (title !== undefined) updates.title = title;
+    if (type !== undefined) updates.type = resolvedType;
+    if (title !== undefined) updates.title = normalizedTitle;
     if (description !== undefined) updates.description = description;
     if (foreseenImpact !== undefined) updates.foreseenImpact = foreseenImpact;
-    if (probability !== undefined) updates.probability = parseInt(probability);
-    if (severity !== undefined) updates.severity = parseInt(severity);
-    if (probability !== undefined && severity !== undefined) updates.score = parseInt(probability) * parseInt(severity);
-    if (responseType !== undefined) updates.responseType = responseType;
+    if (probability !== undefined) updates.probability = effectiveProbability;
+    if (severity !== undefined) updates.severity = effectiveSeverity;
+    if (probability !== undefined || severity !== undefined) updates.score = effectiveProbability * effectiveSeverity;
+    if (responseType !== undefined) updates.responseType = resolvedResponseType;
     if (mitigationPlan !== undefined) updates.mitigationPlan = mitigationPlan;
-    if (targetProbability !== undefined) updates.targetProbability = targetProbability ? parseInt(targetProbability) : null;
-    if (targetSeverity !== undefined) updates.targetSeverity = targetSeverity ? parseInt(targetSeverity) : null;
-    if (targetProbability !== undefined && targetSeverity !== undefined) {
-      const tP = targetProbability ? parseInt(targetProbability) : null;
-      const tS = targetSeverity ? parseInt(targetSeverity) : null;
-      updates.targetScore = (tP && tS) ? tP * tS : null;
+    if (targetProbability !== undefined) updates.targetProbability = effectiveTargetProbability;
+    if (targetSeverity !== undefined) updates.targetSeverity = effectiveTargetSeverity;
+    if (targetProbability !== undefined || targetSeverity !== undefined) {
+      updates.targetScore = effectiveTargetProbability !== null && effectiveTargetSeverity !== null
+        ? effectiveTargetProbability * effectiveTargetSeverity
+        : null;
     }
     if (owner !== undefined) updates.owner = owner;
-    if (status !== undefined) updates.status = status;
+    if (status !== undefined) updates.status = resolvedStatus;
     if ((isCompanyAdmin(role) || isSuperAdmin(role)) && requestedUnitId !== undefined) {
       updates.unitId = requestedUnitId;
     }
-    const [item] = await db.update(risksTable).set(updates).where(riskScope).returning();
+    let item = existing;
+    if (Object.keys(updates).length > 0) {
+      [item] = await db.update(risksTable).set(updates).where(riskScope).returning();
+    }
     const noteRows = await db.select().from(riskNotesTable).where(eq(riskNotesTable.riskId, id)).orderBy(riskNotesTable.createdAt);
     res.json({
       ...item,

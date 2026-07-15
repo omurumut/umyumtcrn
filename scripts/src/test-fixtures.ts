@@ -6,7 +6,10 @@ import {
   energySourcesTable,
   metersTable,
   pool,
+  riskNotesTable,
+  risksTable,
   subUnitsTable,
+  swotTable,
   unitsTable,
   usersTable,
   variablesTable,
@@ -283,7 +286,7 @@ async function applyFixtures(): Promise<void> {
       { companyId: tenantB.id, variableId: operatingHoursB.id, unitId: unitB1.id, periodStart: "2025-02-01", periodEnd: "2025-02-28", value: 900, source: "E2E fixture" },
     ]);
 
-    await tx.insert(usersTable).values([
+    const fixtureUsers = await tx.insert(usersTable).values([
       {
         companyId: tenantA.id,
         username: USERS.standardA1,
@@ -373,11 +376,47 @@ async function applyFixtures(): Promise<void> {
         role: "superadmin",
         unitId: null,
       },
+    ]).returning({ id: usersTable.id, username: usersTable.username });
+
+    const userIdByUsername = new Map(fixtureUsers.map((user) => [user.username, user.id]));
+    const adminAId = userIdByUsername.get(USERS.admin);
+    const standardA1Id = userIdByUsername.get(USERS.standardA1);
+    const standardB1Id = userIdByUsername.get(USERS.standardB1);
+    if (!adminAId || !standardA1Id || !standardB1Id) {
+      throw new Error("Fixture SWOT/risk note users could not be resolved.");
+    }
+
+    await tx.insert(swotTable).values([
+      { companyId: tenantA.id, unitId: unitA1.id, category: "strengths", title: `${COMPANY_PREFIX} Efficient Equipment`, description: "A1 strength", score: 5, impact: "yuksek" },
+      { companyId: tenantA.id, unitId: unitA1.id, category: "weaknesses", title: `${COMPANY_PREFIX} Manual Readings`, description: "A1 weakness", score: 3, impact: "orta" },
+      { companyId: tenantA.id, unitId: unitA1.id, category: "opportunities", title: `${COMPANY_PREFIX} Solar Potential`, description: "A1 opportunity", score: 4, impact: "yuksek" },
+      { companyId: tenantA.id, unitId: unitA1.id, category: "threats", title: `${COMPANY_PREFIX} Tariff Increase`, description: "A1 threat", score: 2, impact: "dusuk" },
+      { companyId: tenantA.id, unitId: unitA2.id, category: "strengths", title: `${COMPANY_PREFIX} Efficient Equipment`, description: "A2 strength", score: 4, impact: "orta" },
+      { companyId: tenantB.id, unitId: unitB1.id, category: "strengths", title: `${COMPANY_PREFIX} Efficient Equipment`, description: "B1 strength", score: 5, impact: "yuksek" },
+    ]);
+
+    const [riskLowA1, riskMediumA1, riskHighA1, opportunityA1, actionRiskA1, riskA2, riskB1] = await tx.insert(risksTable).values([
+      { companyId: tenantA.id, unitId: unitA1.id, type: "risk", title: `${COMPANY_PREFIX} Shared Supply Risk`, description: "Low A1 risk", probability: 1, severity: 2, score: 2, responseType: "izleme", status: "acik" },
+      { companyId: tenantA.id, unitId: unitA1.id, type: "risk", title: `${COMPANY_PREFIX} Medium Equipment Risk`, description: "Medium A1 risk", probability: 3, severity: 3, score: 9, responseType: "izleme", status: "devam" },
+      { companyId: tenantA.id, unitId: unitA1.id, type: "risk", title: `${COMPANY_PREFIX} High Supply Risk`, description: "High A1 risk", probability: 5, severity: 5, score: 25, responseType: "izleme", status: "acik" },
+      { companyId: tenantA.id, unitId: unitA1.id, type: "firsat", title: `${COMPANY_PREFIX} Efficiency Opportunity`, description: "A1 opportunity", probability: 4, severity: 4, score: 16, responseType: "izleme", status: "acik" },
+      { companyId: tenantA.id, unitId: unitA1.id, type: "risk", title: `${COMPANY_PREFIX} Action Risk`, description: "A1 action risk", probability: 4, severity: 5, score: 20, responseType: "aksiyon", mitigationPlan: "E2E mitigation plan", targetProbability: 2, targetSeverity: 2, targetScore: 4, owner: "Energy Team", status: "devam" },
+      { companyId: tenantA.id, unitId: unitA2.id, type: "risk", title: `${COMPANY_PREFIX} Unit A2 Risk`, description: "A2 risk", probability: 2, severity: 3, score: 6, responseType: "izleme", status: "acik" },
+      { companyId: tenantB.id, unitId: unitB1.id, type: "risk", title: `${COMPANY_PREFIX} Shared Supply Risk`, description: "B1 risk", probability: 4, severity: 4, score: 16, responseType: "izleme", status: "acik" },
+    ]).returning({ id: risksTable.id });
+    if (!riskLowA1 || !riskMediumA1 || !riskHighA1 || !opportunityA1 || !actionRiskA1 || !riskA2 || !riskB1) {
+      throw new Error("Fixture risk records could not be created.");
+    }
+
+    await tx.insert(riskNotesTable).values([
+      { companyId: tenantA.id, riskId: riskMediumA1.id, userId: standardA1Id, userName: "E2E User A1", content: `${COMPANY_PREFIX} A1 progress note` },
+      { companyId: tenantA.id, riskId: actionRiskA1.id, userId: adminAId, userName: "E2E Admin A", content: `${COMPANY_PREFIX} A1 admin note` },
+      { companyId: tenantB.id, riskId: riskB1.id, userId: standardB1Id, userName: "E2E User B1", content: `${COMPANY_PREFIX} B1 progress note` },
     ]);
   });
 
   console.log(
-    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 4 energy use group, 8 meter, 8 consumption, 5 variable, 10 variable value, 11 user.",
+    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 4 energy use group, 8 meter, 8 consumption, 5 variable, 10 variable value, 6 SWOT, 7 risk, 3 risk note, 11 user.",
   );
 }
 
@@ -641,6 +680,55 @@ async function assertFixtures(): Promise<void> {
       throw new Error("Fixture variable numeric precision sözleşmesi geçersiz.");
     }
 
+    const swotIntegrity = await client.query<{ count: string; tenant_count: string; category_count: string }>(
+      `SELECT count(*)::text AS count,
+              count(DISTINCT s.company_id)::text AS tenant_count,
+              count(DISTINCT s.category) FILTER (WHERE s.company_id = $2 AND s.unit_id = $3)::text AS category_count
+       FROM swot_items s
+       JOIN units u ON u.id = s.unit_id
+       WHERE s.title LIKE $1 AND s.company_id = u.company_id`,
+      [`${COMPANY_PREFIX}%`, tenantAId, unitA1.id],
+    );
+    if (
+      Number(swotIntegrity.rows[0]?.count) !== 6 ||
+      Number(swotIntegrity.rows[0]?.tenant_count) !== 2 ||
+      Number(swotIntegrity.rows[0]?.category_count) !== 4
+    ) {
+      throw new Error("Fixture SWOT tenant/category contract is invalid.");
+    }
+
+    const riskIntegrity = await client.query<{ count: string; tenant_count: string; bad_score_count: string }>(
+      `SELECT count(*)::text AS count,
+              count(DISTINCT r.company_id)::text AS tenant_count,
+              count(*) FILTER (WHERE r.score <> r.probability * r.severity)::text AS bad_score_count
+       FROM risks r
+       JOIN units u ON u.id = r.unit_id
+       WHERE r.title LIKE $1 AND r.company_id = u.company_id`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    if (
+      Number(riskIntegrity.rows[0]?.count) !== 7 ||
+      Number(riskIntegrity.rows[0]?.tenant_count) !== 2 ||
+      Number(riskIntegrity.rows[0]?.bad_score_count) !== 0
+    ) {
+      throw new Error("Fixture risk tenant/score contract is invalid.");
+    }
+
+    const riskNoteIntegrity = await client.query<{ count: string; bad_scope_count: string }>(
+      `SELECT count(*)::text AS count,
+              count(*) FILTER (WHERE rn.company_id <> r.company_id OR rn.user_id IS NULL)::text AS bad_scope_count
+       FROM risk_notes rn
+       JOIN risks r ON r.id = rn.risk_id
+       WHERE rn.content LIKE $1`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    if (
+      Number(riskNoteIntegrity.rows[0]?.count) !== 3 ||
+      Number(riskNoteIntegrity.rows[0]?.bad_scope_count) !== 0
+    ) {
+      throw new Error("Fixture risk note parent/tenant contract is invalid.");
+    }
+
     const users = await client.query<{
       username: string;
       company_id: number;
@@ -762,7 +850,7 @@ async function assertFixtures(): Promise<void> {
   }
 
   console.log(
-    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 4 energy use group, 8 meter, 8 consumption, 5 variable, 10 variable value, 11 user.",
+    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 4 energy use group, 8 meter, 8 consumption, 5 variable, 10 variable value, 6 SWOT, 7 risk, 3 risk note, 11 user.",
   );
 }
 

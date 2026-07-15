@@ -1,9 +1,13 @@
 import { Router } from "express";
-import { db, swotTable, unitsTable } from "@workspace/db";
+import { companiesTable, db, swotTable, unitsTable } from "@workspace/db";
 import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
+
+const SWOT_TITLE_MAX_LENGTH = 255;
+const SWOT_CATEGORIES = ["strengths", "weaknesses", "opportunities", "threats"] as const;
+const SWOT_IMPACTS = ["yuksek", "orta", "dusuk"] as const;
 
 class BadRequestError extends Error {}
 
@@ -29,6 +33,29 @@ function parseRequiredId(value: unknown, field: string): number {
   return parsePositiveInteger(value, field) ?? (() => { throw new BadRequestError(`Geçersiz ${field}`); })();
 }
 
+function parseSwotScore(value: unknown): number {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= 5) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^[1-5]$/.test(trimmed)) return Number(trimmed);
+  }
+  throw new BadRequestError("Geçersiz score");
+}
+
+function normalizeSwotTitle(value: unknown): string {
+  if (typeof value !== "string") throw new BadRequestError("Geçersiz title");
+  const title = value.trim();
+  if (!title || title.length > SWOT_TITLE_MAX_LENGTH) throw new BadRequestError("Geçersiz title");
+  return title;
+}
+
+function parseEnum<const T extends readonly string[]>(value: unknown, allowed: T, field: string): T[number] {
+  if (typeof value === "string" && allowed.includes(value)) return value as T[number];
+  throw new BadRequestError(`Geçersiz ${field}`);
+}
+
 function scopedSwotCondition(id: number, role: string, companyId: number) {
   return isSuperAdmin(role)
     ? eq(swotTable.id, id)
@@ -39,6 +66,12 @@ async function validateUnitCompany(unitId: number, companyId: number) {
   const [unit] = await db.select({ companyId: unitsTable.companyId })
     .from(unitsTable).where(eq(unitsTable.id, unitId));
   return !!unit && unit.companyId === companyId;
+}
+
+async function companyExists(companyId: number) {
+  const [company] = await db.select({ id: companiesTable.id })
+    .from(companiesTable).where(eq(companiesTable.id, companyId));
+  return !!company;
 }
 
 function handleBadRequest(res: Parameters<typeof requireAuth>[1], err: unknown) {
@@ -94,29 +127,40 @@ router.get("/swot", requireAuth, async (req, res) => {
 router.post("/swot", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const { category, title, description, score, impact, unitId } = req.body;
-    if (!category || !title || !score || !impact) {
-      res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
-    }
+    const { category, title, description, score, impact, unitId, companyId } = req.body;
+    const validatedCategory = parseEnum(category, SWOT_CATEGORIES, "category");
+    const normalizedTitle = normalizeSwotTitle(title);
+    const validatedScore = parseSwotScore(score);
+    const validatedImpact = parseEnum(impact, SWOT_IMPACTS, "impact");
     const requestedUnitId = unitId !== undefined && unitId !== null
       ? parseRequiredId(unitId, "unitId")
       : null;
     if (!isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
+    const effectiveCompanyId = isSuperAdmin(role)
+      ? parseRequiredId(companyId, "companyId")
+      : sessionCompanyId;
+    if (isSuperAdmin(role) && !await companyExists(effectiveCompanyId)) {
+      res.status(400).json({ error: "Geçersiz companyId" }); return;
+    }
     if (isCompanyAdmin(role) && requestedUnitId !== null && !await validateUnitCompany(requestedUnitId, sessionCompanyId)) {
+      res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+    }
+    if (isSuperAdmin(role) && requestedUnitId !== null && !await validateUnitCompany(requestedUnitId, effectiveCompanyId)) {
       res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
     }
     const resolvedUnitId = isCompanyAdmin(role) || isSuperAdmin(role)
       ? requestedUnitId
       : sessionUnitId;
     const [item] = await db.insert(swotTable).values({
-      category, title,
+      category: validatedCategory,
+      title: normalizedTitle,
       description: description || null,
-      score: parseInt(score),
-      impact,
+      score: validatedScore,
+      impact: validatedImpact,
       unitId: resolvedUnitId,
-      companyId: sessionCompanyId,
+      companyId: effectiveCompanyId,
     }).returning();
     res.status(201).json(item);
   } catch (err) {
@@ -141,6 +185,10 @@ router.patch("/swot/:id", requireAuth, async (req, res) => {
     }
     const updates: Record<string, unknown> = {};
     const { category, title, description, score, impact, unitId } = req.body;
+    const validatedCategory = category !== undefined ? parseEnum(category, SWOT_CATEGORIES, "category") : undefined;
+    const normalizedTitle = title !== undefined ? normalizeSwotTitle(title) : undefined;
+    const validatedScore = score !== undefined ? parseSwotScore(score) : undefined;
+    const validatedImpact = impact !== undefined ? parseEnum(impact, SWOT_IMPACTS, "impact") : undefined;
     const requestedUnitId = unitId !== undefined
       ? (unitId === null ? null : parseRequiredId(unitId, "unitId"))
       : undefined;
@@ -149,14 +197,17 @@ router.patch("/swot/:id", requireAuth, async (req, res) => {
       if (requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
         res.status(403).json({ error: "Yetki yok" }); return;
       }
-    } else if (isCompanyAdmin(role) && effectiveUnitId !== null && !await validateUnitCompany(effectiveUnitId, sessionCompanyId)) {
-      res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+    } else if ((isCompanyAdmin(role) || isSuperAdmin(role)) && effectiveUnitId !== null) {
+      const effectiveCompanyId = isSuperAdmin(role) ? existing.companyId : sessionCompanyId;
+      if (!await validateUnitCompany(effectiveUnitId, effectiveCompanyId)) {
+        res.status(403).json({ error: "Bu birim için yetkiniz yok" }); return;
+      }
     }
-    if (category !== undefined) updates.category = category;
-    if (title !== undefined) updates.title = title;
+    if (validatedCategory !== undefined) updates.category = validatedCategory;
+    if (normalizedTitle !== undefined) updates.title = normalizedTitle;
     if (description !== undefined) updates.description = description;
-    if (score !== undefined) updates.score = parseInt(score);
-    if (impact !== undefined) updates.impact = impact;
+    if (validatedScore !== undefined) updates.score = validatedScore;
+    if (validatedImpact !== undefined) updates.impact = validatedImpact;
     if ((isCompanyAdmin(role) || isSuperAdmin(role)) && requestedUnitId !== undefined) {
       updates.unitId = requestedUnitId;
     }

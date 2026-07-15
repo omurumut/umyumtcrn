@@ -161,7 +161,7 @@ export default function Risks() {
   const riskRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const deepLinkAppliedRef = useRef(false);
   const isCompanyAdmin = role === "admin" || role === "kontrol_admin";
-  const isAdmin = role === "admin" || role === "superadmin";
+  const isAdmin = isCompanyAdmin || role === "superadmin";
 
   const unitParam = activeUnitId !== null ? activeUnitId : undefined;
   const { data: risks = [], isLoading } = useListRisks(
@@ -535,7 +535,7 @@ export default function Risks() {
             {/* Title */}
             <div className="space-y-1">
               <Label>Başlık *</Label>
-              <Input value={form.title} onChange={e => patchField("title", e.target.value)} placeholder="Risk/Fırsat başlığı" />
+              <Input maxLength={255} value={form.title} onChange={e => patchField("title", e.target.value)} placeholder="Risk/Fırsat başlığı" />
             </div>
 
             {/* Description */}

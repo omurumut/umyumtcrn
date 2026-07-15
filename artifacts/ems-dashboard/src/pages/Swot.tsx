@@ -220,7 +220,7 @@ export default function Swot() {
             </div>
             <div className="space-y-1.5">
               <Label>Başlık *</Label>
-              <Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Madde başlığı" />
+              <Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Madde başlığı" maxLength={255} />
             </div>
             <div className="space-y-1.5">
               <Label>Açıklama</Label>
