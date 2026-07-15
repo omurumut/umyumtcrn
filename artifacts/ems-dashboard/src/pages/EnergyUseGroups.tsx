@@ -49,7 +49,7 @@ export default function EnergyUseGroups() {
   const queryClient = useQueryClient();
   const { companyId } = useCompany();
 
-  const isPrivileged = user?.role === "superadmin" || user?.role === "admin";
+  const isPrivileged = user?.role === "superadmin" || user?.role === "admin" || user?.role === "kontrol_admin";
 
   const [open, setOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -367,6 +367,7 @@ export default function EnergyUseGroups() {
               <div className="space-y-1.5">
                 <Label>Grup Adı *</Label>
                 <Input
+                  maxLength={255}
                   value={form.name}
                   onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   placeholder="ör. Kazan Dairesi"

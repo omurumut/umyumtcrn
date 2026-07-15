@@ -4,6 +4,7 @@ import { eq, and, isNull, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
+const ENERGY_USE_GROUP_NAME_MAX_LENGTH = 255;
 
 class ScopeError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -137,8 +138,12 @@ router.post("/energy-use-groups", requireAuth, async (req, res) => {
     const { name: userName } = req.user!;
     const { name, code, groupType, energySourceId, unitId, subUnitId, description, isSeuCandidate, isActive } = req.body;
 
-    if (!name || !name.trim()) {
+    if (typeof name !== "string" || !name.trim()) {
       res.status(400).json({ error: "Grup adı zorunludur" }); return;
+    }
+    const normalizedName = name.trim();
+    if (normalizedName.length > ENERGY_USE_GROUP_NAME_MAX_LENGTH) {
+      res.status(400).json({ error: `Grup adı en fazla ${ENERGY_USE_GROUP_NAME_MAX_LENGTH} karakter olabilir` }); return;
     }
 
     const scope = await resolveScope(req, req.body);
@@ -154,7 +159,7 @@ router.post("/energy-use-groups", requireAuth, async (req, res) => {
       .from(energyUseGroupsTable)
       .where(and(
         eq(energyUseGroupsTable.companyId, effectiveCompanyId),
-        eq(energyUseGroupsTable.name, name.trim()),
+        eq(energyUseGroupsTable.name, normalizedName),
         eq(energyUseGroupsTable.isActive, true)
       ));
     if (existing.length > 0) {
@@ -163,7 +168,7 @@ router.post("/energy-use-groups", requireAuth, async (req, res) => {
 
     const [group] = await db.insert(energyUseGroupsTable).values({
       companyId: effectiveCompanyId,
-      name: name.trim(),
+      name: normalizedName,
       code: code?.trim() || null,
       groupType: groupType ?? "other",
       energySourceId: effectiveEnergySourceId,
@@ -206,8 +211,12 @@ router.put("/energy-use-groups/:id", requireAuth, async (req, res) => {
     const effectiveEnergySourceId = energySourceId === undefined ? existing.energySourceId : (parseNullableId(energySourceId, "energySourceId") ?? null);
     await validateEnergyUseGroupRelations(existing.companyId, effectiveUnitId, effectiveSubUnitId, effectiveEnergySourceId);
 
-    if (!name || !name.trim()) {
+    if (typeof name !== "string" || !name.trim()) {
       res.status(400).json({ error: "Grup adı zorunludur" }); return;
+    }
+    const normalizedName = name.trim();
+    if (normalizedName.length > ENERGY_USE_GROUP_NAME_MAX_LENGTH) {
+      res.status(400).json({ error: `Grup adı en fazla ${ENERGY_USE_GROUP_NAME_MAX_LENGTH} karakter olabilir` }); return;
     }
 
     // Mükerrer isim kontrolü (aynı isimde başka aktif grup var mı?)
@@ -215,7 +224,7 @@ router.put("/energy-use-groups/:id", requireAuth, async (req, res) => {
       .from(energyUseGroupsTable)
       .where(and(
         eq(energyUseGroupsTable.companyId, existing.companyId),
-        eq(energyUseGroupsTable.name, name.trim()),
+        eq(energyUseGroupsTable.name, normalizedName),
         eq(energyUseGroupsTable.isActive, true)
       ));
     if (duplicate.some(d => d.id !== id)) {
@@ -223,7 +232,7 @@ router.put("/energy-use-groups/:id", requireAuth, async (req, res) => {
     }
 
     const [updated] = await db.update(energyUseGroupsTable).set({
-      name: name.trim(),
+      name: normalizedName,
       code: code?.trim() || null,
       groupType: groupType ?? existing.groupType ?? "other",
       energySourceId: effectiveEnergySourceId,
@@ -463,6 +472,9 @@ router.post("/energy-use-groups/batch", requireAuth, async (req, res) => {
         const groupName = String(row.group_name ?? row.groupName ?? "").trim();
         if (!groupName) {
           errors.push({ row: rowNum, message: "Grup adı boş olamaz" }); continue;
+        }
+        if (groupName.length > ENERGY_USE_GROUP_NAME_MAX_LENGTH) {
+          errors.push({ row: rowNum, message: `Grup adı en fazla ${ENERGY_USE_GROUP_NAME_MAX_LENGTH} karakter olabilir` }); continue;
         }
 
         // Resolve unit

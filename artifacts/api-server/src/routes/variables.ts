@@ -6,6 +6,9 @@ import { parseIlIlce, findStationByIlIlce } from "../services/mgm-stations-data.
 import { lookupStationKeyByLocation, lookupOfficialByStationKey } from "../services/mgm-sync.js";
 
 const router = Router();
+const VARIABLE_NAME_MAX_LENGTH = 255;
+const VARIABLE_TYPES = new Set(["numeric", "percentage", "boolean"]);
+const VARIABLE_SCOPE_TYPES = new Set(["company", "unit", "sub_unit", "meter"]);
 
 function isCompanyAdmin(role: string) {
   return role === "admin" || role === "kontrol_admin";
@@ -23,6 +26,26 @@ function parsePositiveInteger(value: unknown): number | undefined {
     if (Number.isSafeInteger(parsed)) return parsed;
   }
   return undefined;
+}
+
+const POSTGRES_REAL_MAX = 3.4028234663852886e38;
+const STRICT_DECIMAL_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+function parseFiniteReal(value: unknown): number | undefined {
+  let parsed: number;
+
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized || !STRICT_DECIMAL_PATTERN.test(normalized)) return undefined;
+    parsed = Number(normalized);
+  } else {
+    return undefined;
+  }
+
+  if (!Number.isFinite(parsed) || Math.abs(parsed) > POSTGRES_REAL_MAX) return undefined;
+  return parsed;
 }
 
 function parseOptionalId(value: unknown, field: string): number | null | undefined {
@@ -180,21 +203,33 @@ router.post("/variables", requireAuth, async (req, res) => {
     }
     const { name, code, category, unitLabel, variableType, sourceType, scopeType, description, isActive } = req.body;
 
-    if (!name || !category) {
+    const normalizedName = typeof name === "string" ? name.trim() : "";
+    if (!normalizedName || !category) {
       res.status(400).json({ error: "Ad ve kategori zorunludur" }); return;
+    }
+    if (normalizedName.length > VARIABLE_NAME_MAX_LENGTH) {
+      res.status(400).json({ error: `Değişken adı en fazla ${VARIABLE_NAME_MAX_LENGTH} karakter olabilir` }); return;
+    }
+    const effectiveVariableType = variableType === undefined ? "numeric" : variableType;
+    if (typeof effectiveVariableType !== "string" || !VARIABLE_TYPES.has(effectiveVariableType)) {
+      res.status(400).json({ error: "Geçersiz değişken türü" }); return;
+    }
+    const effectiveScopeType = scopeType === undefined ? "company" : scopeType;
+    if (typeof effectiveScopeType !== "string" || !VARIABLE_SCOPE_TYPES.has(effectiveScopeType)) {
+      res.status(400).json({ error: "Geçersiz kapsam türü" }); return;
     }
 
     const targetCompanyId = await resolveCompanyId(role, sessionCompanyId, req.body.companyId);
 
     const [variable] = await db.insert(variablesTable).values({
       companyId: targetCompanyId,
-      name,
+      name: normalizedName,
       code: code || null,
       category: category || "operational",
       unitLabel: unitLabel || null,
-      variableType: variableType || "numeric",
+      variableType: effectiveVariableType,
       sourceType: sourceType || "operation_manual",
-      scopeType: scopeType || "company",
+      scopeType: effectiveScopeType,
       description: description || null,
       isSystemVariable: false,
       isActive: isActive !== undefined ? isActive : true,
@@ -225,13 +260,32 @@ router.put("/variables/:id", requireAuth, async (req, res) => {
     const { name, code, category, unitLabel, variableType, sourceType, scopeType, description, isActive } = req.body;
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
-    if (name !== undefined) updates.name = name;
+    if (name !== undefined) {
+      const normalizedName = typeof name === "string" ? name.trim() : "";
+      if (!normalizedName) {
+        res.status(400).json({ error: "Değişken adı zorunludur" }); return;
+      }
+      if (normalizedName.length > VARIABLE_NAME_MAX_LENGTH) {
+        res.status(400).json({ error: `Değişken adı en fazla ${VARIABLE_NAME_MAX_LENGTH} karakter olabilir` }); return;
+      }
+      updates.name = normalizedName;
+    }
     if (code !== undefined) updates.code = code || null;
     if (category !== undefined) updates.category = category;
     if (unitLabel !== undefined) updates.unitLabel = unitLabel || null;
-    if (variableType !== undefined) updates.variableType = variableType;
+    if (variableType !== undefined) {
+      if (typeof variableType !== "string" || !VARIABLE_TYPES.has(variableType)) {
+        res.status(400).json({ error: "Geçersiz değişken türü" }); return;
+      }
+      updates.variableType = variableType;
+    }
     if (sourceType !== undefined && !existing.isSystemVariable) updates.sourceType = sourceType;
-    if (scopeType !== undefined) updates.scopeType = scopeType;
+    if (scopeType !== undefined) {
+      if (typeof scopeType !== "string" || !VARIABLE_SCOPE_TYPES.has(scopeType)) {
+        res.status(400).json({ error: "Geçersiz kapsam türü" }); return;
+      }
+      updates.scopeType = scopeType;
+    }
     if (description !== undefined) updates.description = description || null;
     if (isActive !== undefined) updates.isActive = isActive;
 
@@ -317,6 +371,11 @@ router.get("/variable-values", requireAuth, async (req, res) => {
     const unitId = parseOptionalId(req.query.unitId, "unitId");
     const subUnitId = parseOptionalId(req.query.subUnitId, "subUnitId");
     const meterId = parseOptionalId(req.query.meterId, "meterId");
+    const standard = !isCompanyAdmin(role) && !isSuperAdmin(role);
+    if (standard && sessionUnitId === null) {
+      res.json([]);
+      return;
+    }
     const conditions: SQL[] = [];
     const queryCompanyId = !isSuperAdmin(role) ? sessionCompanyId : (requestedCompanyId ?? null);
     if (!isSuperAdmin(role)) {
@@ -330,8 +389,8 @@ router.get("/variable-values", requireAuth, async (req, res) => {
     if (unitId !== undefined && unitId !== null && (isCompanyAdmin(role) || isSuperAdmin(role))) conditions.push(eq(variableValuesTable.unitId, unitId));
     if (subUnitId !== undefined && subUnitId !== null && (isCompanyAdmin(role) || isSuperAdmin(role))) conditions.push(eq(variableValuesTable.subUnitId, subUnitId));
     if (meterId !== undefined && meterId !== null && (isCompanyAdmin(role) || isSuperAdmin(role))) conditions.push(eq(variableValuesTable.meterId, meterId));
-    if (!isCompanyAdmin(role) && !isSuperAdmin(role)) {
-      conditions.push(or(eq(variablesTable.scopeType, "company"), eq(variableValuesTable.unitId, sessionUnitId ?? -1))!);
+    if (standard) {
+      conditions.push(or(eq(variablesTable.scopeType, "company"), eq(variableValuesTable.unitId, sessionUnitId!))!);
     } else {
       await validateValueQueryHierarchy(queryCompanyId, unitId, subUnitId, meterId);
     }
@@ -390,8 +449,8 @@ router.post("/variable-values", requireAuth, async (req, res) => {
     }
 
     // Sayısal değer doğrulama
-    const numericValue = parseFloat(value);
-    if (isNaN(numericValue)) {
+    const numericValue = parseFiniteReal(value);
+    if (numericValue === undefined) {
       res.status(400).json({ error: "Değer sayısal olmalıdır" }); return;
     }
 
@@ -466,7 +525,7 @@ router.post("/variable-values", requireAuth, async (req, res) => {
       periodStart,
       periodEnd,
       periodType: periodType || "monthly",
-      value: parseFloat(value),
+      value: numericValue,
       source: source || null,
       locationProvince: locationProvince || null,
       locationDistrict: locationDistrict || null,
@@ -505,9 +564,9 @@ router.put("/variable-values/:id", requireAuth, async (req, res) => {
     const effectiveMeterId = meterId === undefined ? existing.meterId : (parseOptionalId(meterId, "meterId") ?? null);
 
     // Sayısal değer doğrulama
+    const numericValue = value === undefined ? undefined : parseFiniteReal(value);
     if (value !== undefined) {
-      const numericValue = parseFloat(value);
-      if (isNaN(numericValue)) {
+      if (numericValue === undefined) {
         res.status(400).json({ error: "Değer sayısal olmalıdır" }); return;
       }
     }
@@ -573,7 +632,7 @@ router.put("/variable-values/:id", requireAuth, async (req, res) => {
     if (periodStart !== undefined) updates.periodStart = periodStart;
     if (periodEnd !== undefined) updates.periodEnd = periodEnd;
     if (periodType !== undefined) updates.periodType = periodType;
-    if (value !== undefined) updates.value = parseFloat(value);
+    if (value !== undefined) updates.value = numericValue;
     if (source !== undefined) updates.source = source || null;
     if (locationProvince !== undefined) updates.locationProvince = locationProvince || null;
     if (locationDistrict !== undefined) updates.locationDistrict = locationDistrict || null;
@@ -676,8 +735,8 @@ router.post("/variable-values/batch", requireAuth, async (req, res) => {
         }
 
         // value validation
-        const numericValue = parseFloat(String(row.value ?? ""));
-        if (isNaN(numericValue)) {
+        const numericValue = parseFiniteReal(row.value);
+        if (numericValue === undefined) {
           errors.push({ row: rowNum, message: `Geçersiz değer: "${row.value}"` }); continue;
         }
 

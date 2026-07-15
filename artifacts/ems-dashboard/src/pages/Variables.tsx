@@ -326,7 +326,7 @@ function VariablesTab() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>Değişken Adı *</Label>
-                <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Örn: Üretim Miktarı" />
+                <Input maxLength={255} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Örn: Üretim Miktarı" />
               </div>
               <div className="space-y-1.5">
                 <Label>Kod</Label>

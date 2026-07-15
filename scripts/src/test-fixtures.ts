@@ -2,12 +2,15 @@ import {
   companiesTable,
   consumptionTable,
   db,
+  energyUseGroupsTable,
   energySourcesTable,
   metersTable,
   pool,
   subUnitsTable,
   unitsTable,
   usersTable,
+  variablesTable,
+  variableValuesTable,
 } from "@workspace/db";
 import { count, like, sql } from "drizzle-orm";
 
@@ -215,8 +218,21 @@ async function applyFixtures(): Promise<void> {
       throw new Error("Fixture energy source kayıtları oluşturulamadı.");
     }
 
+    const [lightingA1, heatingA1, groupA2, lightingB1] = await tx
+      .insert(energyUseGroupsTable)
+      .values([
+        { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Lighting`, groupType: "lighting", createdBy: "E2E fixture" },
+        { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: naturalGasA1.id, name: `${COMPANY_PREFIX} Heating`, groupType: "hvac", createdBy: "E2E fixture" },
+        { companyId: tenantA.id, unitId: unitA2.id, subUnitId: campusA2.id, energySourceId: electricityA2.id, name: `${COMPANY_PREFIX} Production A2`, groupType: "production", createdBy: "E2E fixture" },
+        { companyId: tenantB.id, unitId: unitB1.id, subUnitId: campusB1.id, energySourceId: electricityB1.id, name: `${COMPANY_PREFIX} Lighting`, groupType: "lighting", createdBy: "E2E fixture" },
+      ])
+      .returning({ id: energyUseGroupsTable.id });
+    if (!lightingA1 || !heatingA1 || !groupA2 || !lightingB1) {
+      throw new Error("Fixture energy use group records could not be created.");
+    }
+
     const [electricMeterA1, gasMeterA1, , , , dependencyMeterA1, , meterB1] = await tx.insert(metersTable).values([
-      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Shared Meter`, type: "elektrik", recordType: "physical_meter", location: "Main Panel", city: "Ankara / Cankaya", unit: "kWh" },
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, energyUseGroupId: lightingA1.id, name: `${COMPANY_PREFIX} Shared Meter`, type: "elektrik", recordType: "physical_meter", location: "Main Panel", city: "Ankara / Cankaya", unit: "kWh" },
       { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: naturalGasA1.id, name: `${COMPANY_PREFIX} Gas Meter A1`, type: "dogalgaz", recordType: "physical_meter", location: "Boiler Room", city: "Ankara / Cankaya", unit: "m3" },
       { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Manual Meter A1`, type: "elektrik", recordType: "manual_consumption_point", location: "Invoice", city: "Ankara / Cankaya", unit: "kWh" },
       { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Virtual Meter A1`, type: "elektrik", recordType: "virtual_meter", location: "Calculated", city: "Ankara / Cankaya", unit: "kWh" },
@@ -238,6 +254,33 @@ async function applyFixtures(): Promise<void> {
       { companyId: tenantA.id, meterId: dependencyMeterA1.id, year: 2025, month: 1, kwh: 250, tep: 0.0215, co2: 100 },
       { companyId: tenantB.id, meterId: meterB1.id, year: 2025, month: 1, kwh: 700, tep: 0.0602, co2: 280 },
       { companyId: tenantB.id, meterId: meterB1.id, year: 2025, month: 2, kwh: 900, tep: 0.0774, co2: 360 },
+    ]);
+
+    const [productionQuantity, operatingHours, importVariable, dependencyVariable, operatingHoursB] = await tx
+      .insert(variablesTable)
+      .values([
+        { companyId: tenantA.id, name: `${COMPANY_PREFIX} Production Quantity`, code: "E2E_PRODUCTION", category: "production", unitLabel: "adet", variableType: "numeric", sourceType: "production_manual", scopeType: "company" },
+        { companyId: tenantA.id, name: `${COMPANY_PREFIX} Operating Hours`, code: "E2E_HOURS", category: "operational", unitLabel: "saat", variableType: "numeric", sourceType: "operation_manual", scopeType: "unit" },
+        { companyId: tenantA.id, name: `${COMPANY_PREFIX} Import Variable`, code: "E2E_IMPORT", category: "operational", unitLabel: "adet", variableType: "numeric", sourceType: "operation_manual", scopeType: "unit" },
+        { companyId: tenantA.id, name: `${COMPANY_PREFIX} Dependency Variable`, code: "E2E_DEPENDENCY", category: "operational", unitLabel: "adet", variableType: "numeric", sourceType: "operation_manual", scopeType: "company" },
+        { companyId: tenantB.id, name: `${COMPANY_PREFIX} Operating Hours`, code: "E2E_HOURS", category: "operational", unitLabel: "saat", variableType: "numeric", sourceType: "operation_manual", scopeType: "unit" },
+      ])
+      .returning({ id: variablesTable.id });
+    if (!productionQuantity || !operatingHours || !importVariable || !dependencyVariable || !operatingHoursB) {
+      throw new Error("Fixture variable records could not be created.");
+    }
+
+    await tx.insert(variableValuesTable).values([
+      { companyId: tenantA.id, variableId: productionQuantity.id, periodStart: "2025-01-01", periodEnd: "2025-01-31", value: 100, source: "E2E fixture" },
+      { companyId: tenantA.id, variableId: productionQuantity.id, periodStart: "2025-02-01", periodEnd: "2025-02-28", value: 150.5, source: "E2E fixture" },
+      { companyId: tenantA.id, variableId: productionQuantity.id, periodStart: "2025-03-01", periodEnd: "2025-03-31", value: 200, source: "E2E fixture" },
+      { companyId: tenantA.id, variableId: operatingHours.id, unitId: unitA1.id, periodStart: "2025-01-01", periodEnd: "2025-01-31", value: 100, source: "E2E fixture" },
+      { companyId: tenantA.id, variableId: operatingHours.id, unitId: unitA1.id, periodStart: "2025-02-01", periodEnd: "2025-02-28", value: 150.5, source: "E2E fixture" },
+      { companyId: tenantA.id, variableId: operatingHours.id, unitId: unitA1.id, periodStart: "2025-03-01", periodEnd: "2025-03-31", value: 200, source: "E2E fixture" },
+      { companyId: tenantA.id, variableId: operatingHours.id, unitId: unitA2.id, periodStart: "2026-01-01", periodEnd: "2026-01-31", value: 300, source: "E2E fixture" },
+      { companyId: tenantA.id, variableId: dependencyVariable.id, periodStart: "2026-01-01", periodEnd: "2026-01-31", value: 1, source: "E2E fixture" },
+      { companyId: tenantB.id, variableId: operatingHoursB.id, unitId: unitB1.id, periodStart: "2025-01-01", periodEnd: "2025-01-31", value: 700, source: "E2E fixture" },
+      { companyId: tenantB.id, variableId: operatingHoursB.id, unitId: unitB1.id, periodStart: "2025-02-01", periodEnd: "2025-02-28", value: 900, source: "E2E fixture" },
     ]);
 
     await tx.insert(usersTable).values([
@@ -334,7 +377,7 @@ async function applyFixtures(): Promise<void> {
   });
 
   console.log(
-    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 8 meter, 8 consumption, 11 user.",
+    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 4 energy use group, 8 meter, 8 consumption, 5 variable, 10 variable value, 11 user.",
   );
 }
 
@@ -484,6 +527,120 @@ async function assertFixtures(): Promise<void> {
       throw new Error("Fixture consumption numeric precision sözleşmesi geçersiz.");
     }
 
+    const groupIntegrity = await client.query<{ count: string; tenant_count: string }>(
+      `SELECT count(*)::text AS count,
+              count(DISTINCT eug.company_id)::text AS tenant_count
+       FROM energy_use_groups eug
+       JOIN units u ON u.id = eug.unit_id
+       JOIN sub_units su ON su.id = eug.sub_unit_id
+       JOIN energy_sources es ON es.id = eug.energy_source_id
+       WHERE eug.name LIKE $1
+         AND eug.company_id = u.company_id
+         AND eug.company_id = su.company_id
+         AND eug.company_id = es.company_id
+         AND eug.unit_id = su.unit_id
+         AND eug.unit_id = es.unit_id`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    if (
+      Number(groupIntegrity.rows[0]?.count) !== 4 ||
+      Number(groupIntegrity.rows[0]?.tenant_count) !== 2
+    ) {
+      throw new Error("Fixture energy use group tenant/parent ilişkisi geçersiz.");
+    }
+
+    const linkedGroup = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM meters m
+       JOIN energy_use_groups eug ON eug.id = m.energy_use_group_id
+       WHERE m.name = $1 AND eug.name = $2
+         AND m.company_id = eug.company_id
+         AND m.unit_id = eug.unit_id`,
+      [`${COMPANY_PREFIX} Shared Meter`, `${COMPANY_PREFIX} Lighting`],
+    );
+    if (Number(linkedGroup.rows[0]?.count) !== 1) {
+      throw new Error("Fixture energy use group dependency ilişkisi geçersiz.");
+    }
+
+    const variableIntegrity = await client.query<{ variable_count: string; value_count: string; tenant_count: string; distinct_periods: string }>(
+      `SELECT count(DISTINCT v.id)::text AS variable_count,
+              count(vv.id)::text AS value_count,
+              count(DISTINCT v.company_id)::text AS tenant_count,
+              (count(DISTINCT (vv.variable_id, vv.period_start, vv.period_end, vv.unit_id, vv.sub_unit_id, vv.meter_id))
+                FILTER (WHERE vv.id IS NOT NULL))::text AS distinct_periods
+       FROM variables v
+       LEFT JOIN variable_values vv ON vv.variable_id = v.id AND vv.company_id = v.company_id
+       WHERE v.name LIKE $1`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    const variableStats = variableIntegrity.rows[0];
+    if (
+      Number(variableStats?.variable_count) !== 5 ||
+      Number(variableStats?.value_count) !== 10 ||
+      Number(variableStats?.tenant_count) !== 2 ||
+      Number(variableStats?.distinct_periods) !== 10
+    ) {
+      throw new Error("Fixture variable tenant/dönem ilişkisi geçersiz.");
+    }
+
+    const invalidVariableScopes = await client.query(
+      `SELECT vv.id
+       FROM variable_values vv
+       JOIN variables v ON v.id = vv.variable_id
+       LEFT JOIN units u ON u.id = vv.unit_id
+       WHERE v.name LIKE $1 AND (
+         vv.company_id <> v.company_id OR
+         (v.scope_type = 'company' AND vv.unit_id IS NOT NULL) OR
+         (v.scope_type = 'unit' AND (vv.unit_id IS NULL OR u.company_id <> vv.company_id))
+       )`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    if (invalidVariableScopes.rowCount !== 0) {
+      throw new Error("Fixture variable company/unit scope ilişkisi geçersiz.");
+    }
+
+    const operatingHoursCatalog = await client.query<{
+      company_id: number;
+      variable_id: number;
+      unit_id: number;
+      periods: string[];
+    }>(
+      `SELECT v.company_id, v.id AS variable_id, vv.unit_id,
+              array_agg(vv.period_start ORDER BY vv.period_start) AS periods
+       FROM variables v
+       JOIN variable_values vv ON vv.variable_id = v.id AND vv.company_id = v.company_id
+       WHERE v.name = $1 AND v.scope_type = 'unit'
+       GROUP BY v.company_id, v.id, vv.unit_id
+       ORDER BY v.company_id, vv.unit_id`,
+      [`${COMPANY_PREFIX} Operating Hours`],
+    );
+    const tenantACatalogRows = operatingHoursCatalog.rows.filter((row) => row.company_id === tenantAId);
+    const tenantBCatalogRows = operatingHoursCatalog.rows.filter((row) => row.company_id === tenantBId);
+    if (
+      operatingHoursCatalog.rowCount !== 3 ||
+      tenantACatalogRows.length !== 2 ||
+      new Set(tenantACatalogRows.map((row) => row.variable_id)).size !== 1 ||
+      tenantACatalogRows.find((row) => row.unit_id === unitA1.id)?.periods.join(",") !== "2025-01-01,2025-02-01,2025-03-01" ||
+      tenantACatalogRows.find((row) => row.unit_id === unitA2.id)?.periods.join(",") !== "2026-01-01" ||
+      tenantBCatalogRows.length !== 1 ||
+      tenantBCatalogRows[0]?.unit_id !== unitB1.id ||
+      tenantBCatalogRows[0]?.periods.join(",") !== "2025-01-01,2025-02-01" ||
+      tenantBCatalogRows[0]?.variable_id === tenantACatalogRows[0]?.variable_id
+    ) {
+      throw new Error("Fixture ortak variable katalog/unit value sözleşmesi geçersiz.");
+    }
+
+    const variablePrecision = await client.query<{ value: number }>(
+      `SELECT vv.value
+       FROM variable_values vv
+       JOIN variables v ON v.id = vv.variable_id
+       WHERE v.name = $1 AND vv.period_start = '2025-02-01'`,
+      [`${COMPANY_PREFIX} Production Quantity`],
+    );
+    if (!variablePrecision.rows.some((row) => Math.abs(row.value - 150.5) < 1e-6)) {
+      throw new Error("Fixture variable numeric precision sözleşmesi geçersiz.");
+    }
+
     const users = await client.query<{
       username: string;
       company_id: number;
@@ -605,7 +762,7 @@ async function assertFixtures(): Promise<void> {
   }
 
   console.log(
-    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 8 meter, 8 consumption, 11 user.",
+    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 4 energy use group, 8 meter, 8 consumption, 5 variable, 10 variable value, 11 user.",
   );
 }
 
