@@ -5,6 +5,13 @@ import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
 
+const METER_ENERGY_TYPES = new Set(["elektrik", "dogalgaz", "buhar", "su", "diger"]);
+const UI_RECORD_TYPE_MAP = new Map([
+  ["measurement", "physical_meter"],
+  ["manual", "manual_consumption_point"],
+]);
+const METER_NAME_MAX_LENGTH = 255;
+
 function isCompanyAdmin(role: string) {
   return role === "admin" || role === "kontrol_admin";
 }
@@ -51,6 +58,30 @@ function parsePathId(value: unknown, field = "id"): number {
 
 function isBadRequestError(err: unknown): err is BadRequestError {
   return err instanceof BadRequestError;
+}
+
+function parseMeterName(value: unknown): string {
+  if (typeof value !== "string") throw new BadRequestError("Geçersiz sayaç adı");
+  const normalized = value.trim();
+  if (!normalized || normalized.length > METER_NAME_MAX_LENGTH) {
+    throw new BadRequestError("Geçersiz sayaç adı");
+  }
+  return normalized;
+}
+
+function parseMeterEnergyType(value: unknown): string {
+  if (typeof value !== "string" || !METER_ENERGY_TYPES.has(value)) {
+    throw new BadRequestError("Geçersiz enerji kaynağı türü");
+  }
+  return value;
+}
+
+function parseUiRecordType(value: unknown, allowLegacyDefault = false): string {
+  if (value === undefined && allowLegacyDefault) return "physical_meter";
+  if (typeof value !== "string") throw new BadRequestError("Geçersiz kayıt tipi");
+  const recordType = UI_RECORD_TYPE_MAP.get(value);
+  if (!recordType) throw new BadRequestError("Geçersiz kayıt tipi");
+  return recordType;
 }
 
 function scopedMeterCondition(id: number, role: string, companyId: number) {
@@ -177,11 +208,13 @@ router.post("/meters", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId, uiRecordType } = req.body;
-    if (!name || !type || !unit) {
+    if (name === undefined || type === undefined || !unit) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
     }
 
-    const recordType = uiRecordType === "manual" ? "manual_consumption_point" : "physical_meter";
+    const normalizedName = parseMeterName(name);
+    const normalizedType = parseMeterEnergyType(type);
+    const recordType = parseUiRecordType(uiRecordType, true);
     const requestedUnitId = parseNullableId(unitId, "unitId");
     let parsedUnitId = requestedUnitId;
     let targetCompanyId = sessionCompanyId;
@@ -219,7 +252,7 @@ router.post("/meters", requireAuth, async (req, res) => {
     }
 
     const [meter] = await db.insert(metersTable).values({
-      name, type, recordType, location: location ?? "",
+      name: normalizedName, type: normalizedType, recordType, location: location ?? "",
       city: city || "Istanbul",
       unit, description: description || null,
       unitId: parsedUnitId,
@@ -279,9 +312,9 @@ router.patch("/meters/:id", requireAuth, async (req, res) => {
 
     const { name, type, location, city, unit, description, unitId, subUnitId, energySourceId, energyUseGroupId, uiRecordType } = req.body;
     const updates: Record<string, unknown> = {};
-    if (name !== undefined) updates.name = name;
-    if (type !== undefined) updates.type = type;
-    if (uiRecordType !== undefined) updates.recordType = uiRecordType === "manual" ? "manual_consumption_point" : "physical_meter";
+    if (name !== undefined) updates.name = parseMeterName(name);
+    if (type !== undefined) updates.type = parseMeterEnergyType(type);
+    if (uiRecordType !== undefined) updates.recordType = parseUiRecordType(uiRecordType);
     if (location !== undefined) updates.location = location;
     if (city !== undefined) updates.city = city;
     if (unit !== undefined) updates.unit = unit;

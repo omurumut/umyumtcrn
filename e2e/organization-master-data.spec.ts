@@ -144,9 +144,9 @@ async function resolveFixtureIds(): Promise<FixtureIds> {
       (SELECT id FROM sub_units WHERE name = '[E2E] Sub-unit A1') AS sub_unit_a1,
       (SELECT id FROM sub_units WHERE name = '[E2E] Sub-unit A2') AS sub_unit_a2,
       (SELECT id FROM sub_units WHERE name = '[E2E] Sub-unit B1') AS sub_unit_b1,
-      (SELECT id FROM energy_sources WHERE company_id = (SELECT id FROM companies WHERE subdomain = 'e2e-tenant-a') AND unit_id = (SELECT id FROM units WHERE name = '[E2E] Unit A1')) AS source_a1,
-      (SELECT id FROM energy_sources WHERE company_id = (SELECT id FROM companies WHERE subdomain = 'e2e-tenant-a') AND unit_id = (SELECT id FROM units WHERE name = '[E2E] Unit A2')) AS source_a2,
-      (SELECT id FROM energy_sources WHERE company_id = (SELECT id FROM companies WHERE subdomain = 'e2e-tenant-b')) AS source_b1,
+      (SELECT id FROM energy_sources WHERE company_id = (SELECT id FROM companies WHERE subdomain = 'e2e-tenant-a') AND unit_id = (SELECT id FROM units WHERE name = '[E2E] Unit A1') AND name = '[E2E] Common Source') AS source_a1,
+      (SELECT id FROM energy_sources WHERE company_id = (SELECT id FROM companies WHERE subdomain = 'e2e-tenant-a') AND unit_id = (SELECT id FROM units WHERE name = '[E2E] Unit A2') AND name = '[E2E] Source A2') AS source_a2,
+      (SELECT id FROM energy_sources WHERE company_id = (SELECT id FROM companies WHERE subdomain = 'e2e-tenant-b') AND name = '[E2E] Common Source') AS source_b1,
       (SELECT id FROM users WHERE username = 'e2e_admin_a') AS admin_a,
       (SELECT id FROM users WHERE username = 'e2e_admin_b') AS admin_b,
       (SELECT id FROM users WHERE username = 'e2e_user_a1') AS standard_a1
@@ -684,15 +684,18 @@ test("SUBUNIT-01 rol bazlı liste scopeu korunur", async ({ request }) => {
   const kontrolAdmin = await login(request, credentials.kontrolAdminA);
   const superadmin = await login(request, credentials.superadmin);
 
-  const standardRows = (await (await request.get(`/api/sub-units?unitId=${ids.unitB1}`, { headers: authorization(standard.token) })).json()) as Array<{ id: number }>;
-  expect(standardRows.map((row) => row.id)).toEqual([ids.subUnitA1]);
+  const standardRows = (await (await request.get(`/api/sub-units?unitId=${ids.unitB1}`, { headers: authorization(standard.token) })).json()) as Array<{ id: number; companyId: number; unitId: number }>;
+  expect(standardRows.some((row) => row.id === ids.subUnitA1)).toBe(true);
+  expect(standardRows.every((row) => row.companyId === ids.companyA && row.unitId === ids.unitA1)).toBe(true);
   for (const token of [admin.token, kontrolAdmin.token]) {
-    const rows = (await (await request.get("/api/sub-units", { headers: authorization(token) })).json()) as Array<{ id: number }>;
-    expect(rows.map((row) => row.id).sort()).toEqual([ids.subUnitA1, ids.subUnitA2].sort());
+    const rows = (await (await request.get("/api/sub-units", { headers: authorization(token) })).json()) as Array<{ id: number; companyId: number; unitId: number }>;
+    expect(rows.map((row) => row.id)).toEqual(expect.arrayContaining([ids.subUnitA1, ids.subUnitA2]));
+    expect(rows.every((row) => row.companyId === ids.companyA && [ids.unitA1, ids.unitA2].includes(row.unitId))).toBe(true);
     expect((await request.get(`/api/sub-units?unitId=${ids.unitB1}`, { headers: authorization(token) })).status()).toBe(403);
   }
-  const filtered = (await (await request.get(`/api/sub-units?companyId=${ids.companyB}&unitId=${ids.unitB1}`, { headers: authorization(superadmin.token) })).json()) as Array<{ id: number }>;
-  expect(filtered.map((row) => row.id)).toEqual([ids.subUnitB1]);
+  const filtered = (await (await request.get(`/api/sub-units?companyId=${ids.companyB}&unitId=${ids.unitB1}`, { headers: authorization(superadmin.token) })).json()) as Array<{ id: number; companyId: number; unitId: number }>;
+  expect(filtered.some((row) => row.id === ids.subUnitB1)).toBe(true);
+  expect(filtered.every((row) => row.companyId === ids.companyB && row.unitId === ids.unitB1)).toBe(true);
 });
 
 test("SUBUNIT-02 standard cross-unit body değerini kullanamaz ve kayıt session unitte oluşur", async ({ request }) => {
@@ -864,15 +867,18 @@ test("SOURCE-01 rol bazlı enerji kaynağı liste scopeu korunur", async ({ requ
   const admin = await login(request, credentials.adminA);
   const kontrolAdmin = await login(request, credentials.kontrolAdminA);
   const superadmin = await login(request, credentials.superadmin);
-  const standardRows = (await (await request.get(`/api/energy-sources?unitId=${ids.unitB1}`, { headers: authorization(standard.token) })).json()) as Array<{ id: number }>;
-  expect(standardRows.map((row) => row.id)).toEqual([ids.sourceA1]);
+  const standardRows = (await (await request.get(`/api/energy-sources?unitId=${ids.unitB1}`, { headers: authorization(standard.token) })).json()) as Array<{ id: number; companyId: number; unitId: number }>;
+  expect(standardRows.some((row) => row.id === ids.sourceA1)).toBe(true);
+  expect(standardRows.every((row) => row.companyId === ids.companyA && row.unitId === ids.unitA1)).toBe(true);
   for (const token of [admin.token, kontrolAdmin.token]) {
-    const rows = (await (await request.get("/api/energy-sources", { headers: authorization(token) })).json()) as Array<{ id: number }>;
-    expect(rows.map((row) => row.id).sort()).toEqual([ids.sourceA1, ids.sourceA2].sort());
+    const rows = (await (await request.get("/api/energy-sources", { headers: authorization(token) })).json()) as Array<{ id: number; companyId: number; unitId: number }>;
+    expect(rows.map((row) => row.id)).toEqual(expect.arrayContaining([ids.sourceA1, ids.sourceA2]));
+    expect(rows.every((row) => row.companyId === ids.companyA && [ids.unitA1, ids.unitA2].includes(row.unitId))).toBe(true);
     expect((await request.get(`/api/energy-sources?unitId=${ids.unitB1}`, { headers: authorization(token) })).status()).toBe(403);
   }
-  const filtered = (await (await request.get(`/api/energy-sources?companyId=${ids.companyB}&unitId=${ids.unitB1}`, { headers: authorization(superadmin.token) })).json()) as Array<{ id: number }>;
-  expect(filtered.map((row) => row.id)).toEqual([ids.sourceB1]);
+  const filtered = (await (await request.get(`/api/energy-sources?companyId=${ids.companyB}&unitId=${ids.unitB1}`, { headers: authorization(superadmin.token) })).json()) as Array<{ id: number; companyId: number; unitId: number }>;
+  expect(filtered.some((row) => row.id === ids.sourceB1)).toBe(true);
+  expect(filtered.every((row) => row.companyId === ids.companyB && row.unitId === ids.unitB1)).toBe(true);
 });
 
 test("SOURCE-02 standard cross-unit body değerini kullanamaz ve source session unitte oluşur", async ({ request }) => {

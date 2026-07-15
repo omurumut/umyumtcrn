@@ -331,10 +331,10 @@ export default function Meters() {
   function downloadTemplate() {
     const rows = [
       {
-        "Sayaç Adı": "Ana Elektrik Panosu",
+        "Sayaç Adı": "Örnek Sayaç",
         "Kayıt Tipi": "olcum",
-        "Enerji Kaynağı": (energySources ?? [])[0]?.name ?? "",
-        "Alt Birim": (subUnits ?? [])[0]?.name ?? "",
+        "Enerji Kaynağı": "Elektrik",
+        "Alt Birim": "Örnek Alt Birim",
         "Enerji Kullanım Grubu": "",
         "İl": "İstanbul",
         "İlçe": "Beşiktaş",
@@ -625,7 +625,7 @@ export default function Meters() {
             </div>
             <div className="space-y-1.5">
               <Label>Sayaç Adı *</Label>
-              <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="ör. Ana Elektrik Panosu" />
+              <Input maxLength={255} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="ör. Ana Elektrik Panosu" />
             </div>
             <IlIlceSelector
               il={form.il}

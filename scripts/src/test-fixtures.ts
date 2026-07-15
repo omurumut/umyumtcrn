@@ -1,7 +1,9 @@
 import {
   companiesTable,
+  consumptionTable,
   db,
   energySourcesTable,
+  metersTable,
   pool,
   subUnitsTable,
   unitsTable,
@@ -158,7 +160,7 @@ async function applyFixtures(): Promise<void> {
       throw new Error("Fixture unit kayıtları oluşturulamadı.");
     }
 
-    await tx.insert(subUnitsTable).values([
+    const [subUnitA1, subUnitA2, subUnitB1, campusA1, campusA2, campusB1] = await tx.insert(subUnitsTable).values([
       {
         companyId: tenantA.id,
         unitId: unitA1.id,
@@ -174,9 +176,15 @@ async function applyFixtures(): Promise<void> {
         unitId: unitB1.id,
         name: `${COMPANY_PREFIX} Sub-unit B1`,
       },
-    ]);
+      { companyId: tenantA.id, unitId: unitA1.id, name: `${COMPANY_PREFIX} Campus A1`, city: "Ankara / Cankaya" },
+      { companyId: tenantA.id, unitId: unitA2.id, name: `${COMPANY_PREFIX} Campus A2`, city: "Izmir / Konak" },
+      { companyId: tenantB.id, unitId: unitB1.id, name: `${COMPANY_PREFIX} Campus A1`, city: "Bursa / Nilufer" },
+    ]).returning({ id: subUnitsTable.id });
+    if (!subUnitA1 || !subUnitA2 || !subUnitB1 || !campusA1 || !campusA2 || !campusB1) {
+      throw new Error("Fixture sub-unit kayıtları oluşturulamadı.");
+    }
 
-    await tx.insert(energySourcesTable).values([
+    const [, , , electricityA1, naturalGasA1, electricityA2, electricityB1] = await tx.insert(energySourcesTable).values([
       {
         companyId: tenantA.id,
         unitId: unitA1.id,
@@ -198,6 +206,38 @@ async function applyFixtures(): Promise<void> {
         name: `${COMPANY_PREFIX} Common Source`,
         unit: "kWh",
       },
+      { companyId: tenantA.id, unitId: unitA1.id, type: "elektrik", name: `${COMPANY_PREFIX} Electricity A1`, unit: "kWh" },
+      { companyId: tenantA.id, unitId: unitA1.id, type: "dogalgaz", name: `${COMPANY_PREFIX} Natural Gas A1`, unit: "m3" },
+      { companyId: tenantA.id, unitId: unitA2.id, type: "elektrik", name: `${COMPANY_PREFIX} Electricity A2`, unit: "kWh" },
+      { companyId: tenantB.id, unitId: unitB1.id, type: "elektrik", name: `${COMPANY_PREFIX} Electricity A1`, unit: "kWh" },
+    ]).returning({ id: energySourcesTable.id });
+    if (!electricityA1 || !naturalGasA1 || !electricityA2 || !electricityB1) {
+      throw new Error("Fixture energy source kayıtları oluşturulamadı.");
+    }
+
+    const [electricMeterA1, gasMeterA1, , , , dependencyMeterA1, , meterB1] = await tx.insert(metersTable).values([
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Shared Meter`, type: "elektrik", recordType: "physical_meter", location: "Main Panel", city: "Ankara / Cankaya", unit: "kWh" },
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: naturalGasA1.id, name: `${COMPANY_PREFIX} Gas Meter A1`, type: "dogalgaz", recordType: "physical_meter", location: "Boiler Room", city: "Ankara / Cankaya", unit: "m3" },
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Manual Meter A1`, type: "elektrik", recordType: "manual_consumption_point", location: "Invoice", city: "Ankara / Cankaya", unit: "kWh" },
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Virtual Meter A1`, type: "elektrik", recordType: "virtual_meter", location: "Calculated", city: "Ankara / Cankaya", unit: "kWh" },
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Import Meter A1`, type: "elektrik", recordType: "physical_meter", location: "Import", city: "Ankara / Cankaya", unit: "kWh" },
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Dependency Meter A1`, type: "elektrik", recordType: "physical_meter", location: "Dependency", city: "Ankara / Cankaya", unit: "kWh" },
+      { companyId: tenantA.id, unitId: unitA2.id, subUnitId: campusA2.id, energySourceId: electricityA2.id, name: `${COMPANY_PREFIX} Meter A2`, type: "elektrik", recordType: "physical_meter", location: "A2 Panel", city: "Izmir / Konak", unit: "kWh" },
+      { companyId: tenantB.id, unitId: unitB1.id, subUnitId: campusB1.id, energySourceId: electricityB1.id, name: `${COMPANY_PREFIX} Shared Meter`, type: "elektrik", recordType: "physical_meter", location: "B1 Panel", city: "Bursa / Nilufer", unit: "kWh" },
+    ]).returning({ id: metersTable.id });
+    if (!electricMeterA1 || !gasMeterA1 || !dependencyMeterA1 || !meterB1) {
+      throw new Error("Fixture meter kayıtları oluşturulamadı.");
+    }
+
+    await tx.insert(consumptionTable).values([
+      { companyId: tenantA.id, meterId: electricMeterA1.id, year: 2025, month: 1, kwh: 1000, tep: 0.086, co2: 400, hdd: 120, cdd: 10 },
+      { companyId: tenantA.id, meterId: electricMeterA1.id, year: 2025, month: 2, kwh: 1500, tep: 0.129, co2: 600, hdd: 90, cdd: 20 },
+      { companyId: tenantA.id, meterId: electricMeterA1.id, year: 2025, month: 3, kwh: 2000, tep: 0.172, co2: 800, hdd: 60, cdd: 30 },
+      { companyId: tenantA.id, meterId: gasMeterA1.id, year: 2025, month: 1, kwh: 1000, tep: 0.86, co2: 202, hdd: 120, cdd: 10 },
+      { companyId: tenantA.id, meterId: gasMeterA1.id, year: 2026, month: 1, kwh: 1500, tep: 1.29, co2: 303, hdd: 130, cdd: 5 },
+      { companyId: tenantA.id, meterId: dependencyMeterA1.id, year: 2025, month: 1, kwh: 250, tep: 0.0215, co2: 100 },
+      { companyId: tenantB.id, meterId: meterB1.id, year: 2025, month: 1, kwh: 700, tep: 0.0602, co2: 280 },
+      { companyId: tenantB.id, meterId: meterB1.id, year: 2025, month: 2, kwh: 900, tep: 0.0774, co2: 360 },
     ]);
 
     await tx.insert(usersTable).values([
@@ -294,7 +334,7 @@ async function applyFixtures(): Promise<void> {
   });
 
   console.log(
-    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 3 sub-unit, 3 energy source, 11 user.",
+    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 8 meter, 8 consumption, 11 user.",
   );
 }
 
@@ -363,7 +403,7 @@ async function assertFixtures(): Promise<void> {
       [`${COMPANY_PREFIX}%`],
     );
     if (
-      Number(subUnitCount.rows[0]?.count) !== 3 ||
+      Number(subUnitCount.rows[0]?.count) !== 6 ||
       invalidSubUnits.rowCount !== 0
     ) {
       throw new Error("Fixture sub-unit sayısı veya tenant ilişkisi geçersiz.");
@@ -380,13 +420,17 @@ async function assertFixtures(): Promise<void> {
        ORDER BY id`,
       [`${COMPANY_PREFIX}%`],
     );
-    if (energySources.rowCount !== 3) {
-      throw new Error("Fixture energy source sayısı 3 değil.");
+    if (energySources.rowCount !== 7) {
+      throw new Error("Fixture energy source sayısı 7 değil.");
     }
     const expectedSourceScopes = new Set([
       `${tenantAId}:${unitA1.id}:${COMPANY_PREFIX} Common Source`,
       `${tenantAId}:${unitA2.id}:${COMPANY_PREFIX} Source A2`,
       `${tenantBId}:${unitB1.id}:${COMPANY_PREFIX} Common Source`,
+      `${tenantAId}:${unitA1.id}:${COMPANY_PREFIX} Electricity A1`,
+      `${tenantAId}:${unitA1.id}:${COMPANY_PREFIX} Natural Gas A1`,
+      `${tenantAId}:${unitA2.id}:${COMPANY_PREFIX} Electricity A2`,
+      `${tenantBId}:${unitB1.id}:${COMPANY_PREFIX} Electricity A1`,
     ]);
     for (const source of energySources.rows) {
       if (!expectedSourceScopes.delete(`${source.company_id}:${source.unit_id}:${source.name}`)) {
@@ -395,6 +439,49 @@ async function assertFixtures(): Promise<void> {
     }
     if (expectedSourceScopes.size !== 0) {
       throw new Error("Fixture energy source sözleşmesi eksik.");
+    }
+
+    const meterIntegrity = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM meters m
+       JOIN units u ON u.id = m.unit_id
+       JOIN sub_units su ON su.id = m.sub_unit_id
+       JOIN energy_sources es ON es.id = m.energy_source_id
+       WHERE m.name LIKE $1
+         AND m.company_id = u.company_id
+         AND m.company_id = su.company_id
+         AND m.company_id = es.company_id
+         AND m.unit_id = su.unit_id
+         AND m.unit_id = es.unit_id`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    if (Number(meterIntegrity.rows[0]?.count) !== 8) {
+      throw new Error("Fixture meter tenant/parent ilişkisi geçersiz.");
+    }
+
+    const consumptionIntegrity = await client.query<{ count: string; distinct_periods: string }>(
+      `SELECT count(*)::text AS count,
+              count(DISTINCT (c.meter_id, c.year, c.month))::text AS distinct_periods
+       FROM consumption c
+       JOIN meters m ON m.id = c.meter_id
+       WHERE m.name LIKE $1 AND c.company_id = m.company_id`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    if (
+      Number(consumptionIntegrity.rows[0]?.count) !== 8 ||
+      Number(consumptionIntegrity.rows[0]?.distinct_periods) !== 8
+    ) {
+      throw new Error("Fixture consumption tenant/dönem ilişkisi geçersiz.");
+    }
+
+    const numericValues = await client.query<{ kwh: number; tep: number; co2: number }>(
+      `SELECT c.kwh, c.tep, c.co2 FROM consumption c
+       JOIN meters m ON m.id = c.meter_id
+       WHERE m.name = $1 AND c.year = 2025 AND c.month = 1`,
+      [`${COMPANY_PREFIX} Shared Meter`],
+    );
+    if (!numericValues.rows.some(row => row.kwh === 1000 && Math.abs(row.tep - 0.086) < 1e-6 && row.co2 === 400)) {
+      throw new Error("Fixture consumption numeric precision sözleşmesi geçersiz.");
     }
 
     const users = await client.query<{
@@ -518,7 +605,7 @@ async function assertFixtures(): Promise<void> {
   }
 
   console.log(
-    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 3 sub-unit, 3 energy source, 11 user.",
+    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 8 meter, 8 consumption, 11 user.",
   );
 }
 

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable, energySourcesTable } from "@workspace/db";
-import { eq, and, ne, sql, SQL } from "drizzle-orm";
+import { eq, and, ne, sql, inArray, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { parseIlIlce } from "../services/mgm-stations-data.js";
 import { toStationKey, lookupOfficialByStationKey, lookupOfficialWeatherDegreeDay, lookupStationKeyByLocation } from "../services/mgm-sync.js";
@@ -53,6 +53,70 @@ function parsePathId(value: unknown, field = "id"): number {
 
 function isBadRequestError(err: unknown): err is BadRequestError {
   return err instanceof BadRequestError;
+}
+
+const POSTGRES_REAL_MAX = 3.4028234663852886e38;
+const DECIMAL_PATTERN = /^(?:\d+|\d*\.\d+)$/;
+
+function parseConsumptionValue(value: unknown, field = "tüketim"): number {
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized || !DECIMAL_PATTERN.test(normalized)) {
+      throw new BadRequestError(`Geçersiz ${field} değeri`);
+    }
+    parsed = Number(normalized);
+  } else {
+    throw new BadRequestError(`Geçersiz ${field} değeri`);
+  }
+
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > POSTGRES_REAL_MAX) {
+    throw new BadRequestError(`Geçersiz ${field} değeri`);
+  }
+  return parsed;
+}
+
+function calculateConsumptionMetrics(consumptionValue: number, energySourceType: string) {
+  const factors = energySourceType === "elektrik"
+    ? { tep: 0.000086, co2: 0.4 }
+    : energySourceType === "dogalgaz"
+      ? { tep: 0.00086, co2: 0.202 }
+      : null;
+  if (!factors) {
+    throw new BadRequestError("Desteklenmeyen enerji kaynağı tipi");
+  }
+  return {
+    tep: consumptionValue * factors.tep,
+    co2: consumptionValue * factors.co2,
+  };
+}
+
+type CalculationEnergySource = { id: number; companyId: number; type: string };
+
+function resolveCalculationSourceType(
+  meter: typeof metersTable.$inferSelect,
+  energySource?: CalculationEnergySource,
+) {
+  if (meter.energySourceId === null) return meter.type;
+  if (!energySource || energySource.id !== meter.energySourceId || energySource.companyId !== meter.companyId) {
+    throw new BadRequestError("Geçersiz enerji kaynağı");
+  }
+  return energySource.type;
+}
+
+async function getCalculationSourceType(meter: typeof metersTable.$inferSelect) {
+  if (meter.energySourceId === null) return meter.type;
+  const [energySource] = await db.select({
+    id: energySourcesTable.id,
+    companyId: energySourcesTable.companyId,
+    type: energySourcesTable.type,
+  }).from(energySourcesTable).where(and(
+    eq(energySourcesTable.id, meter.energySourceId),
+    eq(energySourcesTable.companyId, meter.companyId),
+  ));
+  return resolveCalculationSourceType(meter, energySource);
 }
 
 function firstPresent(...values: unknown[]) {
@@ -297,7 +361,7 @@ router.get("/consumption", requireAuth, async (req, res) => {
 router.post("/consumption", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const { meterId, year, month, kwh, tep, co2, hdd, cdd, notes, unitId, subUnitId, energySourceId } = req.body;
+    const { meterId, year, month, kwh, hdd, cdd, notes, unitId, subUnitId, energySourceId } = req.body;
     const parsedMeterId = parseRequiredId(meterId, "meterId");
     if (!parsedMeterId || year === undefined || year === null || month === undefined || month === null) {
       res.status(400).json({ error: "Zorunlu alanlar eksik" }); return;
@@ -330,9 +394,9 @@ router.post("/consumption", requireAuth, async (req, res) => {
       res.status(400).json({ error: relationError }); return;
     }
 
-    const kwhVal = parseFloat(kwh) || 0;
-    const tepVal = tep !== undefined ? parseFloat(tep) : kwhVal * 0.000086;
-    const co2Val = co2 !== undefined ? parseFloat(co2) : kwhVal * 0.4;
+    const kwhVal = parseConsumptionValue(kwh);
+    const sourceType = await getCalculationSourceType(meter);
+    const { tep: tepVal, co2: co2Val } = calculateConsumptionMetrics(kwhVal, sourceType);
 
     const [dupCheck] = await db
       .select({ id: consumptionTable.id })
@@ -417,6 +481,7 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
         meterId: consumptionTable.meterId,
         year: consumptionTable.year,
         month: consumptionTable.month,
+        kwh: consumptionTable.kwh,
         meterUnitId: metersTable.unitId,
         meterCompanyId: metersTable.companyId,
       })
@@ -431,7 +496,7 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
 
-    const { meterId, year, month, kwh, tep, co2, hdd, cdd, notes, unitId, subUnitId, energySourceId } = req.body;
+    const { meterId, year, month, kwh, hdd, cdd, notes, unitId, subUnitId, energySourceId } = req.body;
     const finalMeterId = meterId !== undefined ? parseRequiredId(meterId, "meterId") : existing.meterId;
     if (!finalMeterId) {
       res.status(400).json({ error: "Geçersiz sayaç" }); return;
@@ -485,9 +550,14 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
     }
     if (year !== undefined) updates.year = finalYear;
     if (month !== undefined) updates.month = finalMonth;
-    if (kwh !== undefined) updates.kwh = parseFloat(kwh);
-    if (tep !== undefined) updates.tep = parseFloat(tep);
-    if (co2 !== undefined) updates.co2 = parseFloat(co2);
+    if (kwh !== undefined || meterId !== undefined) {
+      const finalKwh = kwh !== undefined ? parseConsumptionValue(kwh) : existing.kwh;
+      const sourceType = await getCalculationSourceType(finalMeter);
+      const metrics = calculateConsumptionMetrics(finalKwh, sourceType);
+      updates.kwh = finalKwh;
+      updates.tep = metrics.tep;
+      updates.co2 = metrics.co2;
+    }
     if (hdd !== undefined) updates.hdd = parseFloat(hdd);
     if (cdd !== undefined) updates.cdd = parseFloat(cdd);
     if (notes !== undefined) updates.notes = notes;
@@ -527,6 +597,15 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
     const allMeters = meterConditions.length > 0
       ? await db.select().from(metersTable).where(and(...meterConditions))
       : await db.select().from(metersTable);
+    const sourceIds = [...new Set(allMeters.map(meter => meter.energySourceId).filter((id): id is number => id !== null))];
+    const calculationSources = sourceIds.length > 0
+      ? await db.select({
+          id: energySourcesTable.id,
+          companyId: energySourcesTable.companyId,
+          type: energySourcesTable.type,
+        }).from(energySourcesTable).where(inArray(energySourcesTable.id, sourceIds))
+      : [];
+    const calculationSourceById = new Map(calculationSources.map(source => [source.id, source]));
 
     let imported = 0;
     const errors: { row: number; message: string }[] = [];
@@ -579,11 +658,12 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
           errors.push({ row: rowNum, message: "Geçersiz yıl/ay değeri" });
           continue;
         }
-        const kwh = parseFloat(String(row.kwh)) || 0;
-        const tepFactor = meter.type === "dogalgaz" ? 0.00086 : 0.000086;
-        const co2Factor = meter.type === "dogalgaz" ? 0.202 : 0.4;
-        const tepVal = row.tep !== undefined && row.tep !== "" ? parseFloat(String(row.tep)) : kwh * tepFactor;
-        const co2Val = row.co2 !== undefined && row.co2 !== "" ? parseFloat(String(row.co2)) : kwh * co2Factor;
+        const kwh = parseConsumptionValue(row.kwh);
+        const sourceType = resolveCalculationSourceType(
+          meter,
+          meter.energySourceId === null ? undefined : calculationSourceById.get(meter.energySourceId),
+        );
+        const { tep: tepVal, co2: co2Val } = calculateConsumptionMetrics(kwh, sourceType);
 
         let hddVal: number | null = row.hdd !== undefined && row.hdd !== "" ? parseFloat(String(row.hdd)) : null;
         let cddVal: number | null = row.cdd !== undefined && row.cdd !== "" ? parseFloat(String(row.cdd)) : null;
