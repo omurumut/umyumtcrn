@@ -2,7 +2,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import ExcelJS from "exceljs";
 import { db, weatherDegreeDaysTable, mgmStationMappingsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
 // Resolve data dir relative to the built bundle (dist/index.mjs → dist/data/mgm-import),
@@ -31,7 +31,63 @@ export interface DegreeDaysImportResult {
   failed: number;
   uniqueStations: number;
   years: number[];
-  errors: string[];
+  errors: DegreeDaysImportError[];
+}
+
+export interface DegreeDaysImportError {
+  rowNumber: number;
+  code: string;
+  message: string;
+}
+
+const POSTGRES_REAL_MAX = 3.4028234663852886e38;
+const DECIMAL_PATTERN = /^(?:\d+|\d*\.\d+)$/;
+
+function formulaResult(value: ExcelJS.CellValue | null): unknown {
+  if (value && typeof value === "object" && !(value instanceof Date) && "result" in value) {
+    return value.result;
+  }
+  return value;
+}
+
+function parseImportDecimal(value: ExcelJS.CellValue | null): number | null {
+  const raw = formulaResult(value);
+  if (raw === null || raw === undefined || raw === "") return null;
+  let parsed: number;
+  if (typeof raw === "number") {
+    parsed = raw;
+  } else if (typeof raw === "string" && DECIMAL_PATTERN.test(raw.trim())) {
+    parsed = Number(raw.trim());
+  } else {
+    return null;
+  }
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= POSTGRES_REAL_MAX ? parsed : null;
+}
+
+function parseImportPositiveInteger(value: ExcelJS.CellValue | null): number | null {
+  const raw = formulaResult(value);
+  let parsed: number;
+  if (typeof raw === "number") {
+    parsed = raw;
+  } else if (typeof raw === "string" && /^[1-9]\d*$/.test(raw.trim())) {
+    parsed = Number(raw.trim());
+  } else {
+    return null;
+  }
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseImportNonNegativeInteger(value: ExcelJS.CellValue | null): number | null {
+  const raw = formulaResult(value);
+  let parsed: number;
+  if (typeof raw === "number") {
+    parsed = raw;
+  } else if (typeof raw === "string" && /^\d+$/.test(raw.trim())) {
+    parsed = Number(raw.trim());
+  } else {
+    return null;
+  }
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 // ── Station Mapping Import ───────────────────────────────────────────
@@ -179,11 +235,12 @@ export async function importDegreeDays(
     mapping_note: colIndex("mapping_note"),
   };
 
-  if (ci.station_key < 0 || ci.year < 0 || ci.month < 0) {
-    throw new Error("Zorunlu kolonlar (station_key, year, month) bulunamadı");
+  if (ci.station_key < 0 || ci.province < 0 || ci.year < 0 || ci.month < 0 || ci.hdd < 0 || ci.cdd < 0) {
+    throw new Error("Zorunlu kolonlar (station_key, province, year, month, hdd, cdd) bulunamadı");
   }
 
   interface RowData {
+    rowNumber: number;
     stationKey: string;
     stationName: string | null;
     province: string;
@@ -208,29 +265,45 @@ export async function importDegreeDays(
 
   ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber === 1) return;
+    result.totalRows++;
     const vals = row.values as (ExcelJS.CellValue | undefined)[];
     const get = (idx: number) => idx >= 0 ? (vals[idx + 1] ?? null) : null;
-    const str = (v: ExcelJS.CellValue | null) => v != null ? String(v).trim() : null;
-    const num = (v: ExcelJS.CellValue | null): number | null => {
-      if (v == null) return null;
-      const n = Number(v);
-      return isNaN(n) ? null : Math.round(n);
-    };
-    const numF = (v: ExcelJS.CellValue | null): number | null => {
-      if (v == null) return null;
-      const n = Number(v);
-      return isNaN(n) ? null : n;
+    const str = (v: ExcelJS.CellValue | null) => {
+      const raw = formulaResult(v);
+      return typeof raw === "string" || typeof raw === "number" ? String(raw).trim() || null : null;
     };
 
     const stationKey = str(get(ci.station_key));
-    const year = num(get(ci.year));
-    const month = num(get(ci.month));
+    const year = parseImportPositiveInteger(get(ci.year));
+    const month = parseImportPositiveInteger(get(ci.month));
     const province = str(get(ci.province));
+    const hdd = parseImportDecimal(get(ci.hdd));
+    const cdd = parseImportDecimal(get(ci.cdd));
+    const hddDaysRaw = get(ci.hdd_days);
+    const cddDaysRaw = get(ci.cdd_days);
+    const annualHddRaw = get(ci.annual_hdd);
+    const annualCddRaw = get(ci.annual_cdd);
+    const hddDays = parseImportNonNegativeInteger(hddDaysRaw);
+    const cddDays = parseImportNonNegativeInteger(cddDaysRaw);
+    const annualHdd = parseImportDecimal(annualHddRaw);
+    const annualCdd = parseImportDecimal(annualCddRaw);
+    const hasValue = (value: ExcelJS.CellValue | null) => value !== null && value !== undefined && value !== "";
 
-    if (!stationKey || !year || !month || !province) return;
-    if (month < 1 || month > 12) return;
+    const fail = (code: string, message: string) => {
+      result.failed++;
+      if (result.errors.length < 100) result.errors.push({ rowNumber, code, message });
+    };
+    if (!stationKey) { fail("MISSING_STATION_KEY", "İstasyon anahtarı zorunludur."); return; }
+    if (!province) { fail("MISSING_PROVINCE", "İl bilgisi zorunludur."); return; }
+    if (year === null) { fail("INVALID_YEAR", "Yıl değeri geçersizdir."); return; }
+    if (month === null || month > 12) { fail("INVALID_MONTH", "Ay değeri 1-12 arasında olmalıdır."); return; }
+    if (hdd === null) { fail("INVALID_HDD", "HDD değeri geçersizdir."); return; }
+    if (cdd === null) { fail("INVALID_CDD", "CDD değeri geçersizdir."); return; }
+    if (hasValue(hddDaysRaw) && hddDays === null) { fail("INVALID_HDD_DAYS", "HDD gün sayısı geçersizdir."); return; }
+    if (hasValue(cddDaysRaw) && cddDays === null) { fail("INVALID_CDD_DAYS", "CDD gün sayısı geçersizdir."); return; }
+    if (hasValue(annualHddRaw) && annualHdd === null) { fail("INVALID_ANNUAL_HDD", "Yıllık HDD değeri geçersizdir."); return; }
+    if (hasValue(annualCddRaw) && annualCdd === null) { fail("INVALID_ANNUAL_CDD", "Yıllık CDD değeri geçersizdir."); return; }
 
-    result.totalRows++;
     stationKeys.add(stationKey);
     yearSet.add(year);
 
@@ -238,18 +311,19 @@ export async function importDegreeDays(
     const isOfficial = isOfficialRaw === true || isOfficialRaw === 1 || String(isOfficialRaw).toLowerCase() === "true";
 
     rows.push({
+      rowNumber,
       stationKey,
       stationName: str(get(ci.station_name)),
       province,
       district: str(get(ci.district)) || null,
       year,
       month,
-      hdd: num(get(ci.hdd)) ?? 0,
-      cdd: num(get(ci.cdd)) ?? 0,
-      hddDays: num(get(ci.hdd_days)),
-      cddDays: num(get(ci.cdd_days)),
-      annualHdd: numF(get(ci.annual_hdd)),
-      annualCdd: numF(get(ci.annual_cdd)),
+      hdd,
+      cdd,
+      hddDays,
+      cddDays,
+      annualHdd,
+      annualCdd,
       source: str(get(ci.source)) ?? "MGM",
       sourceUrl: str(get(ci.source_url)),
       isOfficial,
@@ -264,10 +338,21 @@ export async function importDegreeDays(
   const BATCH = 500;
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
-    try {
-      for (const row of batch) {
+    for (const row of batch) {
+      try {
         const date = `${row.year}-${String(row.month).padStart(2, "0")}`;
         const districtVal = row.district || null;
+        const existing = row.isOfficial
+          ? await db.select({ id: weatherDegreeDaysTable.id })
+            .from(weatherDegreeDaysTable)
+            .where(and(
+              eq(weatherDegreeDaysTable.stationKey, row.stationKey),
+              eq(weatherDegreeDaysTable.year, row.year),
+              eq(weatherDegreeDaysTable.month, row.month),
+              eq(weatherDegreeDaysTable.isOfficial, true),
+            ))
+            .limit(1)
+          : [];
 
         await db.execute(sql`
           INSERT INTO weather_degree_days (
@@ -304,11 +389,18 @@ export async function importDegreeDays(
             imported_at = NOW(),
             updated_at = NOW()
         `);
-        result.inserted++;
+        if (existing.length > 0) result.updated++;
+        else result.inserted++;
+      } catch {
+        result.failed++;
+        if (result.errors.length < 100) {
+          result.errors.push({
+            rowNumber: row.rowNumber,
+            code: "DATABASE_ERROR",
+            message: "Satır veritabanına kaydedilemedi.",
+          });
+        }
       }
-    } catch (err) {
-      result.failed += batch.length;
-      result.errors.push(`Batch ${i}-${i + BATCH}: ${String(err)}`);
     }
 
     if ((i + BATCH) % 2000 === 0 || i + BATCH >= rows.length) {
@@ -316,6 +408,6 @@ export async function importDegreeDays(
     }
   }
 
-  log(`[DegreeDays] Tamamlandı: ${result.inserted} satır işlendi, ${result.failed} hata`);
+  log(`[DegreeDays] Tamamlandı: +${result.inserted} eklendi, ~${result.updated} güncellendi, ${result.skipped} atlandı, ${result.failed} hata`);
   return result;
 }

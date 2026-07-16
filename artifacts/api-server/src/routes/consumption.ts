@@ -78,6 +78,29 @@ function parseConsumptionValue(value: unknown, field = "tüketim"): number {
   return parsed;
 }
 
+function parseDegreeDayValue(value: unknown, field: "HDD" | "CDD"): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized || !DECIMAL_PATTERN.test(normalized)) {
+      throw new BadRequestError(`Geçersiz ${field} değeri`);
+    }
+    parsed = Number(normalized);
+  } else {
+    throw new BadRequestError(`Geçersiz ${field} değeri`);
+  }
+
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > POSTGRES_REAL_MAX) {
+    throw new BadRequestError(`Geçersiz ${field} değeri`);
+  }
+  return parsed;
+}
+
 function calculateConsumptionMetrics(consumptionValue: number, energySourceType: string) {
   const factors = energySourceType === "elektrik"
     ? { tep: 0.000086, co2: 0.4 }
@@ -191,6 +214,14 @@ interface MgmLookupResult {
   dataMethod: "official_monthly";
 }
 
+interface ConsumptionWeatherSnapshot {
+  hdd: number | null;
+  cdd: number | null;
+  weatherStationName: string | null;
+  weatherStationNote: string | null;
+  weatherDataMethod: "official_monthly" | "no_official_data" | null;
+}
+
 async function autoLookupHddCdd(location: string, year: number, month: number): Promise<MgmLookupResult | null> {
   try {
     const { il, ilce } = parseIlIlce(location);
@@ -275,6 +306,55 @@ async function autoLookupHddCdd(location: string, year: number, month: number): 
   } catch {
     return null;
   }
+}
+
+async function resolveConsumptionWeatherSnapshot(
+  meter: typeof metersTable.$inferSelect,
+  year: number,
+  month: number,
+  providedHdd: number | null | undefined,
+  providedCdd: number | null | undefined,
+): Promise<ConsumptionWeatherSnapshot> {
+  const hasManualValue = providedHdd !== undefined && providedHdd !== null
+    || providedCdd !== undefined && providedCdd !== null;
+
+  if (hasManualValue) {
+    return {
+      hdd: providedHdd ?? null,
+      cdd: providedCdd ?? null,
+      weatherStationName: null,
+      weatherStationNote: null,
+      weatherDataMethod: null,
+    };
+  }
+
+  if (meter.city) {
+    const mgmResult = await autoLookupHddCdd(meter.city, year, month);
+    if (mgmResult) {
+      return {
+        hdd: mgmResult.hdd,
+        cdd: mgmResult.cdd,
+        weatherStationName: mgmResult.stationName,
+        weatherStationNote: mgmResult.stationNote,
+        weatherDataMethod: mgmResult.dataMethod,
+      };
+    }
+    return {
+      hdd: null,
+      cdd: null,
+      weatherStationName: null,
+      weatherStationNote: `Bu dönem (${year}/${month}) ve lokasyon ("${meter.city}") için resmi MGM HDD/CDD verisi bulunamadı. Veri senkronizasyonu için yöneticinize başvurun.`,
+      weatherDataMethod: "no_official_data",
+    };
+  }
+
+  return {
+    hdd: null,
+    cdd: null,
+    weatherStationName: null,
+    weatherStationNote: null,
+    weatherDataMethod: null,
+  };
 }
 
 router.get("/consumption", requireAuth, async (req, res) => {
@@ -368,6 +448,8 @@ router.post("/consumption", requireAuth, async (req, res) => {
     }
     const yr = parseRequiredId(year, "year");
     const mo = parseRequiredId(month, "month");
+    const parsedHdd = parseDegreeDayValue(hdd, "HDD");
+    const parsedCdd = parseDegreeDayValue(cdd, "CDD");
     if (!yr || !mo || mo < 1 || mo > 12) {
       res.status(400).json({ error: "GeÃ§ersiz yÄ±l/ay deÄŸeri" }); return;
     }
@@ -411,32 +493,7 @@ router.post("/consumption", requireAuth, async (req, res) => {
       res.status(409).json({ error: `Bu sayaç ve dönem (${yr}/${mo}) için kayıt zaten mevcut` }); return;
     }
 
-    let hddVal: number | null = null;
-    let cddVal: number | null = null;
-    let weatherStationName: string | null = null;
-    let weatherStationNote: string | null = null;
-    let weatherDataMethod: string | null = null;
-
-    if (hdd !== undefined && hdd !== null && hdd !== "") {
-      hddVal = parseFloat(hdd);
-    }
-    if (cdd !== undefined && cdd !== null && cdd !== "") {
-      cddVal = parseFloat(cdd);
-    }
-
-    if (hddVal === null && cddVal === null && meter.city) {
-      const mgmResult = await autoLookupHddCdd(meter.city, yr, mo);
-      if (mgmResult) {
-        hddVal = mgmResult.hdd;
-        cddVal = mgmResult.cdd;
-        weatherStationName = mgmResult.stationName;
-        weatherStationNote = mgmResult.stationNote;
-        weatherDataMethod = mgmResult.dataMethod;
-      } else {
-        weatherDataMethod = "no_official_data";
-        weatherStationNote = `Bu dönem (${yr}/${mo}) ve lokasyon ("${meter.city}") için resmi MGM HDD/CDD verisi bulunamadı. Veri senkronizasyonu için yöneticinize başvurun.`;
-      }
-    }
+    const weatherSnapshot = await resolveConsumptionWeatherSnapshot(meter, yr, mo, parsedHdd, parsedCdd);
 
     const [record] = await db.insert(consumptionTable).values({
       companyId: meter.companyId,
@@ -446,17 +503,17 @@ router.post("/consumption", requireAuth, async (req, res) => {
       kwh: kwhVal,
       tep: tepVal,
       co2: co2Val,
-      hdd: hddVal,
-      cdd: cddVal,
+      hdd: weatherSnapshot.hdd,
+      cdd: weatherSnapshot.cdd,
       notes: notes || null,
-      weatherStationName: weatherStationName ?? null,
-      weatherStationNote: weatherStationNote ?? null,
+      weatherStationName: weatherSnapshot.weatherStationName,
+      weatherStationNote: weatherSnapshot.weatherStationNote,
     }).returning();
 
     res.status(201).json({
       ...record,
       meterName: meter.name,
-      weatherDataMethod,
+      weatherDataMethod: weatherSnapshot.weatherDataMethod,
     });
   } catch (err) {
     if (isBadRequestError(err)) {
@@ -497,6 +554,8 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
     }
 
     const { meterId, year, month, kwh, hdd, cdd, notes, unitId, subUnitId, energySourceId } = req.body;
+    const parsedHdd = parseDegreeDayValue(hdd, "HDD");
+    const parsedCdd = parseDegreeDayValue(cdd, "CDD");
     const finalMeterId = meterId !== undefined ? parseRequiredId(meterId, "meterId") : existing.meterId;
     if (!finalMeterId) {
       res.status(400).json({ error: "Geçersiz sayaç" }); return;
@@ -544,6 +603,7 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
     }
 
     const updates: Record<string, unknown> = {};
+    let responseWeatherDataMethod: ConsumptionWeatherSnapshot["weatherDataMethod"] | undefined;
     if (meterId !== undefined) {
       updates.meterId = finalMeter.id;
       updates.companyId = finalMeter.companyId;
@@ -558,12 +618,34 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
       updates.tep = metrics.tep;
       updates.co2 = metrics.co2;
     }
-    if (hdd !== undefined) updates.hdd = parseFloat(hdd);
-    if (cdd !== undefined) updates.cdd = parseFloat(cdd);
+    const snapshotContextChanged = finalMeter.id !== existing.meterId
+      || finalYear !== existing.year
+      || finalMonth !== existing.month;
+    const weatherFieldsProvided = hdd !== undefined || cdd !== undefined;
+    if (snapshotContextChanged) {
+      const weatherSnapshot = await resolveConsumptionWeatherSnapshot(
+        finalMeter,
+        finalYear,
+        finalMonth,
+        parsedHdd,
+        parsedCdd,
+      );
+      updates.hdd = weatherSnapshot.hdd;
+      updates.cdd = weatherSnapshot.cdd;
+      updates.weatherStationName = weatherSnapshot.weatherStationName;
+      updates.weatherStationNote = weatherSnapshot.weatherStationNote;
+      responseWeatherDataMethod = weatherSnapshot.weatherDataMethod;
+    } else if (weatherFieldsProvided) {
+      if (parsedHdd !== undefined) updates.hdd = parsedHdd;
+      if (parsedCdd !== undefined) updates.cdd = parsedCdd;
+      updates.weatherStationName = null;
+      updates.weatherStationNote = null;
+      responseWeatherDataMethod = null;
+    }
     if (notes !== undefined) updates.notes = notes;
 
     const [record] = await db.update(consumptionTable).set(updates).where(scopedConsumptionCondition(id, role, sessionCompanyId)).returning();
-    res.json(record);
+    res.json(responseWeatherDataMethod === undefined ? record : { ...record, weatherDataMethod: responseWeatherDataMethod });
   } catch (err) {
     if (isBadRequestError(err)) {
       res.status(400).json({ error: err.message }); return;
@@ -665,8 +747,12 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
         );
         const { tep: tepVal, co2: co2Val } = calculateConsumptionMetrics(kwh, sourceType);
 
-        let hddVal: number | null = row.hdd !== undefined && row.hdd !== "" ? parseFloat(String(row.hdd)) : null;
-        let cddVal: number | null = row.cdd !== undefined && row.cdd !== "" ? parseFloat(String(row.cdd)) : null;
+        let hddVal: number | null = row.hdd !== undefined && row.hdd !== ""
+          ? parseDegreeDayValue(row.hdd, "HDD") ?? null
+          : null;
+        let cddVal: number | null = row.cdd !== undefined && row.cdd !== ""
+          ? parseDegreeDayValue(row.cdd, "CDD") ?? null
+          : null;
 
         if (hddVal === null && cddVal === null && meter.city) {
           const mgmResult = await autoLookupHddCdd(meter.city, year, month);

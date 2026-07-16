@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { db, consumptionTable, metersTable, weatherTable, unitsTable } from "@workspace/db";
+import { companiesTable, db, consumptionTable, metersTable, weatherTable, unitsTable } from "@workspace/db";
 import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
@@ -35,13 +35,23 @@ function parseAnalysisYear(value: unknown): number {
   return year;
 }
 
-async function resolveAnalysisScope(req: Request) {
+async function resolveAnalysisScope(req: Request, requireCompanyContext = false) {
   const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
   const queryCompanyId = parsePositiveInteger(req.query.companyId, "companyId");
   const queryUnitId = parsePositiveInteger(req.query.unitId, "unitId");
   const companyId = isSuperAdmin(role) ? queryCompanyId : sessionCompanyId;
   const unitId = isCompanyAdmin(role) || isSuperAdmin(role) ? queryUnitId : sessionUnitId ?? undefined;
   const empty = !isCompanyAdmin(role) && !isSuperAdmin(role) && sessionUnitId === null;
+
+  if (requireCompanyContext && companyId === undefined) {
+    throw new AnalysisQueryError("companyId zorunlu");
+  }
+
+  if (isSuperAdmin(role) && companyId !== undefined) {
+    const [company] = await db.select({ id: companiesTable.id })
+      .from(companiesTable).where(eq(companiesTable.id, companyId));
+    if (!company) throw new AnalysisQueryError("Firma bulunamadı");
+  }
 
   if (unitId !== undefined) {
     const [unit] = await db.select({ companyId: unitsTable.companyId })
@@ -95,7 +105,7 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
   try {
     const year = parseAnalysisYear(req.query.year);
     const meterId = parsePositiveInteger(req.query.meterId, "meterId");
-    const scope = await resolveAnalysisScope(req);
+    const scope = await resolveAnalysisScope(req, true);
     if (scope.empty) {
       res.json({
         slope: 0, intercept: 0, r2: 0,
@@ -124,9 +134,20 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
       byMonth[row.month].kwh += row.kwh;
     }
 
-    const weatherRows = await db.select().from(weatherTable).where(eq(weatherTable.year, year));
-    const weatherByMonth: Record<number, number> = {};
-    for (const w of weatherRows) weatherByMonth[w.month] = w.hdd;
+    const weatherRows = await db.select({ month: weatherTable.month, hdd: weatherTable.hdd })
+      .from(weatherTable)
+      .where(and(eq(weatherTable.companyId, scope.companyId!), eq(weatherTable.year, year)))
+      .orderBy(weatherTable.month, weatherTable.id);
+    const weatherByMonth: Record<number, number | undefined> = {};
+    const ambiguousMonths = new Set<number>();
+    for (const weather of weatherRows) {
+      if (weatherByMonth[weather.month] !== undefined) {
+        ambiguousMonths.add(weather.month);
+      } else {
+        weatherByMonth[weather.month] = weather.hdd;
+      }
+    }
+    for (const month of ambiguousMonths) delete weatherByMonth[month];
 
     const dataPoints: { month: number; actual: number; hdd: number }[] = [];
     for (let m = 1; m <= 12; m++) {
@@ -179,7 +200,7 @@ router.get("/analysis/regression", requireAuth, async (req, res) => {
 router.get("/analysis/performance", requireAuth, async (req, res) => {
   try {
     const year = parseAnalysisYear(req.query.year);
-    const scope = await resolveAnalysisScope(req);
+    const scope = await resolveAnalysisScope(req, true);
     if (scope.empty) {
       res.json({
         totalKwh: 0, totalTep: 0, totalCo2: 0,
@@ -209,7 +230,10 @@ router.get("/analysis/performance", requireAuth, async (req, res) => {
     const savingsTep = savingsKwh * 0.000086;
     const improvementPercent = prevKwh > 0 ? ((prevKwh - totalKwh) / prevKwh) * 100 : 0;
 
-    const weatherRows = await db.select().from(weatherTable).where(eq(weatherTable.year, year));
+    const weatherRows = await db.select().from(weatherTable).where(and(
+      eq(weatherTable.companyId, scope.companyId!),
+      eq(weatherTable.year, year),
+    ));
     const totalHdd = weatherRows.reduce((a, r) => a + r.hdd, 0);
     const enpg = totalHdd > 0 ? totalKwh / totalHdd : 0;
 

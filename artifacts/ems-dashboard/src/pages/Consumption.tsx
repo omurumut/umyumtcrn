@@ -78,6 +78,7 @@ export default function Consumption() {
   const [formEnergySource, setFormEnergySource] = useState("");
   const [formSubUnit, setFormSubUnit] = useState("");
   const [hddFetching, setHddFetching] = useState(false);
+  const [weatherManuallyEdited, setWeatherManuallyEdited] = useState(false);
   const [mgmStation, setMgmStation] = useState<{
     name: string | null;
     note: string | null;
@@ -231,6 +232,7 @@ export default function Consumption() {
 
   function openCreate() {
     setEditingId(null);
+    setWeatherManuallyEdited(false);
     setMgmStation(null);
     setFormEnergySource(filterEnergySource !== "all" ? filterEnergySource : "");
     setFormSubUnit(filterSubUnit !== "all" ? filterSubUnit : "");
@@ -245,6 +247,7 @@ export default function Consumption() {
   function openEdit(r: any) {
     const m = (allMeters ?? []).find(m => m.id === r.meterId);
     setEditingId(r.id);
+    setWeatherManuallyEdited(false);
     setMgmStation(r.weatherStationName ? { name: r.weatherStationName, note: r.weatherStationNote ?? null, dataMethod: "official_monthly" } : null);
     setFormEnergySource(m?.energySourceId?.toString() ?? "");
     setFormSubUnit(m?.subUnitId?.toString() ?? "");
@@ -276,12 +279,21 @@ export default function Consumption() {
   }
 
   function handleSave() {
+    const hddValue = form.hdd.trim() === "" ? undefined : Number(form.hdd);
+    const cddValue = form.cdd.trim() === "" ? undefined : Number(form.cdd);
+    if ((hddValue !== undefined && (!Number.isFinite(hddValue) || hddValue < 0))
+      || (cddValue !== undefined && (!Number.isFinite(cddValue) || cddValue < 0))) {
+      toast({ title: "HDD/CDD sıfır veya pozitif bir sayı olmalıdır", variant: "destructive" });
+      return;
+    }
     const data: any = {
       meterId: parseInt(form.meterId), year: parseInt(form.year), month: parseInt(form.month),
       kwh: parseFloat(form.kwh) || 0, tep: parseFloat(form.tep) || 0, co2: parseFloat(form.co2) || 0,
     };
-    if (form.hdd) data.hdd = parseFloat(form.hdd);
-    if (form.cdd) data.cdd = parseFloat(form.cdd);
+    if (editingId === null || weatherManuallyEdited) {
+      if (hddValue !== undefined) data.hdd = hddValue;
+      if (cddValue !== undefined) data.cdd = cddValue;
+    }
     if (form.notes) data.notes = form.notes;
     if (!data.meterId) { toast({ title: "Sayaç seçin", variant: "destructive" }); return; }
     editingId !== null ? updateC.mutate(data) : createC.mutate(data);
@@ -632,7 +644,7 @@ export default function Consumption() {
             {formEnergySource && (
               <div className="space-y-1.5">
                 <Label>3. Sayaç *</Label>
-                <Select value={form.meterId} onValueChange={v => setForm(f => ({ ...f, meterId: v }))}>
+                <Select value={form.meterId} onValueChange={v => { setWeatherManuallyEdited(false); setForm(f => ({ ...f, meterId: v })); }}>
                   <SelectTrigger><SelectValue placeholder="Sayaç seçin" /></SelectTrigger>
                   <SelectContent>
                     {formFilteredMeters.map(m => <SelectItem key={m.id} value={m.id.toString()}>{m.name}</SelectItem>)}
@@ -644,11 +656,11 @@ export default function Consumption() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Yıl</Label>
-                <Input value={form.year} onChange={e => setForm(f => ({ ...f, year: e.target.value }))} />
+                <Input value={form.year} onChange={e => { setWeatherManuallyEdited(false); setForm(f => ({ ...f, year: e.target.value })); }} />
               </div>
               <div className="space-y-1.5">
                 <Label>Ay</Label>
-                <Select value={form.month} onValueChange={v => setForm(f => ({ ...f, month: v }))}>
+                <Select value={form.month} onValueChange={v => { setWeatherManuallyEdited(false); setForm(f => ({ ...f, month: v })); }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>{MONTHS.map((m, i) => <SelectItem key={i + 1} value={(i + 1).toString()}>{m}</SelectItem>)}</SelectContent>
                 </Select>
@@ -676,11 +688,11 @@ export default function Consumption() {
                   HDD
                   {hddFetching && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
                 </Label>
-                <Input type="number" value={form.hdd} onChange={e => setForm(f => ({ ...f, hdd: e.target.value }))} placeholder="Otomatik" />
+                <Input type="number" min="0" step="any" value={form.hdd} onChange={e => { setWeatherManuallyEdited(true); setForm(f => ({ ...f, hdd: e.target.value })); }} placeholder="Otomatik" />
               </div>
               <div className="space-y-1.5">
                 <Label>CDD</Label>
-                <Input type="number" value={form.cdd} onChange={e => setForm(f => ({ ...f, cdd: e.target.value }))} placeholder="Otomatik" />
+                <Input type="number" min="0" step="any" value={form.cdd} onChange={e => { setWeatherManuallyEdited(true); setForm(f => ({ ...f, cdd: e.target.value })); }} placeholder="Otomatik" />
               </div>
             </div>
             {form.meterId && (

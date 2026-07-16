@@ -1,9 +1,86 @@
 import { Router } from "express";
-import { db, weatherTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import type { Request, Response } from "express";
+import { companiesTable, db, unitsTable, weatherTable } from "@workspace/db";
+import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth, requireSuperAdmin } from "../middlewares/auth.js";
 
 const router = Router();
+
+class WeatherScopeError extends Error {
+  constructor(message: string, readonly status: 400 | 403 | 404 = 400) {
+    super(message);
+  }
+}
+
+function isCompanyAdmin(role: string) {
+  return role === "admin" || role === "kontrol_admin";
+}
+
+function isSuperAdmin(role: string) {
+  return role === "superadmin";
+}
+
+function parsePositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new WeatherScopeError(`Geçersiz ${field}`);
+}
+
+function parseMonth(value: unknown): number | undefined {
+  const month = parsePositiveInteger(value, "month");
+  if (month !== undefined && month > 12) throw new WeatherScopeError("Geçersiz month");
+  return month;
+}
+
+async function resolveWeatherScope(req: Request, values: { companyId?: unknown; unitId?: unknown }) {
+  const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+  const requestedCompanyId = parsePositiveInteger(values.companyId, "companyId");
+  const requestedUnitId = parsePositiveInteger(values.unitId, "unitId");
+  const superadmin = isSuperAdmin(role);
+  const companyAdmin = isCompanyAdmin(role);
+
+  if (!superadmin && !companyAdmin && sessionUnitId === null) {
+    if (requestedUnitId !== undefined) {
+      throw new WeatherScopeError("Bu birim için yetkiniz yok", 403);
+    }
+    return { companyId: sessionCompanyId, empty: true };
+  }
+
+  const companyId = superadmin ? requestedCompanyId : sessionCompanyId;
+  if (companyId === undefined) {
+    throw new WeatherScopeError("companyId zorunlu");
+  }
+
+  if (superadmin) {
+    const [company] = await db.select({ id: companiesTable.id })
+      .from(companiesTable).where(eq(companiesTable.id, companyId));
+    if (!company) throw new WeatherScopeError("Firma bulunamadı", 404);
+  }
+
+  const effectiveUnitId = companyAdmin || superadmin ? requestedUnitId : sessionUnitId ?? undefined;
+  if (!companyAdmin && !superadmin && requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
+    throw new WeatherScopeError("Bu birim için yetkiniz yok", 403);
+  }
+  if (effectiveUnitId !== undefined) {
+    const [unit] = await db.select({ companyId: unitsTable.companyId })
+      .from(unitsTable).where(eq(unitsTable.id, effectiveUnitId));
+    if (!unit || unit.companyId !== companyId) {
+      throw new WeatherScopeError("Bu birim için yetkiniz yok", 403);
+    }
+  }
+
+  return { companyId, empty: false };
+}
+
+function handleWeatherScopeError(res: Response, err: unknown) {
+  if (!(err instanceof WeatherScopeError)) return false;
+  res.status(err.status).json({ error: err.message });
+  return true;
+}
 
 // Istanbul average HDD/CDD data (baseline for Turkish cities)
 const cityBaselineHDD: Record<string, number[]> = {
@@ -40,9 +117,22 @@ function getBaseline(location: string): { hdd: number[], cdd: number[] } {
 // GET /api/weather
 router.get("/weather", requireAuth, async (req, res) => {
   try {
-    const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    let rows = await db.select().from(weatherTable).orderBy(weatherTable.year, weatherTable.month);
-    if (year !== undefined) rows = rows.filter(r => r.year === year);
+    const scope = await resolveWeatherScope(req, {
+      companyId: req.query.companyId,
+      unitId: req.query.unitId,
+    });
+    if (scope.empty) {
+      res.json([]);
+      return;
+    }
+    const year = parsePositiveInteger(req.query.year, "year");
+    const month = parseMonth(req.query.month);
+    const conditions: SQL[] = [eq(weatherTable.companyId, scope.companyId)];
+    if (year !== undefined) conditions.push(eq(weatherTable.year, year));
+    if (month !== undefined) conditions.push(eq(weatherTable.month, month));
+    const rows = await db.select().from(weatherTable)
+      .where(and(...conditions))
+      .orderBy(weatherTable.year, weatherTable.month);
     res.json(rows.map(r => ({
       id: r.id,
       year: r.year,
@@ -54,6 +144,7 @@ router.get("/weather", requireAuth, async (req, res) => {
       createdAt: r.createdAt,
     })));
   } catch (err) {
+    if (handleWeatherScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -62,11 +153,23 @@ router.get("/weather", requireAuth, async (req, res) => {
 // POST /api/weather — fetch from "meteoroloji API" (simulated with baseline data)
 router.post("/weather", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
-    const { location, year } = req.body;
+    const { location, year, companyId: bodyCompanyId, unitId: bodyUnitId } = req.body;
+    if (bodyCompanyId !== undefined && req.query.companyId !== undefined
+      && String(bodyCompanyId) !== String(req.query.companyId)) {
+      throw new WeatherScopeError("companyId değerleri uyuşmuyor");
+    }
+    if (bodyUnitId !== undefined && req.query.unitId !== undefined
+      && String(bodyUnitId) !== String(req.query.unitId)) {
+      throw new WeatherScopeError("unitId değerleri uyuşmuyor");
+    }
+    const scope = await resolveWeatherScope(req, {
+      companyId: bodyCompanyId ?? req.query.companyId,
+      unitId: bodyUnitId ?? req.query.unitId,
+    });
     if (!location || !year) {
       res.status(400).json({ error: "Lokasyon ve yıl zorunlu" }); return;
     }
-    const yr = parseInt(year);
+    const yr = parsePositiveInteger(year, "year")!;
     const baseline = getBaseline(location);
 
     // Add some year-based variation
@@ -81,21 +184,29 @@ router.post("/weather", requireAuth, requireSuperAdmin, async (req, res) => {
 
       // Upsert
       const existing = await db.select().from(weatherTable)
-        .where(and(eq(weatherTable.year, yr), eq(weatherTable.month, month), eq(weatherTable.location, location)));
+        .where(and(
+          eq(weatherTable.companyId, scope.companyId),
+          eq(weatherTable.year, yr),
+          eq(weatherTable.month, month),
+          eq(weatherTable.location, location),
+        ));
 
       let record;
       if (existing.length > 0) {
         [record] = await db.update(weatherTable)
           .set({ hdd, cdd, avgTemp })
-          .where(eq(weatherTable.id, existing[0].id))
+          .where(and(eq(weatherTable.id, existing[0].id), eq(weatherTable.companyId, scope.companyId)))
           .returning();
       } else {
-        [record] = await db.insert(weatherTable).values({ year: yr, month, hdd, cdd, location, avgTemp }).returning();
+        [record] = await db.insert(weatherTable).values({
+          companyId: scope.companyId, year: yr, month, hdd, cdd, location, avgTemp,
+        }).returning();
       }
       results.push({ ...record });
     }
     res.json(results);
   } catch (err) {
+    if (handleWeatherScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }

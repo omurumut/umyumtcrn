@@ -10,6 +10,41 @@ import { getMgmBootstrapStatus } from "../services/mgm-bootstrap.js";
 
 const router = Router();
 
+class InvalidMgmParameterError extends Error {}
+
+function parsePositiveSafeInteger(value: unknown, field: string, required = false): number | undefined {
+  if (value === undefined || value === null) {
+    if (required) throw new InvalidMgmParameterError(`${field} zorunlu`);
+    return undefined;
+  }
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!/^[1-9]\d*$/.test(normalized)) throw new InvalidMgmParameterError(`Geçersiz ${field}`);
+    parsed = Number(normalized);
+  } else {
+    throw new InvalidMgmParameterError(`Geçersiz ${field}`);
+  }
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new InvalidMgmParameterError(`Geçersiz ${field}`);
+  }
+  return parsed;
+}
+
+function parseMonth(value: unknown, required = false): number | undefined {
+  const month = parsePositiveSafeInteger(value, "month", required);
+  if (month !== undefined && month > 12) throw new InvalidMgmParameterError("Geçersiz month");
+  return month;
+}
+
+function handleInvalidMgmParameter(res: { status(code: number): { json(body: unknown): unknown } }, err: unknown) {
+  if (!(err instanceof InvalidMgmParameterError)) return false;
+  res.status(400).json({ error: err.message });
+  return true;
+}
+
 // GET /api/mgm/stations — Tüm MGM istasyonları
 router.get("/mgm/stations", requireAuth, async (req, res) => {
   try {
@@ -42,10 +77,10 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
       return;
     }
 
-    const yr = parseInt(year as string);
-    const mo = parseInt(month as string);
+    const yr = parsePositiveSafeInteger(year, "year", true)!;
+    const mo = parseMonth(month, true)!;
 
-    if (isNaN(yr) || isNaN(mo) || mo < 1 || mo > 12) {
+    if (mo < 1 || mo > 12) {
       res.status(400).json({ error: "Geçersiz yıl/ay" });
       return;
     }
@@ -279,6 +314,7 @@ router.get("/mgm/lookup", requireAuth, async (req, res) => {
       bootstrapStatus: getMgmBootstrapStatus(),
     });
   } catch (err) {
+    if (handleInvalidMgmParameter(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -293,8 +329,8 @@ router.get("/mgm/lookup-by-location", requireAuth, async (req, res) => {
       return;
     }
 
-    const yr = parseInt(year as string);
-    const mo = parseInt(month as string);
+    const yr = parsePositiveSafeInteger(year, "year", true)!;
+    const mo = parseMonth(month, true)!;
 
     let targetStation: (typeof MGM_STATIONS)[0] | null = null;
     let usedNearest = false;
@@ -375,6 +411,7 @@ router.get("/mgm/lookup-by-location", requireAuth, async (req, res) => {
       dataMethod: "official_monthly",
     });
   } catch (err) {
+    if (handleInvalidMgmParameter(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -416,10 +453,13 @@ router.post("/admin/weather-degree-days/sync", requireAuth, requireSuperAdmin, a
     const currentYear = now.getFullYear();
 
     let years: number[];
-    if (req.body?.years && Array.isArray(req.body.years)) {
-      years = req.body.years.map(Number).filter((y: number) => !isNaN(y));
-    } else if (req.body?.year) {
-      years = [parseInt(req.body.year)];
+    if (req.body?.years !== undefined) {
+      if (!Array.isArray(req.body.years) || req.body.years.length === 0) {
+        throw new InvalidMgmParameterError("Geçersiz years");
+      }
+      years = req.body.years.map((year: unknown) => parsePositiveSafeInteger(year, "year", true)!);
+    } else if (req.body?.year !== undefined) {
+      years = [parsePositiveSafeInteger(req.body.year, "year", true)!];
     } else {
       // Default: mevcut yıl ve önceki yıl
       years = [currentYear - 1, currentYear];
@@ -445,6 +485,7 @@ router.post("/admin/weather-degree-days/sync", requireAuth, requireSuperAdmin, a
       logs,
     });
   } catch (err) {
+    if (handleInvalidMgmParameter(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "MGM resmi sync hatası" });
   }
@@ -459,13 +500,15 @@ router.get("/mgm/degree-data", requireAuth, async (req, res) => {
       return;
     }
 
+    const parsedYear = parsePositiveSafeInteger(year, "year");
+    const degreeConditions = [eq(mgmDegreeDataTable.stationCode, stationCode as string)];
+    if (parsedYear !== undefined) degreeConditions.push(eq(mgmDegreeDataTable.year, parsedYear));
     const rows = await db.select().from(mgmDegreeDataTable)
-      .where(eq(mgmDegreeDataTable.stationCode, stationCode as string))
+      .where(and(...degreeConditions))
       .orderBy(mgmDegreeDataTable.year, mgmDegreeDataTable.month);
-
-    const filtered = year ? rows.filter(r => r.year === parseInt(year as string)) : rows;
-    res.json(filtered);
+    res.json(rows);
   } catch (err) {
+    if (handleInvalidMgmParameter(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -507,15 +550,24 @@ router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuper
     };
 
     const result = await importDegreeDays(filePath, onProgress);
+    const processed = result.inserted + result.updated;
+    if (result.totalRows === 0 || processed === 0) {
+      res.status(400).json({
+        message: result.totalRows === 0 ? "İşlenecek veri satırı bulunamadı" : "MGM gün derece import başarısız",
+        ...result,
+        logs,
+      });
+      return;
+    }
     res.json({
-      message: "MGM gün derece import tamamlandı",
+      message: result.failed > 0 ? "MGM gün derece import kısmen tamamlandı" : "MGM gün derece import tamamlandı",
       filePath,
       ...result,
       logs,
     });
   } catch (err) {
     req.log.error(err);
-    res.status(500).json({ error: `Import hatası: ${String(err)}` });
+    res.status(400).json({ error: "MGM gün derece import dosyası işlenemedi" });
   }
 });
 
@@ -548,17 +600,22 @@ router.get("/admin/mgm/station-mappings", requireAuth, requireSuperAdmin, async 
 // GET /api/admin/weather-degree-days — Resmi MGM veri listesi (admin)
 router.get("/admin/weather-degree-days", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
-    const { year, province } = req.query;
+    const { year, month, province } = req.query;
+    const parsedYear = parsePositiveSafeInteger(year, "year");
+    const parsedMonth = parseMonth(month);
+    const weatherConditions = [eq(weatherDegreeDaysTable.isOfficial, true)];
+    if (parsedYear !== undefined) weatherConditions.push(eq(weatherDegreeDaysTable.year, parsedYear));
+    if (parsedMonth !== undefined) weatherConditions.push(eq(weatherDegreeDaysTable.month, parsedMonth));
     const rows = await db.select().from(weatherDegreeDaysTable)
-      .where(eq(weatherDegreeDaysTable.isOfficial, true))
+      .where(and(...weatherConditions))
       .orderBy(weatherDegreeDaysTable.province, weatherDegreeDaysTable.year as any, weatherDegreeDaysTable.month as any);
 
     let filtered = rows;
-    if (year) filtered = filtered.filter(r => r.year === parseInt(year as string));
     if (province) filtered = filtered.filter(r => r.province?.toLowerCase().includes((province as string).toLowerCase()));
 
     res.json(filtered);
   } catch (err) {
+    if (handleInvalidMgmParameter(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }

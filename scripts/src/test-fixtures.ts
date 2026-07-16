@@ -8,6 +8,8 @@ import {
   energyUseGroupsTable,
   energySourcesTable,
   metersTable,
+  mgmDegreeDataTable,
+  mgmStationMappingsTable,
   pool,
   riskNotesTable,
   risksTable,
@@ -21,6 +23,8 @@ import {
   variablesTable,
   variableValuesTable,
   vapProjectsTable,
+  weatherDegreeDaysTable,
+  weatherTable,
 } from "@workspace/db";
 import { count, like, sql } from "drizzle-orm";
 
@@ -288,6 +292,38 @@ async function applyFixtures(): Promise<void> {
       }),
     ]);
 
+    await tx.insert(mgmStationMappingsTable).values([
+      { stationKey: "e2e-ankara-cankaya", stationName: `${COMPANY_PREFIX} Ankara Cankaya Station`, province: "Ankara", district: "Cankaya", confidence: "verified" },
+      { stationKey: "e2e-ankara", stationName: `${COMPANY_PREFIX} Ankara Center Station`, province: "Ankara", district: null, confidence: "verified" },
+      { stationKey: "e2e-izmir-konak", stationName: `${COMPANY_PREFIX} Izmir Konak Station`, province: "Izmir", district: "Konak", confidence: "verified" },
+      { stationKey: "e2e-bursa-nilufer", stationName: `${COMPANY_PREFIX} Bursa Nilufer Station`, province: "Bursa", district: "Nilufer", confidence: "verified" },
+      { stationKey: "e2e-inactive", stationName: `${COMPANY_PREFIX} Inactive Station`, province: "Ankara", district: "Inactive", confidence: "verified", isActive: false },
+    ]);
+
+    await tx.insert(weatherDegreeDaysTable).values([
+      { companyId: null, province: "Ankara", district: "Cankaya", stationKey: "e2e-ankara-cankaya", stationCode: "E2EA1", stationName: `${COMPANY_PREFIX} Ankara Cankaya Station`, date: "2025-01", year: 2025, month: 1, periodType: "monthly", baseTemperatureHeating: 18, baseTemperatureCooling: 22, hdd: 310.5, cdd: 0, hddDays: 29, cddDays: 0, annualHdd: 1200.5, annualCdd: 410.25, source: "MGM", isOfficial: true, dataMethod: "official_monthly", stationNote: `${COMPANY_PREFIX} official A1 2025` },
+      { companyId: null, province: "Ankara", district: "Cankaya", stationKey: "e2e-ankara-cankaya", stationCode: "E2EA1", stationName: `${COMPANY_PREFIX} Ankara Cankaya Station`, date: "2025-07", year: 2025, month: 7, periodType: "monthly", baseTemperatureHeating: 18, baseTemperatureCooling: 22, hdd: 0, cdd: 205.75, hddDays: 0, cddDays: 24, annualHdd: 1200.5, annualCdd: 410.25, source: "MGM", isOfficial: true, dataMethod: "official_monthly", stationNote: `${COMPANY_PREFIX} official A1 2025` },
+      { companyId: null, province: "Ankara", district: "Cankaya", stationKey: "e2e-ankara-cankaya", stationCode: "E2EA1", stationName: `${COMPANY_PREFIX} Ankara Cankaya Station`, date: "2026-01", year: 2026, month: 1, periodType: "monthly", baseTemperatureHeating: 18, baseTemperatureCooling: 22, hdd: 321.5, cdd: 0, hddDays: 30, cddDays: 0, annualHdd: 1300.5, annualCdd: 430.25, source: "MGM", isOfficial: true, dataMethod: "official_monthly", stationNote: `${COMPANY_PREFIX} official A1 2026` },
+      { companyId: null, province: "Ankara", district: "Cankaya", stationKey: "e2e-ankara-cankaya", stationCode: "E2EA1", stationName: `${COMPANY_PREFIX} Ankara Cankaya Station`, date: "2026-02", year: 2026, month: 2, periodType: "monthly", baseTemperatureHeating: 18, baseTemperatureCooling: 22, hdd: 0, cdd: 0, hddDays: 0, cddDays: 0, annualHdd: 1300.5, annualCdd: 430.25, source: "MGM", isOfficial: true, dataMethod: "official_monthly", stationNote: `${COMPANY_PREFIX} zero month` },
+      { companyId: null, province: "Ankara", district: "Cankaya", stationKey: "e2e-ankara-cankaya", stationCode: "E2EA1", stationName: `${COMPANY_PREFIX} Ankara Cankaya Station`, date: "2026-07", year: 2026, month: 7, periodType: "monthly", baseTemperatureHeating: 18, baseTemperatureCooling: 22, hdd: 0, cdd: 222.25, hddDays: 0, cddDays: 26, annualHdd: 1300.5, annualCdd: 430.25, source: "MGM", isOfficial: true, dataMethod: "official_monthly", stationNote: `${COMPANY_PREFIX} official A1 2026` },
+      { companyId: null, province: "Ankara", district: null, stationKey: "e2e-ankara", stationCode: "E2EAC", stationName: `${COMPANY_PREFIX} Ankara Center Station`, date: "2026-01", year: 2026, month: 1, periodType: "monthly", hdd: 300.25, cdd: 1.5, source: "MGM", isOfficial: true, dataMethod: "official_monthly" },
+      { companyId: null, province: "Izmir", district: "Konak", stationKey: "e2e-izmir-konak", stationCode: "E2EA2", stationName: `${COMPANY_PREFIX} Izmir Konak Station`, date: "2026-01", year: 2026, month: 1, periodType: "monthly", hdd: 111.25, cdd: 7.5, source: "MGM", isOfficial: true, dataMethod: "official_monthly", stationNote: `${COMPANY_PREFIX} official A2` },
+      { companyId: null, province: "Bursa", district: "Nilufer", stationKey: "e2e-bursa-nilufer", stationCode: "E2EB1", stationName: `${COMPANY_PREFIX} Bursa Nilufer Station Tenant B marker`, date: "2026-01", year: 2026, month: 1, periodType: "monthly", hdd: 777.75, cdd: 88.5, source: "MGM", isOfficial: true, dataMethod: "official_monthly", stationNote: `${COMPANY_PREFIX} Tenant B weather marker` },
+      { companyId: null, province: "Ankara", district: "Cankaya", stationKey: "e2e-ankara-cankaya", stationCode: "E2EA1", stationName: `${COMPANY_PREFIX} Ankara Cankaya Station`, date: "2026", year: 2026, month: null, periodType: "yearly", hdd: 1300.5, cdd: 430.25, annualHdd: 1300.5, annualCdd: 430.25, source: "MGM", isOfficial: true, dataMethod: "official_monthly" },
+      { companyId: tenantA.id, province: `${COMPANY_PREFIX} Manual Province`, district: null, stationKey: null, stationName: `${COMPANY_PREFIX} Manual A`, date: "2026-01", year: 2026, month: 1, periodType: "monthly", hdd: 41.25, cdd: 12.5, source: "manual", isOfficial: false, dataMethod: "fallback" },
+      { companyId: tenantB.id, province: `${COMPANY_PREFIX} Manual Province`, district: null, stationKey: null, stationName: `${COMPANY_PREFIX} Manual Tenant B marker`, date: "2026-01", year: 2026, month: 1, periodType: "monthly", hdd: 941.25, cdd: 912.5, source: "manual", isOfficial: false, dataMethod: "fallback" },
+    ]);
+
+    await tx.insert(mgmDegreeDataTable).values([
+      { stationCode: "E2E-POOL", year: 2025, month: 1, hdd: 400.5, cdd: 0 },
+      { stationCode: "E2E-POOL", year: 2026, month: 1, hdd: 390.25, cdd: 2.5 },
+    ]);
+
+    await tx.insert(weatherTable).values([
+      { companyId: tenantA.id, year: 2026, month: 1, hdd: 51, cdd: 5, location: `${COMPANY_PREFIX} Legacy Weather A`, avgTemp: 7.5 },
+      { companyId: tenantB.id, year: 2026, month: 1, hdd: 951, cdd: 95, location: `${COMPANY_PREFIX} Legacy Weather Tenant B marker`, avgTemp: 17.5 },
+    ]);
+
     const [productionQuantity, operatingHours, importVariable, dependencyVariable, operatingHoursB, partialVariable, invalidModelVariable] = await tx
       .insert(variablesTable)
       .values([
@@ -534,7 +570,7 @@ async function applyFixtures(): Promise<void> {
   });
 
   console.log(
-    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 6 energy use group, 8 meter, 50 consumption, 7 variable, 69 variable value, 4 SEU assessment, 6 SEU assessment item, 3 manual SEU, 5 target, 8 action, 5 VAP, 6 SWOT, 7 risk, 3 risk note, 11 user.",
+    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 6 energy use group, 8 meter, 50 consumption, 7 variable, 69 variable value, 5 MGM mapping, 11 weather degree-day, 2 MGM degree pool, 2 legacy weather, 4 SEU assessment, 6 SEU assessment item, 3 manual SEU, 5 target, 8 action, 5 VAP, 6 SWOT, 7 risk, 3 risk note, 11 user.",
   );
 }
 
@@ -754,6 +790,41 @@ async function assertFixtures(): Promise<void> {
     );
     if (invalidVariableScopes.rowCount !== 0) {
       throw new Error("Fixture variable company/unit scope ilişkisi geçersiz.");
+    }
+
+    const weatherIntegrity = await client.query<{
+      mapping_count: string; active_mapping_count: string; degree_count: string;
+      official_count: string; manual_count: string; duplicate_official_periods: string;
+      annual_count: string; pool_count: string; legacy_count: string;
+    }>(`
+      SELECT
+        (SELECT count(*) FROM mgm_station_mappings WHERE station_key LIKE 'e2e-%')::text AS mapping_count,
+        (SELECT count(*) FROM mgm_station_mappings WHERE station_key LIKE 'e2e-%' AND is_active)::text AS active_mapping_count,
+        (SELECT count(*) FROM weather_degree_days WHERE station_name LIKE $1)::text AS degree_count,
+        (SELECT count(*) FROM weather_degree_days WHERE station_name LIKE $1 AND is_official)::text AS official_count,
+        (SELECT count(*) FROM weather_degree_days WHERE station_name LIKE $1 AND NOT is_official)::text AS manual_count,
+        (SELECT count(*) FROM (
+          SELECT station_key,year,month FROM weather_degree_days
+          WHERE station_key LIKE 'e2e-%' AND is_official AND period_type='monthly'
+          GROUP BY station_key,year,month HAVING count(*) > 1
+        ) d)::text AS duplicate_official_periods,
+        (SELECT count(*) FROM weather_degree_days WHERE station_key='e2e-ankara-cankaya' AND period_type='yearly' AND month IS NULL AND annual_hdd=1300.5 AND annual_cdd=430.25)::text AS annual_count,
+        (SELECT count(*) FROM mgm_degree_data WHERE station_code='E2E-POOL')::text AS pool_count,
+        (SELECT count(*) FROM weather WHERE location LIKE $1)::text AS legacy_count
+    `, [`${COMPANY_PREFIX}%`]);
+    const weatherStats = weatherIntegrity.rows[0];
+    if (
+      Number(weatherStats?.mapping_count) !== 5 ||
+      Number(weatherStats?.active_mapping_count) !== 4 ||
+      Number(weatherStats?.degree_count) !== 11 ||
+      Number(weatherStats?.official_count) !== 9 ||
+      Number(weatherStats?.manual_count) !== 2 ||
+      Number(weatherStats?.duplicate_official_periods) !== 0 ||
+      Number(weatherStats?.annual_count) !== 1 ||
+      Number(weatherStats?.pool_count) !== 2 ||
+      Number(weatherStats?.legacy_count) !== 2
+    ) {
+      throw new Error("Fixture MGM/weather dönem, kaynak ve tekillik sözleşmesi geçersiz.");
     }
 
     const operatingHoursCatalog = await client.query<{
@@ -1085,7 +1156,7 @@ async function assertFixtures(): Promise<void> {
   }
 
   console.log(
-    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 6 energy use group, 8 meter, 50 consumption, 7 variable, 69 variable value, 4 SEU assessment, 6 SEU assessment item, 3 manual SEU, 5 target, 8 action, 5 VAP, 6 SWOT, 7 risk, 3 risk note, 11 user.",
+    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 6 energy use group, 8 meter, 50 consumption, 7 variable, 69 variable value, 5 MGM mapping, 11 weather degree-day, 2 MGM degree pool, 2 legacy weather, 4 SEU assessment, 6 SEU assessment item, 3 manual SEU, 5 target, 8 action, 5 VAP, 6 SWOT, 7 risk, 3 risk note, 11 user.",
   );
 }
 
