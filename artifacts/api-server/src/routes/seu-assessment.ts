@@ -21,6 +21,9 @@ import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 
 const router = Router();
 
+const VALID_DECISIONS = new Set(["accepted_as_seu", "not_seu", "monitor"]);
+const POSTGRES_REAL_MAX = 3.4028234663852886e38;
+
 function computePriority(share: number, hasOpportunity: boolean): number | null {
   if (share >= 20) return hasOpportunity ? 1 : 2;
   if (share >= 10) return hasOpportunity ? 2 : 3;
@@ -40,6 +43,59 @@ function parsePositiveInteger(value: unknown): number | null {
     if (Number.isSafeInteger(parsed)) return parsed;
   }
   return null;
+}
+
+function parseStrictInteger(value: unknown, field: string, min = 1, max = Number.MAX_SAFE_INTEGER): number {
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!/^-?\d+$/.test(trimmed)) throw new AssessmentScopeError(400, `Geçersiz ${field}`);
+    parsed = Number(trimmed);
+  } else {
+    throw new AssessmentScopeError(400, `Geçersiz ${field}`);
+  }
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new AssessmentScopeError(400, `Geçersiz ${field}`);
+  }
+  return parsed;
+}
+
+function parseOptionalYear(value: unknown, fallback: number | null): number | null {
+  return value === undefined ? fallback : parseStrictInteger(value, "year");
+}
+
+function parseOptionalMonth(value: unknown, field: string, fallback: number): number {
+  return value === undefined ? fallback : parseStrictInteger(value, field, 1, 12);
+}
+
+function parseDecision(value: unknown): string | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || !VALID_DECISIONS.has(value)) {
+    throw new AssessmentScopeError(400, "Geçersiz userDecision");
+  }
+  return value;
+}
+
+function parseTargetReductionPercent(value: unknown): number | null {
+  if (value === null) return null;
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+      throw new AssessmentScopeError(400, "Geçersiz targetReductionPercent");
+    }
+    parsed = Number(trimmed);
+  } else {
+    throw new AssessmentScopeError(400, "Geçersiz targetReductionPercent");
+  }
+  if (!Number.isFinite(parsed) || Math.abs(parsed) > POSTGRES_REAL_MAX) {
+    throw new AssessmentScopeError(400, "Geçersiz targetReductionPercent");
+  }
+  return parsed;
 }
 
 class AssessmentScopeError extends Error {
@@ -149,9 +205,10 @@ function handleAssessmentScopeError(res: any, err: unknown) {
 router.get("/seu/analyze", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const year = parseInt(req.query.year as string) || new Date().getFullYear();
-    const monthStart = parseInt(req.query.monthStart as string) || 1;
-    const monthEnd = parseInt(req.query.monthEnd as string) || 12;
+    const year = parseOptionalYear(req.query.year, new Date().getFullYear())!;
+    const monthStart = parseOptionalMonth(req.query.monthStart, "monthStart", 1);
+    const monthEnd = parseOptionalMonth(req.query.monthEnd, "monthEnd", 12);
+    if (monthStart > monthEnd) throw new AssessmentScopeError(400, "monthStart monthEnd değerinden büyük olamaz");
     const analysisLevel = (req.query.analysisLevel as string) || "energyUseGroup";
     const requestedCompanyId = parseOptionalId(req.query.companyId, "companyId");
     const requestedUnitId = parseOptionalId(req.query.unitId, "unitId");
@@ -348,7 +405,7 @@ router.get("/seu/assessments", requireAuth, async (req, res) => {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const requestedCompanyId = parseOptionalId(req.query.companyId, "companyId");
     const requestedUnitId = parseOptionalId(req.query.unitId, "unitId");
-    const year = req.query.year ? parseInt(req.query.year as string) : null;
+    const year = parseOptionalYear(req.query.year, null);
     const recordType = (req.query.recordType as string) || null;
 
     const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
@@ -437,15 +494,18 @@ router.get("/seu/assessments/:id", requireAuth, async (req, res) => {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     const id = parsePositiveInteger(req.params.id);
     if (id === null) { res.status(400).json({ error: "Geçersiz assessmentId" }); return; }
+    const requestedCompanyId = parseOptionalId(req.query.companyId, "companyId");
     const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
     if (standardUser && sessionUnitId === null) {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
 
-    const assessmentConditions = [
-      eq(seuAssessmentsTable.id, id),
-      eq(seuAssessmentsTable.companyId, sessionCompanyId),
-    ];
+    const assessmentConditions = [eq(seuAssessmentsTable.id, id)];
+    if (isSuperAdmin(role)) {
+      if (requestedCompanyId !== null) assessmentConditions.push(eq(seuAssessmentsTable.companyId, requestedCompanyId));
+    } else {
+      assessmentConditions.push(eq(seuAssessmentsTable.companyId, sessionCompanyId));
+    }
     if (standardUser) assessmentConditions.push(eq(seuAssessmentsTable.unitId, sessionUnitId!));
 
     const [assessment] = await db
@@ -460,6 +520,7 @@ router.get("/seu/assessments/:id", requireAuth, async (req, res) => {
       .orderBy(seuAssessmentItemsTable.consumptionSharePercent);
     res.json({ ...assessment, items });
   } catch (err) {
+    if (handleAssessmentScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -531,14 +592,25 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
     }
 
     if (!Array.isArray(items)) throw new AssessmentScopeError(400, "items dizi olmalıdır");
+    const parsedYear = parseStrictInteger(year, "year");
+    const parsedPeriodStart = parseStrictInteger(periodStart, "periodStart", 1, 12);
+    const parsedPeriodEnd = parseStrictInteger(periodEnd, "periodEnd", 1, 12);
+    if (parsedPeriodStart > parsedPeriodEnd) throw new AssessmentScopeError(400, "periodStart periodEnd değerinden büyük olamaz");
     const validatedItems: any[] = [];
     for (const item of items) {
-      validatedItems.push(await validateAssessmentItemRelations(
+      const validatedItem = await validateAssessmentItemRelations(
         effectiveCompanyId,
         resolvedUnitId,
         assessmentEnergySourceId,
         item,
-      ));
+      );
+      validatedItems.push({
+        ...validatedItem,
+        userDecision: parseDecision(validatedItem.userDecision),
+        targetReductionPercent: validatedItem.targetReductionPercent === undefined
+          ? null
+          : parseTargetReductionPercent(validatedItem.targetReductionPercent),
+      });
     }
 
     const assessment = await db.transaction(async (tx) => {
@@ -549,7 +621,7 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
         .where(and(
           eq(seuAssessmentsTable.companyId, effectiveCompanyId),
           eq(seuAssessmentsTable.unitId, resolvedUnitId),
-          eq(seuAssessmentsTable.year, parseInt(year)),
+          eq(seuAssessmentsTable.year, parsedYear),
           eq(seuAssessmentsTable.analysisLevel, analysisLevel),
           eq(seuAssessmentsTable.methodType, resolvedMethodType),
           eq(seuAssessmentsTable.recordType, "unit_official"),
@@ -566,9 +638,9 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
     const [assessment] = await tx.insert(seuAssessmentsTable).values({
       companyId: effectiveCompanyId,
       unitId: resolvedUnitId,
-      year: parseInt(year),
-      periodStart: parseInt(periodStart),
-      periodEnd: parseInt(periodEnd),
+      year: parsedYear,
+      periodStart: parsedPeriodStart,
+      periodEnd: parsedPeriodEnd,
       analysisLevel,
       methodType: resolvedMethodType,
       recordType,
@@ -594,10 +666,10 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
           hasOpportunity: !!item.hasOpportunity,
           priorityResult: item.priorityResult ?? null,
           systemRecommendation: item.systemRecommendation ?? "not_seu",
-          userDecision: item.userDecision || null,
+          userDecision: item.userDecision,
           decisionReason: item.decisionReason || null,
           responsible: item.responsible || null,
-          targetReductionPercent: item.targetReductionPercent ? parseFloat(item.targetReductionPercent) : null,
+          targetReductionPercent: item.targetReductionPercent,
           notes: item.notes || null,
         }))
       );
@@ -653,11 +725,15 @@ router.patch("/seu/assessments/:id/items/:itemId", requireAuth, async (req, res)
 
     const { hasOpportunity, userDecision, decisionReason, responsible, targetReductionPercent, notes } = req.body;
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+    const parsedDecision = userDecision === undefined ? undefined : parseDecision(userDecision);
+    const parsedTargetReductionPercent = targetReductionPercent === undefined
+      ? undefined
+      : parseTargetReductionPercent(targetReductionPercent);
     if (hasOpportunity !== undefined) updates.hasOpportunity = !!hasOpportunity;
-    if (userDecision !== undefined) updates.userDecision = userDecision || null;
+    if (parsedDecision !== undefined) updates.userDecision = parsedDecision;
     if (decisionReason !== undefined) updates.decisionReason = decisionReason || null;
     if (responsible !== undefined) updates.responsible = responsible || null;
-    if (targetReductionPercent !== undefined) updates.targetReductionPercent = targetReductionPercent ? parseFloat(targetReductionPercent) : null;
+    if (parsedTargetReductionPercent !== undefined) updates.targetReductionPercent = parsedTargetReductionPercent;
     if (notes !== undefined) updates.notes = notes || null;
 
     if (hasOpportunity !== undefined) {
@@ -676,6 +752,7 @@ router.patch("/seu/assessments/:id/items/:itemId", requireAuth, async (req, res)
     if (!updated) { res.status(404).json({ error: "Kalem bulunamadı" }); return; }
     res.json(updated);
   } catch (err) {
+    if (handleAssessmentScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -718,11 +795,15 @@ router.patch("/seu/decision-items/analysis/:itemId", requireAuth, async (req, re
 
     const { hasOpportunity, userDecision, decisionReason, responsible, targetReductionPercent, notes } = req.body;
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+    const parsedDecision = userDecision === undefined ? undefined : parseDecision(userDecision);
+    const parsedTargetReductionPercent = targetReductionPercent === undefined
+      ? undefined
+      : parseTargetReductionPercent(targetReductionPercent);
     if (hasOpportunity !== undefined) updates.hasOpportunity = !!hasOpportunity;
-    if (userDecision !== undefined) updates.userDecision = userDecision || null;
+    if (parsedDecision !== undefined) updates.userDecision = parsedDecision;
     if (decisionReason !== undefined) updates.decisionReason = decisionReason || null;
     if (responsible !== undefined) updates.responsible = responsible || null;
-    if (targetReductionPercent !== undefined) updates.targetReductionPercent = targetReductionPercent ? parseFloat(targetReductionPercent) : null;
+    if (parsedTargetReductionPercent !== undefined) updates.targetReductionPercent = parsedTargetReductionPercent;
     if (notes !== undefined) updates.notes = notes || null;
 
     if (hasOpportunity !== undefined) {
@@ -744,6 +825,7 @@ router.patch("/seu/decision-items/analysis/:itemId", requireAuth, async (req, re
     if (!updated) { res.status(404).json({ error: "Kalem bulunamadı" }); return; }
     res.json(updated);
   } catch (err) {
+    if (handleAssessmentScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -850,7 +932,7 @@ router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
 router.get("/seu/decision-items", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
-    const year = req.query.year ? parseInt(req.query.year as string) : null;
+    const year = parseOptionalYear(req.query.year, null);
     const requestedCompanyId = parseOptionalId(req.query.companyId, "companyId");
     const requestedUnitId = parseOptionalId(req.query.unitId, "unitId");
 
@@ -991,7 +1073,7 @@ router.get("/seu/admin/unit-summary", requireAuth, requireCompanyAdmin, async (r
   try {
     const { companyId: sessionCompanyId } = req.user!;
 
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const year = parseOptionalYear(req.query.year, new Date().getFullYear())!;
     const recordTypeFilter = (req.query.recordType as string) || "all";
 
     // Tüm birimler
@@ -1172,7 +1254,7 @@ router.get("/seu/admin/unit-detail/:unitId", requireAuth, requireCompanyAdmin, a
     const unitId = parsePositiveInteger(req.params.unitId);
     if (unitId === null) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
     const targetCompanyId = await resolveUnitCompanyId(unitId, isSuperAdmin(role) ? null : sessionCompanyId);
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const year = parseOptionalYear(req.query.year, new Date().getFullYear())!;
 
     // Official assessments for this unit/year
     const assessments = await db
