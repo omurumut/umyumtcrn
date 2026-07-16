@@ -2,15 +2,22 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import {
   db,
+  companiesTable,
   consumptionTable, metersTable, seuTable, weatherTable, unitsTable,
   energyTargetsTable, energyTargetProgressTable, energyActionPlansTable,
   vapProjectsTable, seuAssessmentsTable, seuAssessmentItemsTable,
   subUnitsTable, energySourcesTable, energyUseGroupsTable,
 } from "@workspace/db";
-import { eq, and, SQL, inArray } from "drizzle-orm";
+import { eq, and, SQL, inArray, sql } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
+
+const TARGET_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
+const ACTION_STATUSES = new Set(["planned", "in_progress", "completed", "delayed", "cancelled"]);
+const ACTION_PRIORITIES = new Set(["low", "medium", "high"]);
+const VAP_STATUSES = new Set(["idea", "feasibility", "planned", "active", "in_progress", "completed", "cancelled"]);
+const FEASIBILITY_STATUSES = new Set(["not_started", "pre_feasibility", "detailed_feasibility", "approved", "rejected"]);
 
 class DashboardScopeError extends Error {
   constructor(public status: number, message: string) {
@@ -30,10 +37,32 @@ function parsePositiveInteger(value: unknown, field: string): number | undefined
   if (value === undefined || value === null) return undefined;
   if (typeof value === "number") {
     if (Number.isSafeInteger(value) && value > 0) return value;
-  } else if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
-    const parsed = Number(value);
-    if (Number.isSafeInteger(parsed)) return parsed;
+  } else if (typeof value === "string") {
+    const normalized = value.trim();
+    if (/^[1-9]\d*$/.test(normalized)) {
+      const parsed = Number(normalized);
+      if (Number.isSafeInteger(parsed)) return parsed;
+    }
   }
+  throw new DashboardScopeError(400, `Geçersiz ${field}`);
+}
+
+function parseYear(value: unknown, fallback?: number): number | undefined {
+  return value === undefined ? fallback : parsePositiveInteger(value, "year");
+}
+
+function parseQueryEnum(value: unknown, field: string, allowed: Set<string>): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !allowed.has(value)) {
+    throw new DashboardScopeError(400, `Geçersiz ${field}`);
+  }
+  return value;
+}
+
+function parseQueryBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
   throw new DashboardScopeError(400, `Geçersiz ${field}`);
 }
 
@@ -46,6 +75,13 @@ async function resolveDashboardScope(req: Request) {
   let unitId: number | undefined;
 
   if (isSuperAdmin(role)) {
+    if (queryCompanyId === undefined) {
+      throw new DashboardScopeError(400, "companyId zorunludur");
+    }
+    const [company] = await db.select({ id: companiesTable.id })
+      .from(companiesTable)
+      .where(eq(companiesTable.id, queryCompanyId));
+    if (!company) throw new DashboardScopeError(404, "Şirket bulunamadı");
     companyId = queryCompanyId;
     unitId = queryUnitId;
   } else if (isCompanyAdmin(role)) {
@@ -53,8 +89,17 @@ async function resolveDashboardScope(req: Request) {
     unitId = queryUnitId;
   } else {
     companyId = sessionCompanyId;
-    unitId = sessionUnitId ?? undefined;
-    if (sessionUnitId === null) return { companyId, unitId, empty: true };
+    if (queryCompanyId !== undefined && queryCompanyId !== sessionCompanyId) {
+      throw new DashboardScopeError(403, "Bu şirket için yetkiniz yok");
+    }
+    if (sessionUnitId === null) {
+      if (queryUnitId !== undefined) throw new DashboardScopeError(403, "Bu birim için yetkiniz yok");
+      return { companyId, unitId: undefined, empty: true };
+    }
+    if (queryUnitId !== undefined && queryUnitId !== sessionUnitId) {
+      throw new DashboardScopeError(403, "Bu birim için yetkiniz yok");
+    }
+    unitId = sessionUnitId;
   }
 
   if (unitId !== undefined && companyId !== undefined) {
@@ -90,7 +135,7 @@ function buildConsumptionConditions(year: number, unitId?: number, companyId?: n
 // GET /api/dashboard/kpi?year=2026&unitId=1
 router.get("/dashboard/kpi", requireAuth, async (req, res) => {
   try {
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const year = parseYear(req.query.year, new Date().getFullYear())!;
     const scope = await resolveDashboardScope(req);
     const unitId = scope.unitId;
     const effectiveCompanyId = scope.companyId;
@@ -107,14 +152,22 @@ router.get("/dashboard/kpi", requireAuth, async (req, res) => {
     const currConds = buildConsumptionConditions(year, unitId, effectiveCompanyId);
     const prevConds = buildConsumptionConditions(year - 1, unitId, effectiveCompanyId);
 
-    const rows = await db
-      .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2 })
+    const [totals] = await db
+      .select({
+        kwh: sql<number>`coalesce(sum(${consumptionTable.kwh}), 0)`,
+        tep: sql<number>`coalesce(sum(${consumptionTable.tep}), 0)`,
+        co2: sql<number>`coalesce(sum(${consumptionTable.co2}), 0)`,
+      })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
       .where(currConds.length === 1 ? currConds[0] : and(...currConds));
 
-    const prevRows = await db
-      .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2 })
+    const [prevTotals] = await db
+      .select({
+        kwh: sql<number>`coalesce(sum(${consumptionTable.kwh}), 0)`,
+        tep: sql<number>`coalesce(sum(${consumptionTable.tep}), 0)`,
+        co2: sql<number>`coalesce(sum(${consumptionTable.co2}), 0)`,
+      })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
       .where(prevConds.length === 1 ? prevConds[0] : and(...prevConds));
@@ -136,12 +189,12 @@ router.get("/dashboard/kpi", requireAuth, async (req, res) => {
       ? await db.select().from(seuTable).where(seuConds.length === 1 ? seuConds[0] : and(...seuConds))
       : await db.select().from(seuTable);
 
-    const totalKwh = rows.reduce((a, r) => a + r.kwh, 0);
-    const totalTep = rows.reduce((a, r) => a + r.tep, 0);
-    const totalCo2 = rows.reduce((a, r) => a + r.co2, 0);
-    const prevKwh = prevRows.reduce((a, r) => a + r.kwh, 0);
-    const prevTep = prevRows.reduce((a, r) => a + r.tep, 0);
-    const prevCo2 = prevRows.reduce((a, r) => a + r.co2, 0);
+    const totalKwh = totals?.kwh ?? 0;
+    const totalTep = totals?.tep ?? 0;
+    const totalCo2 = totals?.co2 ?? 0;
+    const prevKwh = prevTotals?.kwh ?? 0;
+    const prevTep = prevTotals?.tep ?? 0;
+    const prevCo2 = prevTotals?.co2 ?? 0;
 
     const kwhChange = prevKwh > 0 ? ((totalKwh - prevKwh) / prevKwh) * 100 : 0;
     const tepChange = prevTep > 0 ? ((totalTep - prevTep) / prevTep) * 100 : 0;
@@ -168,7 +221,7 @@ router.get("/dashboard/kpi", requireAuth, async (req, res) => {
 // GET /api/dashboard/monthly-trend?year=2026&unitId=1
 router.get("/dashboard/monthly-trend", requireAuth, async (req, res) => {
   try {
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const year = parseYear(req.query.year, new Date().getFullYear())!;
     const scope = await resolveDashboardScope(req);
     const unitId = scope.unitId;
     const effectiveCompanyId = scope.companyId;
@@ -184,12 +237,32 @@ router.get("/dashboard/monthly-trend", requireAuth, async (req, res) => {
 
     const conds = buildConsumptionConditions(year, unitId, effectiveCompanyId);
     const rows = await db
-      .select({ kwh: consumptionTable.kwh, tep: consumptionTable.tep, co2: consumptionTable.co2, month: consumptionTable.month })
+      .select({
+        month: consumptionTable.month,
+        kwh: sql<number>`coalesce(sum(${consumptionTable.kwh}), 0)`,
+        tep: sql<number>`coalesce(sum(${consumptionTable.tep}), 0)`,
+        co2: sql<number>`coalesce(sum(${consumptionTable.co2}), 0)`,
+      })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-      .where(conds.length === 1 ? conds[0] : and(...conds));
+      .where(conds.length === 1 ? conds[0] : and(...conds))
+      .groupBy(consumptionTable.month)
+      .orderBy(consumptionTable.month);
 
-    const weatherRows = await db.select().from(weatherTable).where(eq(weatherTable.year, year));
+    const weatherRows = effectiveCompanyId !== undefined
+      ? await db.select({
+          id: weatherTable.id,
+          month: weatherTable.month,
+          hdd: weatherTable.hdd,
+          cdd: weatherTable.cdd,
+        })
+          .from(weatherTable)
+          .where(and(
+            eq(weatherTable.companyId, effectiveCompanyId),
+            eq(weatherTable.year, year),
+          ))
+          .orderBy(weatherTable.month, weatherTable.id)
+      : [];
 
     const byMonth: Record<number, { kwh: number; tep: number; co2: number }> = {};
     const weatherByMonth: Record<number, { hdd: number; cdd: number }> = {};
@@ -200,7 +273,16 @@ router.get("/dashboard/monthly-trend", requireAuth, async (req, res) => {
       byMonth[r.month].tep += r.tep;
       byMonth[r.month].co2 += r.co2;
     }
-    for (const w of weatherRows) weatherByMonth[w.month] = { hdd: w.hdd, cdd: w.cdd };
+    const ambiguousWeatherMonths = new Set<number>();
+    for (const w of weatherRows) {
+      if (w.month < 1 || w.month > 12) continue;
+      if (weatherByMonth[w.month] !== undefined) {
+        ambiguousWeatherMonths.add(w.month);
+        delete weatherByMonth[w.month];
+      } else if (!ambiguousWeatherMonths.has(w.month)) {
+        weatherByMonth[w.month] = { hdd: w.hdd, cdd: w.cdd };
+      }
+    }
 
     const trend = [];
     for (let m = 1; m <= 12; m++) {
@@ -225,7 +307,7 @@ router.get("/dashboard/monthly-trend", requireAuth, async (req, res) => {
 // GET /api/dashboard/seu-breakdown?year=2026&unitId=1
 router.get("/dashboard/seu-breakdown", requireAuth, async (req, res) => {
   try {
-    const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+    const year = parseYear(req.query.year, new Date().getFullYear())!;
     const scope = await resolveDashboardScope(req);
     const unitId = scope.unitId;
     const effectiveCompanyId = scope.companyId;
@@ -288,15 +370,26 @@ router.get("/dashboard/seu-breakdown", requireAuth, async (req, res) => {
 // ── GET /api/dashboard/target-status ─────────────────────
 router.get("/dashboard/target-status", requireAuth, async (req, res) => {
   try {
+    const year = parseYear(req.query.year);
+    const energySourceIdParam = parsePositiveInteger(req.query.energySourceId, "energySourceId");
+    const statusParam = parseQueryEnum(req.query.status, "status", TARGET_STATUSES);
     const scope = await resolveDashboardScope(req);
     if (scope.empty) {
       res.json({ items: [] });
       return;
     }
 
-    const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    const energySourceIdParam = parsePositiveInteger(req.query.energySourceId, "energySourceId");
-    const statusParam = req.query.status as string | undefined;
+    if (energySourceIdParam !== undefined) {
+      const [energySource] = await db.select({
+        companyId: energySourcesTable.companyId,
+        unitId: energySourcesTable.unitId,
+      }).from(energySourcesTable).where(eq(energySourcesTable.id, energySourceIdParam));
+      if (!energySource) throw new DashboardScopeError(404, "Enerji kaynağı bulunamadı");
+      if (energySource.companyId !== scope.companyId ||
+          (scope.unitId !== undefined && energySource.unitId !== scope.unitId)) {
+        throw new DashboardScopeError(403, "Bu enerji kaynağı için yetkiniz yok");
+      }
+    }
 
     const conds: SQL[] = [];
     if (scope.companyId !== undefined) conds.push(eq(energyTargetsTable.companyId, scope.companyId));
@@ -445,6 +538,10 @@ router.get("/dashboard/target-status", requireAuth, async (req, res) => {
 // ── GET /api/dashboard/action-status ─────────────────────
 router.get("/dashboard/action-status", requireAuth, async (req, res) => {
   try {
+    const year = parseYear(req.query.year);
+    const statusParam = parseQueryEnum(req.query.status, "status", ACTION_STATUSES);
+    const priorityParam = parseQueryEnum(req.query.priority, "priority", ACTION_PRIORITIES);
+    const isVapParam = parseQueryBoolean(req.query.isVap, "isVap");
     const scope = await resolveDashboardScope(req);
     if (scope.empty) {
       res.json({
@@ -454,11 +551,6 @@ router.get("/dashboard/action-status", requireAuth, async (req, res) => {
       });
       return;
     }
-
-    const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    const statusParam = req.query.status as string | undefined;
-    const priorityParam = req.query.priority as string | undefined;
-    const isVapParam = req.query.isVap !== undefined ? req.query.isVap === "true" : undefined;
 
     const actionConds: SQL[] = [];
     if (scope.companyId !== undefined) {
@@ -582,6 +674,13 @@ router.get("/dashboard/action-status", requireAuth, async (req, res) => {
 // ── GET /api/dashboard/vap-summary ───────────────────────
 router.get("/dashboard/vap-summary", requireAuth, async (req, res) => {
   try {
+    const year = parseYear(req.query.year);
+    const statusParam = parseQueryEnum(req.query.status, "status", VAP_STATUSES);
+    const feasibilityStatusParam = parseQueryEnum(
+      req.query.feasibilityStatus,
+      "feasibilityStatus",
+      FEASIBILITY_STATUSES,
+    );
     const scope = await resolveDashboardScope(req);
     if (scope.empty) {
       res.json({
@@ -591,10 +690,6 @@ router.get("/dashboard/vap-summary", requireAuth, async (req, res) => {
       });
       return;
     }
-
-    const year = req.query.year ? parseInt(req.query.year as string) : undefined;
-    const statusParam = req.query.status as string | undefined;
-    const feasibilityStatusParam = req.query.feasibilityStatus as string | undefined;
 
     const vapConds: SQL[] = [];
     if (scope.companyId !== undefined) {
@@ -727,13 +822,12 @@ router.get("/dashboard/vap-summary", requireAuth, async (req, res) => {
 // ── GET /api/dashboard/seu-summary ───────────────────────
 router.get("/dashboard/seu-summary", requireAuth, async (req, res) => {
   try {
+    const year = parseYear(req.query.year);
     const scope = await resolveDashboardScope(req);
     if (scope.empty) {
       res.json({ totalAssessments: 0, byUnit: [], topSeuItems: [] });
       return;
     }
-
-    const year = req.query.year ? parseInt(req.query.year as string) : undefined;
 
     const assessmentConds: SQL[] = [eq(seuAssessmentsTable.recordType, "unit_official")];
     if (scope.companyId !== undefined) assessmentConds.push(eq(seuAssessmentsTable.companyId, scope.companyId));

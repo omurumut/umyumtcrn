@@ -4,6 +4,7 @@ import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
+const FOCUS_VALUES = new Set(["genel", "seu", "co2", "maliyet"]);
 
 class AiScopeError extends Error {
   constructor(public status: number, message: string) {
@@ -22,9 +23,12 @@ function isSuperAdmin(role: string) {
 function parsePositiveInteger(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
-  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
-    const parsed = Number(value);
-    if (Number.isSafeInteger(parsed)) return parsed;
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (/^[1-9]\d*$/.test(normalized)) {
+      const parsed = Number(normalized);
+      if (Number.isSafeInteger(parsed)) return parsed;
+    }
   }
   throw new AiScopeError(400, `Geçersiz ${field}`);
 }
@@ -44,19 +48,34 @@ function parseYear(bodyValue: unknown, queryValue: unknown) {
   return year;
 }
 
+function parseFocus(value: unknown) {
+  if (typeof value !== "string") throw new AiScopeError(400, "focus zorunludur");
+  const focus = value.trim();
+  if (!FOCUS_VALUES.has(focus)) throw new AiScopeError(400, "Geçersiz focus");
+  return focus;
+}
+
 router.post("/ai/suggestions", requireAuth, async (req, res) => {
   try {
-    const { year, focus, unitId: bodyUnitId, companyId: bodyCompanyId } = req.body;
+    const { year, focus: focusValue, unitId: bodyUnitId, companyId: bodyCompanyId } = req.body ?? {};
     const user = req.user!;
     const requestedCompanyId = parseMatchingPositiveInteger(bodyCompanyId, req.query.companyId, "companyId");
     const requestedUnitId = parseMatchingPositiveInteger(bodyUnitId, req.query.unitId, "unitId");
     const yr = parseYear(year, req.query.year);
+    const focus = parseFocus(focusValue);
     const sessionCompanyId = parsePositiveInteger(user.companyId, "companyId");
     if (sessionCompanyId === undefined) throw new AiScopeError(400, "Geçersiz companyId");
 
-    const effectiveCompanyId = isSuperAdmin(user.role)
-      ? (requestedCompanyId ?? sessionCompanyId)
-      : sessionCompanyId;
+    let effectiveCompanyId: number;
+    if (isSuperAdmin(user.role)) {
+      if (requestedCompanyId === undefined) throw new AiScopeError(400, "companyId zorunludur");
+      effectiveCompanyId = requestedCompanyId;
+    } else {
+      effectiveCompanyId = sessionCompanyId;
+      if (!isCompanyAdmin(user.role) && requestedCompanyId !== undefined && requestedCompanyId !== sessionCompanyId) {
+        throw new AiScopeError(403, "Bu şirket için yetkiniz yok");
+      }
+    }
 
     const [company] = await db.select({ id: companiesTable.id })
       .from(companiesTable).where(eq(companiesTable.id, effectiveCompanyId)).limit(1);
@@ -66,10 +85,12 @@ router.post("/ai/suggestions", requireAuth, async (req, res) => {
     if (isCompanyAdmin(user.role) || isSuperAdmin(user.role)) {
       effectiveUnitId = requestedUnitId;
     } else {
-      effectiveUnitId = parsePositiveInteger(user.unitId, "unitId");
-      if (effectiveUnitId === undefined) {
-        throw new AiScopeError(403, "Bu işlem için birim kapsamı gereklidir");
+      const sessionUnitId = parsePositiveInteger(user.unitId, "unitId");
+      if (sessionUnitId === undefined) throw new AiScopeError(403, "Birim kapsamı gereklidir.");
+      if (requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
+        throw new AiScopeError(403, "Bu birim için yetkiniz yok");
       }
+      effectiveUnitId = sessionUnitId;
     }
 
     if (effectiveUnitId !== undefined) {

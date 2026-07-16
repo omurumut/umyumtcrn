@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Lightbulb, Zap, RefreshCw, TrendingDown, Timer } from "lucide-react";
+import { AlertCircle, Lightbulb, Zap, RefreshCw, TrendingDown, Timer } from "lucide-react";
 
 const FOCUS_OPTIONS = [
   { value: "genel", label: "Genel Analiz" },
@@ -37,17 +37,22 @@ export default function AiSuggestions() {
   }, [unitId, companyId]);
 
   function handleGet() {
+    getSuggestions.reset();
     setTriggered(true);
     getSuggestions.mutate({
       data: {
         focus,
-        ...(unitId !== null ? { unitId } : companyId !== null ? { companyId } : {}),
+        ...(companyId !== null ? { companyId } : {}),
+        ...(unitId !== null ? { unitId } : {}),
       } as any,
     });
   }
 
   const suggestions = getSuggestions.data?.suggestions ?? [];
   const totalSavingKwh = suggestions.reduce((a, s) => a + (s.potentialSavingKwh ?? 0), 0);
+  const errorMessage = getSuggestions.error instanceof Error
+    ? getSuggestions.error.message
+    : "Öneriler üretilirken bir hata oluştu.";
 
   return (
     <div className="space-y-6">
@@ -152,7 +157,17 @@ export default function AiSuggestions() {
         </div>
       )}
 
-      {triggered && !getSuggestions.isPending && suggestions.length === 0 && (
+      {triggered && !getSuggestions.isPending && getSuggestions.isError && (
+        <Card role="alert">
+          <CardContent className="py-10 text-center text-destructive">
+            <AlertCircle className="h-10 w-10 mx-auto mb-3" />
+            <p className="font-medium">Öneriler üretilemedi</p>
+            <p className="text-sm mt-1">{errorMessage}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {triggered && !getSuggestions.isPending && !getSuggestions.isError && suggestions.length === 0 && (
         <Card>
           <CardContent className="py-16 text-center text-muted-foreground">
             <Lightbulb className="h-10 w-10 mx-auto mb-3 opacity-30" />
