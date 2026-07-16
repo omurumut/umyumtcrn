@@ -5,9 +5,12 @@
   "scripts": {
     "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
     "build": "pnpm run typecheck && pnpm -r --filter \"!@workspace/mockup-sandbox\" --if-present run build",
+    "start:prod": "pnpm --filter @workspace/api-server run start",
+    "install:browser": "playwright install chromium",
+    "verify:browser": "pnpm --filter @workspace/scripts run verify:browser",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
-    "replit:check": "pnpm install --frozen-lockfile=false && pnpm run build",
+    "replit:check": "pnpm install --frozen-lockfile && pnpm run build",
     "replit:start": "pnpm --filter @workspace/api-server run dev",
     "replit:api": "pnpm --filter @workspace/api-server run dev",
     "replit:web": "pnpm --filter @workspace/ems-dashboard run dev",
@@ -16,6 +19,7 @@
     "test:fixtures": "pnpm --filter @workspace/scripts run test:fixtures",
     "test:with-fixtures": "pnpm --filter @workspace/scripts run test:with-fixtures",
     "test:e2e": "pnpm --filter @workspace/scripts run test:e2e",
+    "test:production-readiness": "pnpm --filter @workspace/scripts run test:production-readiness",
     "start": "ts-node scripts/index.ts",
     "dev": "ts-node-dev scripts/index.ts"
   },

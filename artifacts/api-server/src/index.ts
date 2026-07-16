@@ -40,21 +40,25 @@ runMigrations(migrationsFolder)
       return;
     }
 
-    app.listen(port, (err) => {
+    app.listen(port, "0.0.0.0", (err) => {
       if (err) {
         logger.error({ err }, "Error listening on port");
         process.exit(1);
       }
       logger.info({ port }, "Server listening");
 
-      // MGM resmi referans veri bootstrap — app.listen'dan SONRA çalışır (arka planda).
-      // Başarısız olursa API yine de çalışır, lookup'lar "bootstrap_failed" durumunu raporlar.
-      bootstrapMgmReferenceData()
-        .catch(err => logger.error({ err }, "[MGM Bootstrap] Beklenmeyen hata"))
-        .then(() => seedStationsIfEmpty())
-        .then(() => seedDegreeDataIfEmpty())
-        .then(() => startMgmDailyScheduler())
-        .catch(err => logger.error({ err }, "MGM seed/scheduler hatası"));
+      const bootstrapPromise = process.env.ENABLE_MGM_BOOTSTRAP === "true"
+        ? bootstrapMgmReferenceData()
+            .then(() => seedStationsIfEmpty())
+            .then(() => seedDegreeDataIfEmpty())
+            .catch(err => logger.error({ err }, "MGM bootstrap hatası"))
+        : Promise.resolve();
+
+      if (process.env.ENABLE_MGM_SCHEDULER === "true") {
+        bootstrapPromise
+          .then(() => startMgmDailyScheduler())
+          .catch(err => logger.error({ err }, "MGM scheduler hatası"));
+      }
     });
   })
   .catch((err) => {

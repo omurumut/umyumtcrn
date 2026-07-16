@@ -17,6 +17,8 @@
     "test:fixtures": "tsx ./src/test-db.ts --fixtures",
     "test:with-fixtures": "tsx ./src/test-db.ts --with-fixtures",
     "test:e2e": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-e2e.ts",
+    "verify:browser": "tsx ./src/verify-browser.ts",
+    "test:production-readiness": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-production-readiness.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

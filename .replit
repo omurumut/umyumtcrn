@@ -3,10 +3,8 @@ modules = ["nodejs-20", "python-3.12", "bash", "web", "postgresql-16"]
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
-
-[deployment.postBuild]
-args = ["sh", "-c", "pnpm install --frozen-lockfile && pnpm store prune"]
-env = { "CI" = "true" }
+build = ["sh", "-c", "PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright pnpm install --frozen-lockfile && PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright pnpm run install:browser && PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright pnpm run verify:browser && pnpm run build"]
+run = ["sh", "-c", "NODE_ENV=production PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright pnpm run start:prod"]
 
 [workflows]
 runButton = "Project"
@@ -29,7 +27,7 @@ path = "scripts/post-merge.sh"
 timeoutMs = 20000
 
 [[ports]]
-localPort = 5000
+localPort = 8080
 externalPort = 80
 
 [nix]

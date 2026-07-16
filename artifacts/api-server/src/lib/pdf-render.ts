@@ -1,4 +1,6 @@
 import { chromium, type Browser, type BrowserContext } from "playwright";
+import { access } from "node:fs/promises";
+import { constants } from "node:fs";
 
 const PDF_RENDER_TIMEOUT_MS = 30_000;
 
@@ -21,6 +23,14 @@ function launchArgs(): string[] {
     args.push("--no-sandbox", "--disable-setuid-sandbox");
   }
   return args;
+}
+
+async function chromiumExecutablePath(): Promise<string> {
+  const explicitPath = process.env.PDF_CHROMIUM_EXECUTABLE_PATH;
+  const executablePath = explicitPath === undefined ? chromium.executablePath() : explicitPath.trim();
+  if (!executablePath) throw new PdfRenderError();
+  await access(executablePath, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+  return executablePath;
 }
 
 async function withTimeout<T>(operation: Promise<T>): Promise<T> {
@@ -49,7 +59,7 @@ export async function renderHtmlToPdf({
   try {
     browser = await chromium.launch({
       headless: true,
-      executablePath: process.env.PDF_CHROMIUM_EXECUTABLE_PATH || undefined,
+      executablePath: await chromiumExecutablePath(),
       args: launchArgs(),
     });
     context = await browser.newContext({

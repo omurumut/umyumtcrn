@@ -19,15 +19,15 @@ Only verify that the existing project installs, builds, and starts on Replit.
 Use only these commands during Replit import:
 
 ```bash
-pnpm install --frozen-lockfile=false
-pnpm run replit:check
+pnpm install --frozen-lockfile
+pnpm run build
 pnpm run replit:start
 ```
 
 If `replit:*` scripts are not available yet, use:
 
 ```bash
-pnpm install --frozen-lockfile=false
+pnpm install --frozen-lockfile
 pnpm run build
 pnpm --filter @workspace/api-server run dev
 ```
@@ -101,16 +101,23 @@ kontrol_admin / admin123
 
 # Run & Operate
 
+Production deployment instructions, environment variables, Chromium provisioning, and the release checklist are maintained in `docs/REPLIT_DEPLOYMENT.md`.
+
 ## Replit import / Replit run
 
-Use this first:
+For the Replit development workspace use:
 
 ```bash
-pnpm run replit:check
 pnpm run replit:start
 ```
 
 Do not run database push commands during Replit import.
+
+Production uses the `.replit` deployment build/run commands and the single authoritative runtime command:
+
+```bash
+pnpm run start:prod
+```
 
 ## Local development
 
