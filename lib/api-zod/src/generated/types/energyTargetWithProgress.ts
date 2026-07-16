@@ -47,4 +47,8 @@ export interface EnergyTargetWithProgress {
   energySourceId?: number | null;
   /** @nullable */
   seuAssessmentId?: number | null;
+  /** @nullable */
+  seuAssessmentItemId?: number | null;
+  /** @nullable */
+  baselineId?: number | null;
 }

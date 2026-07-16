@@ -474,7 +474,9 @@ export const ListTargetsResponseItem = zod.object({
   "status": zod.string().nullish(),
   "subUnitId": zod.number().nullish(),
   "energySourceId": zod.number().nullish(),
-  "seuAssessmentId": zod.number().nullish()
+  "seuAssessmentId": zod.number().nullish(),
+  "seuAssessmentItemId": zod.number().nullish(),
+  "baselineId": zod.number().nullish()
 })
 export const ListTargetsResponse = zod.array(ListTargetsResponseItem)
 
@@ -483,6 +485,7 @@ export const ListTargetsResponse = zod.array(ListTargetsResponseItem)
  * @summary Enerji hedefi ekle
  */
 export const CreateTargetBody = zod.object({
+  "companyId": zod.number().optional(),
   "unitId": zod.number().optional(),
   "name": zod.string(),
   "baselineYear": zod.number(),
@@ -494,12 +497,13 @@ export const CreateTargetBody = zod.object({
   "targetType": zod.string().optional(),
   "baselineValue": zod.number().optional(),
   "targetValue": zod.number().optional(),
-  "actualValue": zod.number().optional(),
   "unitLabel": zod.string().optional(),
   "status": zod.string().optional(),
   "subUnitId": zod.number().optional(),
   "energySourceId": zod.number().optional(),
-  "seuAssessmentId": zod.number().optional()
+  "seuAssessmentId": zod.number(),
+  "seuAssessmentItemId": zod.number(),
+  "baselineId": zod.number()
 })
 
 
@@ -511,6 +515,7 @@ export const UpdateTargetParams = zod.object({
 })
 
 export const UpdateTargetBody = zod.object({
+  "companyId": zod.number().optional(),
   "unitId": zod.number().optional(),
   "name": zod.string().optional(),
   "baselineYear": zod.number().optional(),
@@ -522,12 +527,13 @@ export const UpdateTargetBody = zod.object({
   "targetType": zod.string().optional(),
   "baselineValue": zod.number().optional(),
   "targetValue": zod.number().optional(),
-  "actualValue": zod.number().optional(),
   "unitLabel": zod.string().optional(),
   "status": zod.string().optional(),
   "subUnitId": zod.number().optional(),
   "energySourceId": zod.number().optional(),
-  "seuAssessmentId": zod.number().optional()
+  "seuAssessmentId": zod.number().optional(),
+  "seuAssessmentItemId": zod.number().optional(),
+  "baselineId": zod.number().optional()
 })
 
 export const UpdateTargetResponse = zod.object({
@@ -551,7 +557,9 @@ export const UpdateTargetResponse = zod.object({
   "status": zod.string().nullish(),
   "subUnitId": zod.number().nullish(),
   "energySourceId": zod.number().nullish(),
-  "seuAssessmentId": zod.number().nullish()
+  "seuAssessmentId": zod.number().nullish(),
+  "seuAssessmentItemId": zod.number().nullish(),
+  "baselineId": zod.number().nullish()
 })
 
 
@@ -811,7 +819,6 @@ export const CreateVapProjectBody = zod.object({
   "annualEnergySavingUnit": zod.string().optional(),
   "annualCostSaving": zod.number().optional(),
   "investmentCost": zod.number().optional(),
-  "paybackMonths": zod.number().optional(),
   "co2ReductionTon": zod.number().optional(),
   "measurementVerificationMethod": zod.string().optional(),
   "incentiveStatus": zod.string().optional(),
@@ -841,7 +848,6 @@ export const UpdateVapProjectBody = zod.object({
   "annualEnergySavingUnit": zod.string().optional(),
   "annualCostSaving": zod.number().optional(),
   "investmentCost": zod.number().optional(),
-  "paybackMonths": zod.number().optional(),
   "co2ReductionTon": zod.number().optional(),
   "measurementVerificationMethod": zod.string().optional(),
   "incentiveStatus": zod.string().optional(),

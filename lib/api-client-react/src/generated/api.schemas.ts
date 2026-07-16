@@ -457,6 +457,10 @@ export interface EnergyTarget {
   energySourceId?: number | null;
   /** @nullable */
   seuAssessmentId?: number | null;
+  /** @nullable */
+  seuAssessmentItemId?: number | null;
+  /** @nullable */
+  baselineId?: number | null;
 }
 
 export type EnergyTargetWithProgressYearlyProgressItem = {
@@ -507,9 +511,14 @@ export interface EnergyTargetWithProgress {
   energySourceId?: number | null;
   /** @nullable */
   seuAssessmentId?: number | null;
+  /** @nullable */
+  seuAssessmentItemId?: number | null;
+  /** @nullable */
+  baselineId?: number | null;
 }
 
 export interface EnergyTargetInput {
+  companyId?: number;
   unitId?: number;
   name: string;
   baselineYear: number;
@@ -521,15 +530,17 @@ export interface EnergyTargetInput {
   targetType?: string;
   baselineValue?: number;
   targetValue?: number;
-  actualValue?: number;
   unitLabel?: string;
   status?: string;
   subUnitId?: number;
   energySourceId?: number;
-  seuAssessmentId?: number;
+  seuAssessmentId: number;
+  seuAssessmentItemId: number;
+  baselineId: number;
 }
 
 export interface EnergyTargetUpdate {
+  companyId?: number;
   unitId?: number;
   name?: string;
   baselineYear?: number;
@@ -541,12 +552,13 @@ export interface EnergyTargetUpdate {
   targetType?: string;
   baselineValue?: number;
   targetValue?: number;
-  actualValue?: number;
   unitLabel?: string;
   status?: string;
   subUnitId?: number;
   energySourceId?: number;
   seuAssessmentId?: number;
+  seuAssessmentItemId?: number;
+  baselineId?: number;
 }
 
 export interface ReportResult {
@@ -779,7 +791,6 @@ export interface VapProjectInput {
   annualEnergySavingUnit?: string;
   annualCostSaving?: number;
   investmentCost?: number;
-  paybackMonths?: number;
   co2ReductionTon?: number;
   measurementVerificationMethod?: string;
   incentiveStatus?: string;
@@ -801,7 +812,6 @@ export interface VapProjectUpdate {
   annualEnergySavingUnit?: string;
   annualCostSaving?: number;
   investmentCost?: number;
-  paybackMonths?: number;
   co2ReductionTon?: number;
   measurementVerificationMethod?: string;
   incentiveStatus?: string;

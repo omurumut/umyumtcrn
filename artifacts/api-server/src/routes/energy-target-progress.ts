@@ -132,7 +132,24 @@ router.delete("/energy-target-progress/:id", requireAuth, async (req, res) => {
     if (existing.companyId !== sessionCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
     if (isStandard(role) && existing.targetUnitId !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
     recordConditions.push(eq(energyTargetProgressTable.targetId, existing.targetId));
-    await db.delete(energyTargetProgressTable).where(and(...recordConditions));
+    await db.transaction(async (tx) => {
+      await tx.delete(energyTargetProgressTable).where(and(...recordConditions));
+      const [latestProgress] = await tx
+        .select({ actualValue: energyTargetProgressTable.actualValue })
+        .from(energyTargetProgressTable)
+        .where(and(
+          eq(energyTargetProgressTable.companyId, sessionCompanyId),
+          eq(energyTargetProgressTable.targetId, existing.targetId),
+        ))
+        .orderBy(desc(energyTargetProgressTable.recordedAt), desc(energyTargetProgressTable.id))
+        .limit(1);
+      await tx.update(energyTargetsTable)
+        .set({ actualValue: latestProgress?.actualValue ?? null, updatedAt: new Date() })
+        .where(and(
+          eq(energyTargetsTable.id, existing.targetId),
+          eq(energyTargetsTable.companyId, sessionCompanyId),
+        ));
+    });
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

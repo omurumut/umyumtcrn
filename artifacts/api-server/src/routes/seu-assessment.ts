@@ -878,6 +878,16 @@ router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
         ))
         .limit(1);
 
+      const [targetByItem] = itemIds.length > 0
+        ? await tx.select({ id: energyTargetsTable.id })
+          .from(energyTargetsTable)
+          .where(and(
+            eq(energyTargetsTable.companyId, assessment.companyId),
+            inArray(energyTargetsTable.seuAssessmentItemId, itemIds),
+          ))
+          .limit(1)
+        : [];
+
       let hasItemDependency = false;
       if (itemIds.length > 0) {
         const [indicator] = await tx.select({ id: energyPerformanceIndicatorsTable.id })
@@ -904,7 +914,7 @@ router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
         hasItemDependency = Boolean(indicator || baseline || performanceResult);
       }
 
-      if (target || hasItemDependency) return "dependent" as const;
+      if (target || targetByItem || hasItemDependency) return "dependent" as const;
 
       const [deleted] = await tx.delete(seuAssessmentsTable)
         .where(and(...assessmentConditions))

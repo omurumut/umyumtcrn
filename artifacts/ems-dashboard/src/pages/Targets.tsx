@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useUnit } from "@/context/UnitContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useAuth } from "@/context/AuthContext";
@@ -68,6 +68,36 @@ function fmt(n: number | null | undefined, dec = 1) {
   return n.toLocaleString("tr-TR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
+async function getJson<T>(url: string, token: string | null): Promise<T> {
+  const response = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body?.error ?? "Veri yüklenemedi");
+  }
+  return response.json() as Promise<T>;
+}
+
+interface TargetDecisionItem {
+  itemId: number | null;
+  assessmentId: number | null;
+  assessmentYear: number | null;
+  name: string;
+  source: "analysis" | "manual";
+  recordType: string;
+  userDecision: string | null;
+  unitId: number | null;
+  unitName: string | null;
+}
+
+interface TargetBaseline {
+  id: number;
+  baselineYear: number;
+  periodStart: string;
+  periodEnd: string;
+  status: string;
+  isValid: boolean;
+}
+
 function StatusBadge({ status, items }: { status: string | null | undefined; items: { value: string; label: string; color: string }[] }) {
   const s = items.find((i) => i.value === status) ?? { label: status ?? "—", color: "bg-muted text-muted-foreground" };
   return <Badge className={`${s.color} border-0 text-xs`}>{s.label}</Badge>;
@@ -128,12 +158,14 @@ function EnpiChart({ target }: { target: any }) {
 interface TargetForm {
   name: string; baselineYear: string; targetYear: string; targetReductionPercent: string;
   unitId: string; objectiveText: string; targetText: string; targetType: string;
+  seuAssessmentId: string; seuAssessmentItemId: string; baselineId: string;
   subUnitId: string; energySourceId: string; unitLabel: string; status: string;
   baselineValue: string; targetValue: string; actualValue: string; notes: string;
 }
 const EMPTY_TARGET: TargetForm = {
   name: "", baselineYear: (CURRENT_YEAR - 1).toString(), targetYear: (CURRENT_YEAR + 4).toString(),
   targetReductionPercent: "10", unitId: "", objectiveText: "", targetText: "", targetType: "",
+  seuAssessmentId: "", seuAssessmentItemId: "", baselineId: "",
   subUnitId: "", energySourceId: "", unitLabel: "", status: "active",
   baselineValue: "", targetValue: "", actualValue: "", notes: "",
 };
@@ -169,7 +201,7 @@ export default function Targets() {
   const { unitId } = useUnit();
   const { companyId } = useCompany();
   const { user, token } = useAuth();
-  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+  const isAdmin = user?.role === "admin" || user?.role === "kontrol_admin" || user?.role === "superadmin";
   const [csvLoading, setCsvLoading] = useState(false);
 
   async function handleCsvExport() {
@@ -230,6 +262,39 @@ export default function Targets() {
   const updateTarget = useUpdateTarget();
   const deleteTarget = useDeleteTarget();
 
+  const decisionItemsUrl = (() => {
+    const params = new URLSearchParams({ recordType: "unit_official" });
+    if (targetForm.unitId) params.set("unitId", targetForm.unitId);
+    if (user?.role === "superadmin" && companyId !== null) params.set("companyId", companyId.toString());
+    return `/api/seu/decision-items?${params.toString()}`;
+  })();
+  const { data: targetDecisionItems = [] } = useQuery({
+    queryKey: ["target-parent-decision-items", decisionItemsUrl],
+    queryFn: () => getJson<TargetDecisionItem[]>(decisionItemsUrl, token),
+    enabled: targetOpen && !!targetForm.unitId,
+  });
+  const acceptedDecisionItems = targetDecisionItems.filter((item) =>
+    item.source === "analysis" && item.recordType === "unit_official" &&
+    item.userDecision === "accepted_as_seu" && item.itemId !== null && item.assessmentId !== null
+  );
+  const targetAssessments = Array.from(
+    new Map(acceptedDecisionItems.map((item) => [item.assessmentId!, item])).values(),
+  );
+  const targetAssessmentItems = acceptedDecisionItems.filter(
+    (item) => item.assessmentId?.toString() === targetForm.seuAssessmentId,
+  );
+  const baselinesUrl = (() => {
+    const params = new URLSearchParams({ seuItemId: targetForm.seuAssessmentItemId });
+    if (user?.role === "superadmin" && companyId !== null) params.set("companyId", companyId.toString());
+    return `/api/energy-performance/baselines?${params.toString()}`;
+  })();
+  const { data: targetBaselines = [] } = useQuery({
+    queryKey: ["target-parent-baselines", baselinesUrl],
+    queryFn: () => getJson<TargetBaseline[]>(baselinesUrl, token),
+    enabled: targetOpen && !!targetForm.seuAssessmentItemId,
+  });
+  const eligibleTargetBaselines = targetBaselines.filter((baseline) => baseline.status === "active" && baseline.isValid);
+
   // ── Action Plan hooks ─────────────────────────────────────
   const actionParams = selectedTargetId ? { targetId: parseInt(selectedTargetId) } : undefined;
   const { data: actionsData, isLoading: actionsLoading } = useListEnergyActionPlans(
@@ -288,6 +353,8 @@ export default function Targets() {
     setTargetForm({
       name: t.name, baselineYear: t.baselineYear.toString(), targetYear: t.targetYear.toString(),
       targetReductionPercent: t.targetReductionPercent.toString(), unitId: t.unitId?.toString() ?? "",
+      seuAssessmentId: t.seuAssessmentId?.toString() ?? "", seuAssessmentItemId: t.seuAssessmentItemId?.toString() ?? "",
+      baselineId: t.baselineId?.toString() ?? "",
       objectiveText: t.objectiveText ?? "", targetText: t.targetText ?? "", targetType: t.targetType ?? "",
       subUnitId: t.subUnitId?.toString() ?? "", energySourceId: t.energySourceId?.toString() ?? "",
       unitLabel: t.unitLabel ?? "", status: t.status ?? "active",
@@ -300,14 +367,18 @@ export default function Targets() {
   function handleSaveTarget() {
     const { name, baselineYear, targetYear, targetReductionPercent, unitId: fUnitId, status } = targetForm;
     if (!name) { toast({ title: "Hedef adı gerekli", variant: "destructive" }); return; }
-    if (parseInt(targetYear) < parseInt(baselineYear)) { toast({ title: "Hedef yılı baz yıldan küçük olamaz", variant: "destructive" }); return; }
-    const r = parseFloat(targetReductionPercent);
-    if (isNaN(r) || r < 0 || r > 100) { toast({ title: "Azaltma oranı 0-100 arası olmalı", variant: "destructive" }); return; }
+    if (Number(targetYear) < Number(baselineYear)) { toast({ title: "Hedef yılı baz yıldan küçük olamaz", variant: "destructive" }); return; }
+    const r = Number(targetReductionPercent);
+    if (!Number.isFinite(r) || r < 0 || r > 100) { toast({ title: "Azaltma oranı 0-100 arası olmalı", variant: "destructive" }); return; }
+    if (!targetForm.seuAssessmentId || !targetForm.seuAssessmentItemId || !targetForm.baselineId) {
+      toast({ title: "Resmî ÖEK değerlendirmesi, kabul edilmiş ÖEK kalemi ve aktif geçerli EnRÇ seçilmelidir", variant: "destructive" });
+      return;
+    }
 
     const payload = {
       name,
-      baselineYear: parseInt(baselineYear),
-      targetYear: parseInt(targetYear),
+      baselineYear: Number(baselineYear),
+      targetYear: Number(targetYear),
       targetReductionPercent: r,
       notes: targetForm.notes || undefined,
       objectiveText: targetForm.objectiveText || undefined,
@@ -315,12 +386,15 @@ export default function Targets() {
       targetType: targetForm.targetType || undefined,
       unitLabel: targetForm.unitLabel || undefined,
       status: status || "active",
-      baselineValue: targetForm.baselineValue !== "" ? parseFloat(targetForm.baselineValue) : undefined,
-      targetValue: targetForm.targetValue !== "" ? parseFloat(targetForm.targetValue) : undefined,
-      actualValue: targetForm.actualValue !== "" ? parseFloat(targetForm.actualValue) : undefined,
-      subUnitId: targetForm.subUnitId ? parseInt(targetForm.subUnitId) : undefined,
-      energySourceId: targetForm.energySourceId ? parseInt(targetForm.energySourceId) : undefined,
-      unitId: fUnitId ? parseInt(fUnitId) : undefined,
+      baselineValue: targetForm.baselineValue !== "" ? Number(targetForm.baselineValue) : undefined,
+      targetValue: targetForm.targetValue !== "" ? Number(targetForm.targetValue) : undefined,
+      subUnitId: targetForm.subUnitId ? Number(targetForm.subUnitId) : undefined,
+      energySourceId: targetForm.energySourceId ? Number(targetForm.energySourceId) : undefined,
+      unitId: fUnitId ? Number(fUnitId) : undefined,
+      seuAssessmentId: Number(targetForm.seuAssessmentId),
+      seuAssessmentItemId: Number(targetForm.seuAssessmentItemId),
+      baselineId: Number(targetForm.baselineId),
+      ...(user?.role === "superadmin" && companyId !== null ? { companyId } : {}),
     };
 
     const invalidate = () => {
@@ -356,13 +430,13 @@ export default function Targets() {
     const { targetId, title, priority, status, isVap, progressPercent } = actionForm;
     if (!targetId) { toast({ title: "Hedef seçiniz", variant: "destructive" }); return; }
     if (!title) { toast({ title: "Eylem adı zorunludur", variant: "destructive" }); return; }
-    const prog = progressPercent === "" ? 0 : parseFloat(progressPercent);
-    if (isNaN(prog) || prog < 0 || prog > 100) { toast({ title: "İlerleme 0-100 arası olmalı", variant: "destructive" }); return; }
+    const prog = progressPercent === "" ? 0 : Number(progressPercent);
+    if (!Number.isFinite(prog) || prog < 0 || prog > 100) { toast({ title: "İlerleme 0-100 arası olmalı", variant: "destructive" }); return; }
 
-    const toNum = (v: string) => v !== "" && !isNaN(parseFloat(v)) ? parseFloat(v) : undefined;
+    const toNum = (v: string) => v !== "" && Number.isFinite(Number(v)) ? Number(v) : undefined;
 
     const payload = {
-      targetId: parseInt(targetId),
+      targetId: Number(targetId),
       title,
       description: actionForm.description || undefined,
       responsibleName: actionForm.responsibleName || undefined,
@@ -467,9 +541,9 @@ export default function Targets() {
     setActionForm((prev) => {
       const next = { ...prev, [field]: value };
       if (field === "investmentCost" || field === "expectedCostSaving") {
-        const inv = parseFloat(field === "investmentCost" ? (value as string) : prev.investmentCost);
-        const saving = parseFloat(field === "expectedCostSaving" ? (value as string) : prev.expectedCostSaving);
-        if (!isNaN(inv) && !isNaN(saving) && saving > 0) {
+        const inv = Number(field === "investmentCost" ? value : prev.investmentCost);
+        const saving = Number(field === "expectedCostSaving" ? value : prev.expectedCostSaving);
+        if (Number.isFinite(inv) && Number.isFinite(saving) && saving > 0) {
           next.paybackMonths = ((inv / saving) * 12).toFixed(1);
         } else {
           next.paybackMonths = "";
@@ -795,17 +869,68 @@ export default function Targets() {
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2 space-y-1.5">
                 <Label>Hedef Adı *</Label>
-                <Input placeholder="ör. Ana Fabrika 2030 Enerji Hedefi" value={targetForm.name} onChange={(e) => setTargetForm({ ...targetForm, name: e.target.value })} />
+                <Input maxLength={255} placeholder="ör. Ana Fabrika 2030 Enerji Hedefi" value={targetForm.name} onChange={(e) => setTargetForm({ ...targetForm, name: e.target.value })} />
               </div>
               {isAdmin && unitId === null && (
                 <div className="space-y-1.5">
                   <Label>Birim *</Label>
-                  <Select value={targetForm.unitId} onValueChange={(v) => setTargetForm({ ...targetForm, unitId: v })}>
+                  <Select value={targetForm.unitId} onValueChange={(v) => setTargetForm({ ...targetForm, unitId: v, seuAssessmentId: "", seuAssessmentItemId: "", baselineId: "" })}>
                     <SelectTrigger><SelectValue placeholder="Birim seç" /></SelectTrigger>
                     <SelectContent>{(allUnits ?? []).map((u: any) => <SelectItem key={u.id} value={u.id.toString()}>{u.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
               )}
+              {editingTargetId !== null && (!targetForm.seuAssessmentId || !targetForm.seuAssessmentItemId || !targetForm.baselineId) && (
+                <div className="col-span-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+                  Bu eski hedefte kalıcı ÖEK/EnRÇ model bağlantısı eksik. Kaydetmeden önce aşağıdaki üç seçimi tamamlayın.
+                </div>
+              )}
+              <div className="col-span-2 space-y-1.5">
+                <Label>Resmî ÖEK Değerlendirmesi *</Label>
+                <Select
+                  value={targetForm.seuAssessmentId}
+                  onValueChange={(value) => setTargetForm({ ...targetForm, seuAssessmentId: value, seuAssessmentItemId: "", baselineId: "" })}
+                  disabled={!targetForm.unitId}
+                >
+                  <SelectTrigger><SelectValue placeholder={targetForm.unitId ? "Değerlendirme seçin..." : "Önce birim seçin"} /></SelectTrigger>
+                  <SelectContent>
+                    {targetAssessments.map((assessment) => (
+                      <SelectItem key={assessment.assessmentId!} value={assessment.assessmentId!.toString()}>
+                        {assessment.assessmentYear ?? "—"} · {assessment.unitName ?? `Birim #${assessment.unitId}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label>Kabul Edilmiş ÖEK Kalemi *</Label>
+                <Select
+                  value={targetForm.seuAssessmentItemId}
+                  onValueChange={(value) => setTargetForm({ ...targetForm, seuAssessmentItemId: value, baselineId: "" })}
+                  disabled={!targetForm.seuAssessmentId}
+                >
+                  <SelectTrigger><SelectValue placeholder="ÖEK kalemi seçin..." /></SelectTrigger>
+                  <SelectContent>
+                    {targetAssessmentItems.map((item) => <SelectItem key={item.itemId!} value={item.itemId!.toString()}>{item.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label>Aktif ve Geçerli EnRÇ *</Label>
+                <Select value={targetForm.baselineId} onValueChange={(value) => setTargetForm({ ...targetForm, baselineId: value })} disabled={!targetForm.seuAssessmentItemId}>
+                  <SelectTrigger><SelectValue placeholder="EnRÇ seçin..." /></SelectTrigger>
+                  <SelectContent>
+                    {eligibleTargetBaselines.map((baseline) => (
+                      <SelectItem key={baseline.id} value={baseline.id.toString()}>
+                        {baseline.baselineYear} · {baseline.periodStart} – {baseline.periodEnd}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {targetForm.seuAssessmentItemId && eligibleTargetBaselines.length === 0 && (
+                  <p className="text-xs text-muted-foreground">Bu ÖEK kalemi için aktif ve geçerli EnRÇ bulunamadı.</p>
+                )}
+              </div>
               <div className="space-y-1.5">
                 <Label>Hedef Tipi</Label>
                 <Select value={targetForm.targetType} onValueChange={(v) => setTargetForm({ ...targetForm, targetType: v })}>
@@ -847,15 +972,16 @@ export default function Targets() {
               </div>
               <div className="space-y-1.5">
                 <Label>Baz Değer</Label>
-                <Input type="number" min="0" placeholder="Opsiyonel" value={targetForm.baselineValue} onChange={(e) => setTargetForm({ ...targetForm, baselineValue: e.target.value })} />
+                <Input type="number" min="0" step="any" placeholder="Opsiyonel" value={targetForm.baselineValue} onChange={(e) => setTargetForm({ ...targetForm, baselineValue: e.target.value })} />
               </div>
               <div className="space-y-1.5">
                 <Label>Hedef Değer</Label>
-                <Input type="number" min="0" placeholder="Opsiyonel" value={targetForm.targetValue} onChange={(e) => setTargetForm({ ...targetForm, targetValue: e.target.value })} />
+                <Input type="number" min="0" step="any" placeholder="Opsiyonel" value={targetForm.targetValue} onChange={(e) => setTargetForm({ ...targetForm, targetValue: e.target.value })} />
               </div>
               <div className="space-y-1.5">
                 <Label>Gerçekleşen Değer</Label>
-                <Input type="number" min="0" placeholder="Opsiyonel" value={targetForm.actualValue} onChange={(e) => setTargetForm({ ...targetForm, actualValue: e.target.value })} />
+                <Input type="number" min="0" step="any" placeholder="İlerleme kaydı yok" value={targetForm.actualValue} readOnly />
+                <p className="text-xs text-muted-foreground">İlerleme kayıtlarından otomatik güncellenir.</p>
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label>Amaç Metni</Label>
@@ -895,7 +1021,7 @@ export default function Targets() {
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label>Eylem Adı *</Label>
-                <Input placeholder="Eylem planı başlığı" value={actionForm.title} onChange={(e) => onActionFormChange("title", e.target.value)} />
+                <Input maxLength={255} placeholder="Eylem planı başlığı" value={actionForm.title} onChange={(e) => onActionFormChange("title", e.target.value)} />
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label>Açıklama</Label>
@@ -921,11 +1047,11 @@ export default function Targets() {
               </div>
               <div className="space-y-1.5">
                 <Label>İlerleme (%)</Label>
-                <Input type="number" min="0" max="100" value={actionForm.progressPercent} onChange={(e) => onActionFormChange("progressPercent", e.target.value)} />
+                <Input type="number" min="0" max="100" step="any" value={actionForm.progressPercent} onChange={(e) => onActionFormChange("progressPercent", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Beklenen Enerji Tasarrufu</Label>
-                <Input type="number" min="0" placeholder="Miktar" value={actionForm.expectedSavingValue} onChange={(e) => onActionFormChange("expectedSavingValue", e.target.value)} />
+                <Input type="number" min="0" step="any" placeholder="Miktar" value={actionForm.expectedSavingValue} onChange={(e) => onActionFormChange("expectedSavingValue", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Tasarruf Birimi</Label>
@@ -933,15 +1059,15 @@ export default function Targets() {
               </div>
               <div className="space-y-1.5">
                 <Label>Beklenen yıllık mali tasarruf (₺)</Label>
-                <Input type="number" min="0" placeholder="Yıllık tutar" value={actionForm.expectedCostSaving} onChange={(e) => onActionFormChange("expectedCostSaving", e.target.value)} />
+                <Input type="number" min="0" step="any" placeholder="Yıllık tutar" value={actionForm.expectedCostSaving} onChange={(e) => onActionFormChange("expectedCostSaving", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Yatırım maliyeti (₺)</Label>
-                <Input type="number" min="0" placeholder="Toplam yatırım" value={actionForm.investmentCost} onChange={(e) => onActionFormChange("investmentCost", e.target.value)} />
+                <Input type="number" min="0" step="any" placeholder="Toplam yatırım" value={actionForm.investmentCost} onChange={(e) => onActionFormChange("investmentCost", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Geri ödeme süresi / yatırım geri dönüşü (ay)</Label>
-                <Input type="number" min="0" placeholder="Otomatik hesaplanır" value={actionForm.paybackMonths} onChange={(e) => onActionFormChange("paybackMonths", e.target.value)} />
+                <Input type="number" min="0" step="any" placeholder="Otomatik hesaplanır" value={actionForm.paybackMonths} onChange={(e) => onActionFormChange("paybackMonths", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Başlangıç Tarihi</Label>

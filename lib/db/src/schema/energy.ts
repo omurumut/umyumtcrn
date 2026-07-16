@@ -362,6 +362,8 @@ export const energyTargetsTable = pgTable("energy_targets", {
   subUnitId: integer("sub_unit_id").references(() => subUnitsTable.id, { onDelete: "set null" }),
   energySourceId: integer("energy_source_id").references(() => energySourcesTable.id, { onDelete: "set null" }),
   seuAssessmentId: integer("seu_assessment_id"),
+  seuAssessmentItemId: integer("seu_assessment_item_id").references(() => seuAssessmentItemsTable.id, { onDelete: "no action" }),
+  baselineId: integer("baseline_id").references(() => energyBaselinesTable.id, { onDelete: "no action" }),
   baselineValue: real("baseline_value"),
   targetValue: real("target_value"),
   actualValue: real("actual_value"),
@@ -369,7 +371,10 @@ export const energyTargetsTable = pgTable("energy_targets", {
   status: text("status").default("active"),
   updatedAt: timestamp("updated_at").defaultNow(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  seuAssessmentItemIdIdx: index("energy_targets_seu_assessment_item_id_idx").on(table.seuAssessmentItemId),
+  baselineIdIdx: index("energy_targets_baseline_id_idx").on(table.baselineId),
+}));
 
 export const insertEnergyTargetSchema = createInsertSchema(energyTargetsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertEnergyTarget = z.infer<typeof insertEnergyTargetSchema>;

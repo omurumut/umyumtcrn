@@ -18,7 +18,6 @@ export interface VapProjectInput {
   annualEnergySavingUnit?: string;
   annualCostSaving?: number;
   investmentCost?: number;
-  paybackMonths?: number;
   co2ReductionTon?: number;
   measurementVerificationMethod?: string;
   incentiveStatus?: string;

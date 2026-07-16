@@ -34,6 +34,8 @@ const REQUIRED_INDEXES = [
   "idx_mgm_station_mappings_province",
   "idx_mgm_station_mappings_province_district",
   "vap_projects_action_plan_id_unique",
+  "energy_targets_seu_assessment_item_id_idx",
+  "energy_targets_baseline_id_idx",
 ] as const;
 
 interface JournalEntry {
@@ -202,6 +204,10 @@ async function assertMigrationHistory(
     appliedHashes.has(await fileHash("0019_energy_review_record_soft_delete")),
     "Güncel 0019 hash'i eşleşmiyor.",
   );
+  assert(
+    appliedHashes.has(await fileHash("0020_target_parent_links")),
+    "Güncel 0020 hash'i eşleşmiyor.",
+  );
 }
 
 async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
@@ -224,6 +230,15 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
     recordTypeResult.rows[0]?.exists,
     "meters.record_type kolonu fresh şemada yok.",
   );
+
+  const targetParentColumnsResult = await queryable.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'energy_targets'
+       AND column_name IN ('seu_assessment_item_id', 'baseline_id')`,
+  );
+  const targetParentColumns = new Set(targetParentColumnsResult.rows.map((row) => row.column_name));
+  assert(targetParentColumns.has("seu_assessment_item_id"), "energy_targets.seu_assessment_item_id fresh şemada yok.");
+  assert(targetParentColumns.has("baseline_id"), "energy_targets.baseline_id fresh şemada yok.");
 
   const companiesResult = await queryable.query<{
     total: string;
@@ -249,12 +264,20 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
     assert(indexes.has(index), `${index} index'i fresh şemada yok.`);
   }
 
-  const foreignKeysResult = await queryable.query<{ definition: string }>(
-    `SELECT pg_get_constraintdef(oid) AS definition
+  const foreignKeysResult = await queryable.query<{ definition: string; delete_action: string }>(
+    `SELECT pg_get_constraintdef(oid) AS definition, confdeltype::text AS delete_action
      FROM pg_constraint
      WHERE conrelid = 'public.energy_targets'::regclass AND contype = 'f'`,
   );
   const definitions = foreignKeysResult.rows.map((row) => row.definition);
+  assert(
+    foreignKeysResult.rows.some((row) => /FOREIGN KEY \(seu_assessment_item_id\).*seu_assessment_items\(id\)/i.test(row.definition) && row.delete_action === "a"),
+    "energy_targets.seu_assessment_item_id NO ACTION foreign key fresh şemada yok.",
+  );
+  assert(
+    foreignKeysResult.rows.some((row) => /FOREIGN KEY \(baseline_id\).*energy_baselines\(id\)/i.test(row.definition) && row.delete_action === "a"),
+    "energy_targets.baseline_id NO ACTION foreign key fresh şemada yok.",
+  );
   const energyTargetsSubUnitForeignKeyMissing = !definitions.some(
     (definition) => /FOREIGN KEY \(sub_unit_id\)/i.test(definition),
   );

@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { db, vapProjectsTable, energyActionPlansTable, energyTargetsTable, energySourcesTable, unitsTable, subUnitsTable } from "@workspace/db";
+import type { Response } from "express";
+import { db, companiesTable, vapProjectsTable, energyActionPlansTable, energyTargetsTable, energySourcesTable, unitsTable, subUnitsTable } from "@workspace/db";
 import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import {
@@ -10,16 +11,90 @@ import { buildXlsx, sendXlsxResponse, type XlsxColDef } from "../lib/xlsx-export
 
 const router = Router();
 
+class BadRequestError extends Error {}
+
+const VAP_STATUSES = new Set(["idea", "feasibility", "planned", "active", "in_progress", "completed", "cancelled"]);
+const FEASIBILITY_STATUSES = new Set(["not_started", "pre_feasibility", "detailed_feasibility", "approved", "rejected"]);
+const INCENTIVE_STATUSES = new Set(["none", "evaluating", "application_prepared", "applied", "approved", "rejected"]);
+const MAX_REAL = 3.4028235e38;
+
 function isCompanyAdmin(role: string) { return role === "admin" || role === "kontrol_admin"; }
 function isSuperAdmin(role: string) { return role === "superadmin"; }
 function isStandard(role: string) { return !isCompanyAdmin(role) && !isSuperAdmin(role); }
 function parsePositiveInteger(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
-  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
-    const parsed = Number(value); if (Number.isSafeInteger(parsed)) return parsed;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value.trim())) {
+    const parsed = Number(value.trim()); if (Number.isSafeInteger(parsed)) return parsed;
   }
   return undefined;
+}
+
+function requiredString(value: unknown, field: string, maxLength = 255): string {
+  if (typeof value !== "string") throw new BadRequestError(`Geçersiz ${field}`);
+  const parsed = value.trim();
+  if (!parsed || parsed.length > maxLength) throw new BadRequestError(`Geçersiz ${field}`);
+  return parsed;
+}
+
+function optionalString(value: unknown, field: string, maxLength?: number): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") throw new BadRequestError(`Geçersiz ${field}`);
+  const parsed = value.trim();
+  if (maxLength !== undefined && parsed.length > maxLength) throw new BadRequestError(`Geçersiz ${field}`);
+  return parsed || null;
+}
+
+function optionalFinite(value: unknown, field: string, min = 0, max = MAX_REAL): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  let parsed: number;
+  if (typeof value === "number") parsed = value;
+  else if (typeof value === "string" && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim())) parsed = Number(value.trim());
+  else throw new BadRequestError(`Geçersiz ${field}`);
+  if (!Number.isFinite(parsed) || Math.abs(parsed) > MAX_REAL || parsed < min || parsed > max) throw new BadRequestError(`Geçersiz ${field}`);
+  return parsed;
+}
+
+function calculatePaybackMonths(investmentCost: number | null, annualCostSaving: number | null): number | null {
+  if (investmentCost === null || annualCostSaving === null || annualCostSaving === 0) return null;
+  const paybackMonths = (investmentCost / annualCostSaving) * 12;
+  if (!Number.isFinite(paybackMonths) || paybackMonths > MAX_REAL) {
+    throw new BadRequestError("Geri ödeme süresi hesaplanamadı");
+  }
+  return Number(paybackMonths.toFixed(1));
+}
+
+function enumValue(value: unknown, field: string, allowed: Set<string>, fallback?: string): string {
+  if ((value === undefined || value === null || value === "") && fallback !== undefined) return fallback;
+  if (typeof value !== "string" || !allowed.has(value)) throw new BadRequestError(`Geçersiz ${field}`);
+  return value;
+}
+
+function optionalIsoDate(value: unknown, field: string): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new BadRequestError(`Geçersiz ${field}`);
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year!, month! - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) throw new BadRequestError(`Geçersiz ${field}`);
+  return value;
+}
+
+function handleBadRequest(res: Response, err: unknown) {
+  if (!(err instanceof BadRequestError)) return false;
+  res.status(400).json({ error: err.message });
+  return true;
+}
+
+async function resolveEffectiveCompanyId(role: string, sessionCompanyId: number, value: unknown, requireExplicit: boolean) {
+  if (!isSuperAdmin(role)) return sessionCompanyId;
+  if (value === undefined && !requireExplicit) return sessionCompanyId;
+  const companyId = parsePositiveInteger(value);
+  if (companyId === undefined) return undefined;
+  const [company] = await db.select({ id: companiesTable.id }).from(companiesTable).where(eq(companiesTable.id, companyId));
+  return company?.id;
 }
 
 async function getScopedActionPlan(actionPlanId: number, companyId: number, standardUnitId?: number) {
@@ -50,8 +125,33 @@ router.get("/vap-projects/export", requireAuth, async (req, res) => {
     const yearParam = parsePositiveInteger(req.query.year);
     if (req.query.year !== undefined && yearParam === undefined) { res.status(400).json({ error: "Geçersiz year" }); return; }
     const statusParam = req.query.status as string | undefined;
+    const companyIdParam = parsePositiveInteger(req.query.companyId);
+    if (req.query.companyId !== undefined && companyIdParam === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
     const unitIdParam = parsePositiveInteger(req.query.unitId);
     if (req.query.unitId !== undefined && unitIdParam === undefined) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
+
+    const effectiveCompanyId = await resolveEffectiveCompanyId(role, sessionCompanyId, companyIdParam, false);
+    if (effectiveCompanyId === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
+
+    let effectiveUnitId: number | undefined;
+    if (unitIdParam !== undefined) {
+      const [unit] = await db.select({ companyId: unitsTable.companyId })
+        .from(unitsTable)
+        .where(eq(unitsTable.id, unitIdParam));
+      if (!unit) { res.status(400).json({ error: "Geçersiz unitId" }); return; }
+      if (unit.companyId !== effectiveCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
+      if (isStandard(role) && unitIdParam !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
+      effectiveUnitId = unitIdParam;
+    } else if (isStandard(role)) {
+      effectiveUnitId = sessionUnitId!;
+    }
+
+    const conditions: SQL[] = [
+      eq(vapProjectsTable.companyId, effectiveCompanyId),
+      eq(energyActionPlansTable.companyId, effectiveCompanyId),
+      eq(energyTargetsTable.companyId, effectiveCompanyId),
+    ];
+    if (effectiveUnitId !== undefined) conditions.push(eq(energyTargetsTable.unitId, effectiveUnitId));
 
     const rows = await db
       .select({
@@ -95,17 +195,11 @@ router.get("/vap-projects/export", requireAuth, async (req, res) => {
       .leftJoin(unitsTable, eq(energyTargetsTable.unitId, unitsTable.id))
       .leftJoin(subUnitsTable, eq(energyTargetsTable.subUnitId, subUnitsTable.id))
       .leftJoin(energySourcesTable, eq(energyTargetsTable.energySourceId, energySourcesTable.id))
-      .where(eq(vapProjectsTable.companyId, sessionCompanyId))
+      .where(and(...conditions))
       .orderBy(vapProjectsTable.createdAt);
 
     // ── Yetki filtresi ─────────────────────────────────────────
     let filtered = rows.filter((r) => r.actionPlanIsVap === true);
-
-    if (isStandard(role) && sessionUnitId !== null) {
-      filtered = filtered.filter((r) => r.targetUnitId === sessionUnitId);
-    } else if (isCompanyAdmin(role) && unitIdParam !== undefined) {
-      filtered = filtered.filter((r) => r.targetUnitId === unitIdParam);
-    }
 
     // ── Query filtreler ────────────────────────────────────────
     if (statusParam) {
@@ -194,6 +288,8 @@ router.get("/vap-projects", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
     if (isStandard(role) && sessionUnitId === null) { res.json([]); return; }
+    const effectiveCompanyId = await resolveEffectiveCompanyId(role, sessionCompanyId, req.query.companyId, false);
+    if (effectiveCompanyId === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
 
     const rows = await db
       .select({
@@ -232,7 +328,11 @@ router.get("/vap-projects", requireAuth, async (req, res) => {
       .from(vapProjectsTable)
       .leftJoin(energyActionPlansTable, eq(vapProjectsTable.actionPlanId, energyActionPlansTable.id))
       .leftJoin(energyTargetsTable, eq(energyActionPlansTable.targetId, energyTargetsTable.id))
-      .where(eq(vapProjectsTable.companyId, sessionCompanyId))
+      .where(and(
+        eq(vapProjectsTable.companyId, effectiveCompanyId),
+        eq(energyActionPlansTable.companyId, effectiveCompanyId),
+        eq(energyTargetsTable.companyId, effectiveCompanyId),
+      ))
       .orderBy(vapProjectsTable.createdAt);
 
     const filtered =
@@ -256,14 +356,42 @@ router.post("/vap-projects", requireAuth, async (req, res) => {
       investmentCost, paybackMonths, co2ReductionTon, measurementVerificationMethod,
       incentiveStatus, feasibilityStatus, startDate, endDate, status, notes } = req.body;
 
-    if (!actionPlanId || !projectTitle) {
+    if (actionPlanId === undefined || projectTitle === undefined) {
       res.status(400).json({ error: "Eylem planı ve proje başlığı zorunludur" }); return;
     }
+    const parsedProjectTitle = requiredString(projectTitle, "projectTitle");
+    const parsedProjectCode = optionalString(projectCode, "projectCode", 255);
+    const parsedProjectType = optionalString(projectType, "projectType");
+    const parsedCurrentSituation = optionalString(currentSituation, "currentSituation");
+    const parsedProposedSolution = optionalString(proposedSolution, "proposedSolution");
+    const parsedTechnicalDescription = optionalString(technicalDescription, "technicalDescription");
+    const parsedAnnualEnergySavingValue = optionalFinite(annualEnergySavingValue, "annualEnergySavingValue");
+    const parsedAnnualEnergySavingUnit = optionalString(annualEnergySavingUnit, "annualEnergySavingUnit");
+    const parsedAnnualCostSaving = optionalFinite(annualCostSaving, "annualCostSaving");
+    const parsedInvestmentCost = optionalFinite(investmentCost, "investmentCost");
+    // Legacy clients may still send paybackMonths. Validate it for compatibility,
+    // but the stored value is always calculated from authoritative financial inputs.
+    optionalFinite(paybackMonths, "paybackMonths");
+    const parsedCo2ReductionTon = optionalFinite(co2ReductionTon, "co2ReductionTon");
+    const parsedMeasurementMethod = optionalString(measurementVerificationMethod, "measurementVerificationMethod");
+    const parsedIncentiveStatus = enumValue(incentiveStatus, "incentiveStatus", INCENTIVE_STATUSES, "none");
+    const parsedFeasibilityStatus = enumValue(feasibilityStatus, "feasibilityStatus", FEASIBILITY_STATUSES, "not_started");
+    const parsedStartDate = optionalIsoDate(startDate, "startDate");
+    const parsedEndDate = optionalIsoDate(endDate, "endDate");
+    if (parsedStartDate && parsedEndDate && parsedEndDate < parsedStartDate) throw new BadRequestError("Bitiş tarihi başlangıç tarihinden önce olamaz");
+    const parsedStatus = enumValue(status, "status", VAP_STATUSES, "idea");
+    const parsedNotes = optionalString(notes, "notes");
+    const calculatedPaybackMonths = calculatePaybackMonths(
+      parsedInvestmentCost ?? null,
+      parsedAnnualCostSaving ?? null,
+    );
     if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
+    const effectiveCompanyId = await resolveEffectiveCompanyId(role, sessionCompanyId, req.body.companyId, true);
+    if (effectiveCompanyId === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
     const parsedActionPlanId = parsePositiveInteger(actionPlanId);
     if (parsedActionPlanId === undefined) { res.status(400).json({ error: "Geçersiz actionPlanId" }); return; }
 
-    const ap = await getScopedActionPlan(parsedActionPlanId, sessionCompanyId, isStandard(role) ? sessionUnitId! : undefined);
+    const ap = await getScopedActionPlan(parsedActionPlanId, effectiveCompanyId, isStandard(role) ? sessionUnitId! : undefined);
     if (!ap) {
       res.status(403).json({ error: "Geçersiz eylem planı" }); return;
     }
@@ -273,39 +401,38 @@ router.post("/vap-projects", requireAuth, async (req, res) => {
     // Duplicate VAP kontrolü — aynı action_plan_id için tek VAP olabilir
     const [dupVap] = await db.select({ id: vapProjectsTable.id })
       .from(vapProjectsTable)
-      .where(and(eq(vapProjectsTable.actionPlanId, parsedActionPlanId), eq(vapProjectsTable.companyId, sessionCompanyId)));
+      .where(and(eq(vapProjectsTable.actionPlanId, parsedActionPlanId), eq(vapProjectsTable.companyId, effectiveCompanyId)));
     if (dupVap) {
       res.status(409).json({ error: "Bu eylem planına zaten bir VAP projesi bağlı" }); return;
     }
 
-    const parseOrNull = (v: any) => (v !== undefined && v !== null && v !== "") ? parseFloat(v) : null;
-
     const [item] = await db.insert(vapProjectsTable).values({
-      companyId: sessionCompanyId,
+      companyId: effectiveCompanyId,
       actionPlanId: parsedActionPlanId,
-      projectCode: projectCode || null,
-      projectTitle,
-      projectType: projectType || null,
-      currentSituation: currentSituation || null,
-      proposedSolution: proposedSolution || null,
-      technicalDescription: technicalDescription || null,
-      annualEnergySavingValue: parseOrNull(annualEnergySavingValue),
-      annualEnergySavingUnit: annualEnergySavingUnit || null,
-      annualCostSaving: parseOrNull(annualCostSaving),
-      investmentCost: parseOrNull(investmentCost),
-      paybackMonths: parseOrNull(paybackMonths),
-      co2ReductionTon: parseOrNull(co2ReductionTon),
-      measurementVerificationMethod: measurementVerificationMethod || null,
-      incentiveStatus: incentiveStatus || "none",
-      feasibilityStatus: feasibilityStatus || "not_started",
-      startDate: startDate || null,
-      endDate: endDate || null,
-      status: status || "idea",
-      notes: notes || null,
+      projectCode: parsedProjectCode ?? null,
+      projectTitle: parsedProjectTitle,
+      projectType: parsedProjectType ?? null,
+      currentSituation: parsedCurrentSituation ?? null,
+      proposedSolution: parsedProposedSolution ?? null,
+      technicalDescription: parsedTechnicalDescription ?? null,
+      annualEnergySavingValue: parsedAnnualEnergySavingValue ?? null,
+      annualEnergySavingUnit: parsedAnnualEnergySavingUnit ?? null,
+      annualCostSaving: parsedAnnualCostSaving ?? null,
+      investmentCost: parsedInvestmentCost ?? null,
+      paybackMonths: calculatedPaybackMonths,
+      co2ReductionTon: parsedCo2ReductionTon ?? null,
+      measurementVerificationMethod: parsedMeasurementMethod ?? null,
+      incentiveStatus: parsedIncentiveStatus,
+      feasibilityStatus: parsedFeasibilityStatus,
+      startDate: parsedStartDate ?? null,
+      endDate: parsedEndDate ?? null,
+      status: parsedStatus,
+      notes: parsedNotes ?? null,
       createdBy: userName,
     }).returning();
     res.status(201).json(item);
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -318,47 +445,73 @@ router.put("/vap-projects/:id", requireAuth, async (req, res) => {
     if (isStandard(role) && sessionUnitId === null) { res.status(403).json({ error: "Yetki yok" }); return; }
     const id = parsePositiveInteger(req.params.id);
     if (id === undefined) { res.status(400).json({ error: "Geçersiz vapProjectId" }); return; }
-    const recordConditions = [eq(vapProjectsTable.id, id), eq(vapProjectsTable.companyId, sessionCompanyId)];
+    const effectiveCompanyId = await resolveEffectiveCompanyId(role, sessionCompanyId, req.body.companyId, true);
+    if (effectiveCompanyId === undefined) { res.status(400).json({ error: "Geçersiz companyId" }); return; }
+    const recordConditions = [eq(vapProjectsTable.id, id), eq(vapProjectsTable.companyId, effectiveCompanyId)];
     const [existing] = await db.select().from(vapProjectsTable).where(and(...recordConditions));
     if (!existing) { res.status(404).json({ error: "Bulunamadı" }); return; }
-    if (existing.companyId !== sessionCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
+    if (existing.companyId !== effectiveCompanyId) { res.status(403).json({ error: "Yetki yok" }); return; }
 
     // Birim yetki kontrolü: non-admin sadece kendi birimi kapsamındaki VAP'ı güncelleyebilir
-    const ap = await getScopedActionPlan(existing.actionPlanId, sessionCompanyId, isStandard(role) ? sessionUnitId! : undefined);
+    const ap = await getScopedActionPlan(existing.actionPlanId, effectiveCompanyId, isStandard(role) ? sessionUnitId! : undefined);
     if (!ap) { res.status(403).json({ error: "Yetki yok" }); return; }
 
     const { projectCode, projectTitle, projectType, currentSituation, proposedSolution,
       technicalDescription, annualEnergySavingValue, annualEnergySavingUnit, annualCostSaving,
       investmentCost, paybackMonths, co2ReductionTon, measurementVerificationMethod,
       incentiveStatus, feasibilityStatus, startDate, endDate, status, notes } = req.body;
-
-    const parseOrNull = (v: any) => (v !== undefined && v !== null && v !== "") ? parseFloat(v) : null;
+    const parsedProjectTitle = projectTitle !== undefined ? requiredString(projectTitle, "projectTitle") : undefined;
+    const parsedProjectCode = projectCode !== undefined ? optionalString(projectCode, "projectCode", 255) : undefined;
+    const parsedProjectType = projectType !== undefined ? optionalString(projectType, "projectType") : undefined;
+    const parsedCurrentSituation = currentSituation !== undefined ? optionalString(currentSituation, "currentSituation") : undefined;
+    const parsedProposedSolution = proposedSolution !== undefined ? optionalString(proposedSolution, "proposedSolution") : undefined;
+    const parsedTechnicalDescription = technicalDescription !== undefined ? optionalString(technicalDescription, "technicalDescription") : undefined;
+    const parsedAnnualEnergySavingValue = annualEnergySavingValue !== undefined ? optionalFinite(annualEnergySavingValue, "annualEnergySavingValue") : undefined;
+    const parsedAnnualEnergySavingUnit = annualEnergySavingUnit !== undefined ? optionalString(annualEnergySavingUnit, "annualEnergySavingUnit") : undefined;
+    const parsedAnnualCostSaving = annualCostSaving !== undefined ? optionalFinite(annualCostSaving, "annualCostSaving") : undefined;
+    const parsedInvestmentCost = investmentCost !== undefined ? optionalFinite(investmentCost, "investmentCost") : undefined;
+    if (paybackMonths !== undefined) optionalFinite(paybackMonths, "paybackMonths");
+    const parsedCo2ReductionTon = co2ReductionTon !== undefined ? optionalFinite(co2ReductionTon, "co2ReductionTon") : undefined;
+    const parsedMeasurementMethod = measurementVerificationMethod !== undefined ? optionalString(measurementVerificationMethod, "measurementVerificationMethod") : undefined;
+    const parsedIncentiveStatus = incentiveStatus !== undefined ? enumValue(incentiveStatus, "incentiveStatus", INCENTIVE_STATUSES) : undefined;
+    const parsedFeasibilityStatus = feasibilityStatus !== undefined ? enumValue(feasibilityStatus, "feasibilityStatus", FEASIBILITY_STATUSES) : undefined;
+    const parsedStartDate = startDate !== undefined ? optionalIsoDate(startDate, "startDate") : undefined;
+    const parsedEndDate = endDate !== undefined ? optionalIsoDate(endDate, "endDate") : undefined;
+    const finalStartDate = parsedStartDate !== undefined ? parsedStartDate : existing.startDate;
+    const finalEndDate = parsedEndDate !== undefined ? parsedEndDate : existing.endDate;
+    if (finalStartDate && finalEndDate && finalEndDate < finalStartDate) throw new BadRequestError("Bitiş tarihi başlangıç tarihinden önce olamaz");
+    const parsedStatus = status !== undefined ? enumValue(status, "status", VAP_STATUSES) : undefined;
+    const parsedNotes = notes !== undefined ? optionalString(notes, "notes") : undefined;
+    const effectiveInvestmentCost = parsedInvestmentCost !== undefined ? parsedInvestmentCost : existing.investmentCost;
+    const effectiveAnnualCostSaving = parsedAnnualCostSaving !== undefined ? parsedAnnualCostSaving : existing.annualCostSaving;
+    const calculatedPaybackMonths = calculatePaybackMonths(effectiveInvestmentCost, effectiveAnnualCostSaving);
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
-    if (projectCode !== undefined) updates.projectCode = projectCode || null;
-    if (projectTitle !== undefined) updates.projectTitle = projectTitle;
-    if (projectType !== undefined) updates.projectType = projectType || null;
-    if (currentSituation !== undefined) updates.currentSituation = currentSituation || null;
-    if (proposedSolution !== undefined) updates.proposedSolution = proposedSolution || null;
-    if (technicalDescription !== undefined) updates.technicalDescription = technicalDescription || null;
-    if (annualEnergySavingValue !== undefined) updates.annualEnergySavingValue = parseOrNull(annualEnergySavingValue);
-    if (annualEnergySavingUnit !== undefined) updates.annualEnergySavingUnit = annualEnergySavingUnit || null;
-    if (annualCostSaving !== undefined) updates.annualCostSaving = parseOrNull(annualCostSaving);
-    if (investmentCost !== undefined) updates.investmentCost = parseOrNull(investmentCost);
-    if (paybackMonths !== undefined) updates.paybackMonths = parseOrNull(paybackMonths);
-    if (co2ReductionTon !== undefined) updates.co2ReductionTon = parseOrNull(co2ReductionTon);
-    if (measurementVerificationMethod !== undefined) updates.measurementVerificationMethod = measurementVerificationMethod || null;
-    if (incentiveStatus !== undefined) updates.incentiveStatus = incentiveStatus;
-    if (feasibilityStatus !== undefined) updates.feasibilityStatus = feasibilityStatus;
-    if (startDate !== undefined) updates.startDate = startDate || null;
-    if (endDate !== undefined) updates.endDate = endDate || null;
-    if (status !== undefined) updates.status = status;
-    if (notes !== undefined) updates.notes = notes || null;
+    if (parsedProjectCode !== undefined) updates.projectCode = parsedProjectCode;
+    if (parsedProjectTitle !== undefined) updates.projectTitle = parsedProjectTitle;
+    if (parsedProjectType !== undefined) updates.projectType = parsedProjectType;
+    if (parsedCurrentSituation !== undefined) updates.currentSituation = parsedCurrentSituation;
+    if (parsedProposedSolution !== undefined) updates.proposedSolution = parsedProposedSolution;
+    if (parsedTechnicalDescription !== undefined) updates.technicalDescription = parsedTechnicalDescription;
+    if (parsedAnnualEnergySavingValue !== undefined) updates.annualEnergySavingValue = parsedAnnualEnergySavingValue;
+    if (parsedAnnualEnergySavingUnit !== undefined) updates.annualEnergySavingUnit = parsedAnnualEnergySavingUnit;
+    if (parsedAnnualCostSaving !== undefined) updates.annualCostSaving = parsedAnnualCostSaving;
+    if (parsedInvestmentCost !== undefined) updates.investmentCost = parsedInvestmentCost;
+    updates.paybackMonths = calculatedPaybackMonths;
+    if (parsedCo2ReductionTon !== undefined) updates.co2ReductionTon = parsedCo2ReductionTon;
+    if (parsedMeasurementMethod !== undefined) updates.measurementVerificationMethod = parsedMeasurementMethod;
+    if (parsedIncentiveStatus !== undefined) updates.incentiveStatus = parsedIncentiveStatus;
+    if (parsedFeasibilityStatus !== undefined) updates.feasibilityStatus = parsedFeasibilityStatus;
+    if (parsedStartDate !== undefined) updates.startDate = parsedStartDate;
+    if (parsedEndDate !== undefined) updates.endDate = parsedEndDate;
+    if (parsedStatus !== undefined) updates.status = parsedStatus;
+    if (parsedNotes !== undefined) updates.notes = parsedNotes;
 
     recordConditions.push(eq(vapProjectsTable.actionPlanId, existing.actionPlanId));
     const [item] = await db.update(vapProjectsTable).set(updates).where(and(...recordConditions)).returning();
     res.json(item);
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }

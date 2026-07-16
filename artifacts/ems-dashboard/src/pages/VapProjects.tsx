@@ -23,6 +23,7 @@ const VAP_STATUSES = [
   { value: "idea", label: "Fikir", color: "bg-muted text-muted-foreground" },
   { value: "feasibility", label: "Fizibilite", color: "bg-purple-500/20 text-purple-400" },
   { value: "planned", label: "Planlandı", color: "bg-blue-500/20 text-blue-400" },
+  { value: "active", label: "Aktif", color: "bg-blue-500/20 text-blue-400" },
   { value: "in_progress", label: "Devam Ediyor", color: "bg-yellow-500/20 text-yellow-400" },
   { value: "completed", label: "Tamamlandı", color: "bg-green-500/20 text-green-400" },
   { value: "cancelled", label: "İptal", color: "bg-red-500/20 text-red-400" },
@@ -169,15 +170,14 @@ export default function VapProjects() {
       if (prefillAction.expectedCostSaving) base.annualCostSaving = prefillAction.expectedCostSaving.toString();
       if (prefillAction.expectedSavingValue) base.annualEnergySavingValue = prefillAction.expectedSavingValue.toString();
       if (prefillAction.expectedSavingUnit) base.annualEnergySavingUnit = prefillAction.expectedSavingUnit;
-      if (prefillAction.paybackMonths) base.paybackMonths = prefillAction.paybackMonths.toString();
     }
-    setForm(base);
+    setForm(autoPayback(base));
     setOpen(true);
   }
 
   function openEdit(p: any) {
     setEditingId(p.id);
-    setForm({
+    setForm(autoPayback({
       actionPlanId: p.actionPlanId.toString(),
       projectCode: p.projectCode ?? "",
       projectTitle: p.projectTitle,
@@ -198,19 +198,19 @@ export default function VapProjects() {
       endDate: p.endDate ?? "",
       status: p.status ?? "idea",
       notes: p.notes ?? "",
-    });
+    }));
     setOpen(true);
   }
 
   function autoPayback(f: VapForm): VapForm {
     if (f.investmentCost && f.annualCostSaving) {
-      const inv = parseFloat(f.investmentCost);
-      const sav = parseFloat(f.annualCostSaving);
-      if (!isNaN(inv) && !isNaN(sav) && sav > 0) {
+      const inv = Number(f.investmentCost);
+      const sav = Number(f.annualCostSaving);
+      if (Number.isFinite(inv) && Number.isFinite(sav) && sav > 0) {
         return { ...f, paybackMonths: ((inv / sav) * 12).toFixed(1) };
       }
     }
-    return f;
+    return { ...f, paybackMonths: "" };
   }
 
   function onFormChange(field: keyof VapForm, value: string) {
@@ -227,7 +227,7 @@ export default function VapProjects() {
     if (!form.actionPlanId) { toast({ title: "Eylem planı seçiniz", variant: "destructive" }); return; }
     if (!form.projectTitle) { toast({ title: "Proje başlığı zorunludur", variant: "destructive" }); return; }
 
-    const toNum = (v: string) => v !== "" && !isNaN(parseFloat(v)) ? parseFloat(v) : undefined;
+    const toNum = (v: string) => v !== "" && Number.isFinite(Number(v)) ? Number(v) : undefined;
 
     const invalidate = () => {
       queryClient.invalidateQueries({ queryKey: getListVapProjectsQueryKey() });
@@ -247,7 +247,6 @@ export default function VapProjects() {
         annualEnergySavingUnit: form.annualEnergySavingUnit || undefined,
         annualCostSaving: toNum(form.annualCostSaving),
         investmentCost: toNum(form.investmentCost),
-        paybackMonths: toNum(form.paybackMonths),
         co2ReductionTon: toNum(form.co2ReductionTon),
         measurementVerificationMethod: form.measurementVerificationMethod || undefined,
         incentiveStatus: form.incentiveStatus,
@@ -274,7 +273,6 @@ export default function VapProjects() {
         annualEnergySavingUnit: form.annualEnergySavingUnit || undefined,
         annualCostSaving: toNum(form.annualCostSaving),
         investmentCost: toNum(form.investmentCost),
-        paybackMonths: toNum(form.paybackMonths),
         co2ReductionTon: toNum(form.co2ReductionTon),
         measurementVerificationMethod: form.measurementVerificationMethod || undefined,
         incentiveStatus: form.incentiveStatus,
@@ -488,7 +486,7 @@ export default function VapProjects() {
               </div>
               <div className="space-y-1.5">
                 <Label>Proje Kodu</Label>
-                <Input placeholder="ör. VAP-2025-001" value={form.projectCode} onChange={(e) => onFormChange("projectCode", e.target.value)} />
+                <Input maxLength={255} placeholder="ör. VAP-2025-001" value={form.projectCode} onChange={(e) => onFormChange("projectCode", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Proje Tipi</Label>
@@ -499,7 +497,7 @@ export default function VapProjects() {
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label>Proje Başlığı *</Label>
-                <Input placeholder="Projenin tam adı" value={form.projectTitle} onChange={(e) => onFormChange("projectTitle", e.target.value)} />
+                <Input maxLength={255} placeholder="Projenin tam adı" value={form.projectTitle} onChange={(e) => onFormChange("projectTitle", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Durum</Label>
@@ -524,7 +522,7 @@ export default function VapProjects() {
               </div>
               <div className="space-y-1.5">
                 <Label>Yıllık Enerji Tasarrufu</Label>
-                <Input type="number" min="0" placeholder="Miktar" value={form.annualEnergySavingValue} onChange={(e) => onFormChange("annualEnergySavingValue", e.target.value)} />
+                <Input type="number" min="0" step="any" placeholder="Miktar" value={form.annualEnergySavingValue} onChange={(e) => onFormChange("annualEnergySavingValue", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Enerji Tasarrufu Birimi</Label>
@@ -532,19 +530,20 @@ export default function VapProjects() {
               </div>
               <div className="space-y-1.5">
                 <Label>Yıllık Mali Tasarruf (₺)</Label>
-                <Input type="number" min="0" value={form.annualCostSaving} onChange={(e) => onFormChange("annualCostSaving", e.target.value)} />
+                <Input type="number" min="0" step="any" value={form.annualCostSaving} onChange={(e) => onFormChange("annualCostSaving", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Yatırım Maliyeti (₺)</Label>
-                <Input type="number" min="0" value={form.investmentCost} onChange={(e) => onFormChange("investmentCost", e.target.value)} />
+                <Input type="number" min="0" step="any" value={form.investmentCost} onChange={(e) => onFormChange("investmentCost", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Geri Ödeme Süresi (ay)</Label>
-                <Input type="number" min="0" value={form.paybackMonths} onChange={(e) => onFormChange("paybackMonths", e.target.value)} />
+                <Input type="number" min="0" step="any" placeholder="Hesaplanamaz" value={form.paybackMonths} readOnly />
+                <p className="text-xs text-muted-foreground">Yatırım ve yıllık mali tasarruftan otomatik hesaplanır.</p>
               </div>
               <div className="space-y-1.5">
                 <Label>CO₂ Azaltımı (ton)</Label>
-                <Input type="number" min="0" value={form.co2ReductionTon} onChange={(e) => onFormChange("co2ReductionTon", e.target.value)} />
+                <Input type="number" min="0" step="any" value={form.co2ReductionTon} onChange={(e) => onFormChange("co2ReductionTon", e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Başlangıç Tarihi</Label>

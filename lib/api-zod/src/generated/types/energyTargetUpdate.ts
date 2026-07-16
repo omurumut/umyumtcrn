@@ -7,6 +7,7 @@
  */
 
 export interface EnergyTargetUpdate {
+  companyId?: number;
   unitId?: number;
   name?: string;
   baselineYear?: number;
@@ -18,10 +19,11 @@ export interface EnergyTargetUpdate {
   targetType?: string;
   baselineValue?: number;
   targetValue?: number;
-  actualValue?: number;
   unitLabel?: string;
   status?: string;
   subUnitId?: number;
   energySourceId?: number;
   seuAssessmentId?: number;
+  seuAssessmentItemId?: number;
+  baselineId?: number;
 }

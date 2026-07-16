@@ -2235,6 +2235,10 @@ components:
           type: ["integer", "null"]
         seuAssessmentId:
           type: ["integer", "null"]
+        seuAssessmentItemId:
+          type: ["integer", "null"]
+        baselineId:
+          type: ["integer", "null"]
 
     EnergyTargetWithProgress:
       type: object
@@ -2296,11 +2300,17 @@ components:
           type: ["integer", "null"]
         seuAssessmentId:
           type: ["integer", "null"]
+        seuAssessmentItemId:
+          type: ["integer", "null"]
+        baselineId:
+          type: ["integer", "null"]
 
     EnergyTargetInput:
       type: object
-      required: [name, baselineYear, targetYear, targetReductionPercent]
+      required: [name, baselineYear, targetYear, targetReductionPercent, seuAssessmentId, seuAssessmentItemId, baselineId]
       properties:
+        companyId:
+          type: integer
         unitId:
           type: integer
         name:
@@ -2323,8 +2333,6 @@ components:
           type: number
         targetValue:
           type: number
-        actualValue:
-          type: number
         unitLabel:
           type: string
         status:
@@ -2334,11 +2342,17 @@ components:
         energySourceId:
           type: integer
         seuAssessmentId:
+          type: integer
+        seuAssessmentItemId:
+          type: integer
+        baselineId:
           type: integer
 
     EnergyTargetUpdate:
       type: object
       properties:
+        companyId:
+          type: integer
         unitId:
           type: integer
         name:
@@ -2361,8 +2375,6 @@ components:
           type: number
         targetValue:
           type: number
-        actualValue:
-          type: number
         unitLabel:
           type: string
         status:
@@ -2372,6 +2384,10 @@ components:
         energySourceId:
           type: integer
         seuAssessmentId:
+          type: integer
+        seuAssessmentItemId:
+          type: integer
+        baselineId:
           type: integer
 
     ReportResult:
@@ -2719,8 +2735,6 @@ components:
           type: number
         investmentCost:
           type: number
-        paybackMonths:
-          type: number
         co2ReductionTon:
           type: number
         measurementVerificationMethod:
@@ -2760,8 +2774,6 @@ components:
         annualCostSaving:
           type: number
         investmentCost:
-          type: number
-        paybackMonths:
           type: number
         co2ReductionTon:
           type: number

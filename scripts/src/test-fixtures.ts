@@ -2,6 +2,9 @@ import {
   companiesTable,
   consumptionTable,
   db,
+  energyActionPlansTable,
+  energyBaselinesTable,
+  energyTargetsTable,
   energyUseGroupsTable,
   energySourcesTable,
   metersTable,
@@ -17,6 +20,7 @@ import {
   usersTable,
   variablesTable,
   variableValuesTable,
+  vapProjectsTable,
 } from "@workspace/db";
 import { count, like, sql } from "drizzle-orm";
 
@@ -346,14 +350,24 @@ async function applyFixtures(): Promise<void> {
     ]).returning({ id: seuAssessmentsTable.id });
     if (!officialA1 || !draftA1 || !officialA2 || !officialB1) throw new Error("Fixture SEU assessments could not be created.");
 
-    await tx.insert(seuAssessmentItemsTable).values([
+    const [acceptedA1, rejectedA1, monitorA1, draftAcceptedA1, acceptedA2, acceptedB1] = await tx.insert(seuAssessmentItemsTable).values([
       { assessmentId: officialA1.id, meterId: electricMeterA1.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, energyUseGroupId: lightingA1.id, name: `${COMPANY_PREFIX} SEU Electricity A1`, energyTep: 4.5, consumptionSharePercent: 60, hasOpportunity: true, priorityResult: 1, systemRecommendation: "seu_candidate", userDecision: "accepted_as_seu" },
       { assessmentId: officialA1.id, meterId: gasMeterA1.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: naturalGasA1.id, energyUseGroupId: heatingA1.id, name: `${COMPANY_PREFIX} SEU Natural Gas A1`, energyTep: 3.5, consumptionSharePercent: 30, priorityResult: 3, systemRecommendation: "seu_candidate", userDecision: "not_seu" },
       { assessmentId: officialA1.id, meterId: dependencyMeterA1.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} SEU Monitoring A1`, energyTep: 0.5, consumptionSharePercent: 10, priorityResult: 3, systemRecommendation: "seu_candidate", userDecision: "monitor" },
       { assessmentId: draftA1.id, meterId: manualMeterA1.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, name: `${COMPANY_PREFIX} Draft Accepted A1`, energyTep: 1, consumptionSharePercent: 100, priorityResult: 1, systemRecommendation: "seu_candidate", userDecision: "accepted_as_seu" },
       { assessmentId: officialA2.id, meterId: meterA2.id, unitId: unitA2.id, subUnitId: campusA2.id, energySourceId: electricityA2.id, energyUseGroupId: groupA2.id, name: `${COMPANY_PREFIX} SEU Electricity A2`, energyTep: 2.1, consumptionSharePercent: 100, priorityResult: 1, systemRecommendation: "seu_candidate", userDecision: "accepted_as_seu" },
       { assessmentId: officialB1.id, meterId: meterB1.id, unitId: unitB1.id, subUnitId: campusB1.id, energySourceId: electricityB1.id, energyUseGroupId: lightingB1.id, name: `${COMPANY_PREFIX} SEU Electricity A1`, energyTep: 1.5, consumptionSharePercent: 100, priorityResult: 1, systemRecommendation: "seu_candidate", userDecision: "accepted_as_seu" },
-    ]);
+    ]).returning({ id: seuAssessmentItemsTable.id });
+    if (!acceptedA1 || !rejectedA1 || !monitorA1 || !draftAcceptedA1 || !acceptedA2 || !acceptedB1) {
+      throw new Error("Fixture SEU assessment items could not be created.");
+    }
+
+    const [baselineA1, baselineA2, baselineB1] = await tx.insert(energyBaselinesTable).values([
+      { companyId: tenantA.id, unitId: unitA1.id, seuAssessmentItemId: acceptedA1.id, baselineYear: 2025, periodStart: "2025-01-01", periodEnd: "2025-12-31", modelType: "linear", status: "active", isValid: true, notes: `${COMPANY_PREFIX} target parent fixture` },
+      { companyId: tenantA.id, unitId: unitA2.id, seuAssessmentItemId: acceptedA2.id, baselineYear: 2025, periodStart: "2025-01-01", periodEnd: "2025-12-31", modelType: "linear", status: "active", isValid: true, notes: `${COMPANY_PREFIX} target parent fixture` },
+      { companyId: tenantB.id, unitId: unitB1.id, seuAssessmentItemId: acceptedB1.id, baselineYear: 2025, periodStart: "2025-01-01", periodEnd: "2025-12-31", modelType: "linear", status: "active", isValid: true, notes: `${COMPANY_PREFIX} target parent fixture` },
+    ]).returning({ id: energyBaselinesTable.id });
+    if (!baselineA1 || !baselineA2 || !baselineB1) throw new Error("Fixture target baselines could not be created.");
 
     await tx.insert(seuTable).values([
       { companyId: tenantA.id, unitId: unitA1.id, name: `${COMPANY_PREFIX} Manual SEU A1`, category: "electricity", annualKwh: 10000, percentage: 40, priority: 1 },
@@ -461,6 +475,35 @@ async function applyFixtures(): Promise<void> {
       throw new Error("Fixture SWOT/risk note users could not be resolved.");
     }
 
+    const [targetA1, targetA1Gas, targetA1Delete, targetA2, targetB1] = await tx.insert(energyTargetsTable).values([
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: electricityA1.id, seuAssessmentId: officialA1.id, seuAssessmentItemId: acceptedA1.id, baselineId: baselineA1.id, name: `${COMPANY_PREFIX} Electricity Reduction Target`, baselineYear: 2025, targetYear: 2028, targetReductionPercent: 10, baselineValue: 1000, targetValue: 900, unitLabel: "kWh", targetType: "consumption_reduction", status: "active", objectiveText: "Elektrik tüketimini azalt" },
+      { companyId: tenantA.id, unitId: unitA1.id, subUnitId: campusA1.id, energySourceId: naturalGasA1.id, seuAssessmentId: officialA1.id, seuAssessmentItemId: acceptedA1.id, baselineId: baselineA1.id, name: `${COMPANY_PREFIX} Natural Gas Monitoring Target`, baselineYear: 2025, targetYear: 2027, targetReductionPercent: 5, baselineValue: 500, targetValue: 475, unitLabel: "kWh", targetType: "monitoring", status: "draft" },
+      { companyId: tenantA.id, unitId: unitA1.id, seuAssessmentId: officialA1.id, seuAssessmentItemId: acceptedA1.id, baselineId: baselineA1.id, name: `${COMPANY_PREFIX} Independent Delete Target`, baselineYear: 2025, targetYear: 2029, targetReductionPercent: 3, targetType: "efficiency_improvement", status: "draft" },
+      { companyId: tenantA.id, unitId: unitA2.id, subUnitId: campusA2.id, energySourceId: electricityA2.id, seuAssessmentId: officialA2.id, seuAssessmentItemId: acceptedA2.id, baselineId: baselineA2.id, name: `${COMPANY_PREFIX} Unit A2 Target`, baselineYear: 2025, targetYear: 2026, targetReductionPercent: 8, baselineValue: 1200, targetValue: 1104, unitLabel: "kWh", targetType: "consumption_reduction", status: "active" },
+      { companyId: tenantB.id, unitId: unitB1.id, subUnitId: campusB1.id, energySourceId: electricityB1.id, seuAssessmentId: officialB1.id, seuAssessmentItemId: acceptedB1.id, baselineId: baselineB1.id, name: `${COMPANY_PREFIX} Electricity Reduction Target`, baselineYear: 2025, targetYear: 2028, targetReductionPercent: 10, baselineValue: 700, targetValue: 630, unitLabel: "kWh", targetType: "consumption_reduction", status: "active" },
+    ]).returning({ id: energyTargetsTable.id });
+    if (!targetA1 || !targetA1Gas || !targetA1Delete || !targetA2 || !targetB1) throw new Error("Fixture target records could not be created.");
+
+    const [motorsAction, overdueAction, completedAction, deleteAction, motorVapAction, deleteVapAction, actionA2, actionB1] = await tx.insert(energyActionPlansTable).values([
+      { companyId: tenantA.id, targetId: targetA1.id, title: `${COMPANY_PREFIX} Replace inefficient motors`, responsibleUserId: standardA1Id, responsibleName: "E2E User A1", priority: "high", startDate: "2025-01-01", dueDate: "2026-12-31", progressPercent: 25, status: "in_progress", isVap: true, expectedCostSaving: 50000, investmentCost: 100000, paybackMonths: 24 },
+      { companyId: tenantA.id, targetId: targetA1.id, title: `${COMPANY_PREFIX} Optimize operating schedule`, responsibleUserId: standardA1Id, responsibleName: "E2E User A1", priority: "medium", startDate: "2024-01-01", dueDate: "2024-06-30", progressPercent: 40, status: "in_progress" },
+      { companyId: tenantA.id, targetId: targetA1.id, title: `${COMPANY_PREFIX} Completed lighting retrofit`, responsibleUserId: standardA1Id, responsibleName: "E2E User A1", startDate: "2024-01-01", dueDate: "2024-12-31", completionDate: "2024-11-30", progressPercent: 100, status: "completed" },
+      { companyId: tenantA.id, targetId: targetA1.id, title: `${COMPANY_PREFIX} Independent Delete Action`, progressPercent: 0, status: "planned" },
+      { companyId: tenantA.id, targetId: targetA1Gas.id, title: `${COMPANY_PREFIX} High Efficiency Motor Action`, progressPercent: 10, status: "planned", isVap: true },
+      { companyId: tenantA.id, targetId: targetA1Gas.id, title: `${COMPANY_PREFIX} Delete VAP Action`, progressPercent: 0, status: "planned", isVap: true },
+      { companyId: tenantA.id, targetId: targetA2.id, title: `${COMPANY_PREFIX} Unit A2 Action`, progressPercent: 20, status: "in_progress", isVap: true },
+      { companyId: tenantB.id, targetId: targetB1.id, title: `${COMPANY_PREFIX} Replace inefficient motors`, responsibleUserId: standardB1Id, responsibleName: "E2E User B1", progressPercent: 25, status: "in_progress", isVap: true },
+    ]).returning({ id: energyActionPlansTable.id });
+    if (!motorsAction || !overdueAction || !completedAction || !deleteAction || !motorVapAction || !deleteVapAction || !actionA2 || !actionB1) throw new Error("Fixture action records could not be created.");
+
+    await tx.insert(vapProjectsTable).values([
+      { companyId: tenantA.id, actionPlanId: motorsAction.id, projectCode: "E2E-VAP-001", projectTitle: `${COMPANY_PREFIX} Heat Recovery VAP`, projectType: "efficiency", annualEnergySavingValue: 250, annualEnergySavingUnit: "MWh", annualCostSaving: 50000, investmentCost: 100000, paybackMonths: 24, status: "active", startDate: "2025-01-01", endDate: "2026-12-31" },
+      { companyId: tenantA.id, actionPlanId: motorVapAction.id, projectCode: "E2E-VAP-002", projectTitle: `${COMPANY_PREFIX} High Efficiency Motor VAP`, annualEnergySavingValue: 100, annualEnergySavingUnit: "MWh", annualCostSaving: 20000, investmentCost: 60000, paybackMonths: 36, status: "planned" },
+      { companyId: tenantA.id, actionPlanId: deleteVapAction.id, projectCode: "E2E-VAP-DELETE", projectTitle: `${COMPANY_PREFIX} Independent Delete VAP`, status: "idea" },
+      { companyId: tenantA.id, actionPlanId: actionA2.id, projectCode: "E2E-VAP-A2", projectTitle: `${COMPANY_PREFIX} Unit A2 VAP`, annualCostSaving: 10000, investmentCost: 20000, paybackMonths: 24, status: "active" },
+      { companyId: tenantB.id, actionPlanId: actionB1.id, projectCode: "E2E-VAP-B1", projectTitle: `${COMPANY_PREFIX} Heat Recovery VAP`, annualCostSaving: 30000, investmentCost: 60000, paybackMonths: 24, status: "active" },
+    ]);
+
     await tx.insert(swotTable).values([
       { companyId: tenantA.id, unitId: unitA1.id, category: "strengths", title: `${COMPANY_PREFIX} Efficient Equipment`, description: "A1 strength", score: 5, impact: "yuksek" },
       { companyId: tenantA.id, unitId: unitA1.id, category: "weaknesses", title: `${COMPANY_PREFIX} Manual Readings`, description: "A1 weakness", score: 3, impact: "orta" },
@@ -491,7 +534,7 @@ async function applyFixtures(): Promise<void> {
   });
 
   console.log(
-    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 6 energy use group, 8 meter, 50 consumption, 7 variable, 69 variable value, 4 SEU assessment, 6 SEU assessment item, 3 manual SEU, 6 SWOT, 7 risk, 3 risk note, 11 user.",
+    "[test-fixtures] Fixture oluşturuldu: 3 company, 3 unit, 6 sub-unit, 7 energy source, 6 energy use group, 8 meter, 50 consumption, 7 variable, 69 variable value, 4 SEU assessment, 6 SEU assessment item, 3 manual SEU, 5 target, 8 action, 5 VAP, 6 SWOT, 7 risk, 3 risk note, 11 user.",
   );
 }
 
@@ -875,6 +918,35 @@ async function assertFixtures(): Promise<void> {
       throw new Error("Fixture risk note parent/tenant contract is invalid.");
     }
 
+    const targetActionVapIntegrity = await client.query<{
+      target_count: string; action_count: string; vap_count: string;
+      bad_target_parent: string; bad_action_scope: string; bad_vap_scope: string;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM energy_targets WHERE name LIKE $1)::text AS target_count,
+         (SELECT count(*) FROM energy_action_plans WHERE title LIKE $1)::text AS action_count,
+         (SELECT count(*) FROM vap_projects WHERE project_title LIKE $1)::text AS vap_count,
+         (SELECT count(*) FROM energy_targets t
+            LEFT JOIN seu_assessment_items i ON i.id = t.seu_assessment_item_id
+            LEFT JOIN seu_assessments a ON a.id = i.assessment_id
+            LEFT JOIN energy_baselines b ON b.id = t.baseline_id
+          WHERE t.name LIKE $1 AND (
+            i.id IS NULL OR a.id <> t.seu_assessment_id OR a.company_id <> t.company_id OR a.unit_id <> t.unit_id OR
+            a.record_type <> 'unit_official' OR a.is_official IS NOT TRUE OR i.user_decision <> 'accepted_as_seu' OR
+            b.id IS NULL OR b.company_id <> t.company_id OR b.unit_id <> t.unit_id OR b.seu_assessment_item_id <> i.id OR
+            b.status <> 'active' OR b.is_valid IS NOT TRUE
+          ))::text AS bad_target_parent,
+         (SELECT count(*) FROM energy_action_plans a JOIN energy_targets t ON t.id = a.target_id WHERE a.title LIKE $1 AND a.company_id <> t.company_id)::text AS bad_action_scope,
+         (SELECT count(*) FROM vap_projects v JOIN energy_action_plans a ON a.id = v.action_plan_id WHERE v.project_title LIKE $1 AND v.company_id <> a.company_id)::text AS bad_vap_scope`,
+      [`${COMPANY_PREFIX}%`],
+    );
+    const lifecycle = targetActionVapIntegrity.rows[0];
+    if (Number(lifecycle?.target_count) !== 5 || Number(lifecycle?.action_count) !== 8 ||
+        Number(lifecycle?.vap_count) !== 5 || Number(lifecycle?.bad_target_parent) !== 0 || Number(lifecycle?.bad_action_scope) !== 0 ||
+        Number(lifecycle?.bad_vap_scope) !== 0) {
+      throw new Error("Fixture target/action/VAP tenant-parent contract is invalid.");
+    }
+
     const users = await client.query<{
       username: string;
       company_id: number;
@@ -996,7 +1068,7 @@ async function assertFixtures(): Promise<void> {
   }
 
   console.log(
-    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 6 energy use group, 8 meter, 50 consumption, 7 variable, 69 variable value, 4 SEU assessment, 6 SEU assessment item, 3 manual SEU, 6 SWOT, 7 risk, 3 risk note, 11 user.",
+    "[test-fixtures] Salt-okuma doğrulama başarılı: 3 company, 3 unit, 6 sub-unit, 7 energy source, 6 energy use group, 8 meter, 50 consumption, 7 variable, 69 variable value, 4 SEU assessment, 6 SEU assessment item, 3 manual SEU, 5 target, 8 action, 5 VAP, 6 SWOT, 7 risk, 3 risk note, 11 user.",
   );
 }
 
