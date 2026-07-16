@@ -578,25 +578,54 @@ export async function seedOfficialWeatherData(): Promise<void> {
 }
 
 // ── Daily scheduler ────────────────────────────────────────────────
-let schedulerStarted = false;
+let schedulerHandle: MgmSchedulerHandle | null = null;
 
-export function startMgmDailyScheduler(): void {
-  if (schedulerStarted) return;
-  schedulerStarted = true;
+export type MgmSchedulerHandle = {
+  stop(): Promise<void>;
+};
 
+export function startMgmDailyScheduler(): MgmSchedulerHandle {
+  if (schedulerHandle) return schedulerHandle;
   const runSync = async () => {
     console.log("[MGM] Günlük sync başladı (Open-Meteo)...");
     const result = await syncCurrentMonthData();
     console.log(`[MGM] Günlük sync tamamlandı: ${result.synced} güncellendi, ${result.errors} hata.`);
   };
 
-  setTimeout(() => {
-    runSync().catch(err => console.error("[MGM] Scheduler hatası:", err));
+  let activeSync: Promise<void> | null = null;
+  const executeSync = (): void => {
+    if (activeSync) return;
+    activeSync = runSync()
+      .catch(err => console.error("[MGM] Scheduler hatası:", err))
+      .finally(() => {
+        activeSync = null;
+      });
+  };
+
+  const initialTimer = setTimeout(() => {
+    executeSync();
   }, 2 * 60 * 1000);
 
-  setInterval(() => {
-    runSync().catch(err => console.error("[MGM] Scheduler hatası:", err));
+  const dailyTimer = setInterval(() => {
+    executeSync();
   }, 24 * 60 * 60 * 1000);
 
+  initialTimer.unref();
+  dailyTimer.unref();
+
+  let stopped = false;
+  schedulerHandle = {
+    async stop() {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(initialTimer);
+      clearInterval(dailyTimer);
+      schedulerHandle = null;
+      await activeSync;
+      console.log("[MGM] Günlük scheduler durduruldu.");
+    },
+  };
+
   console.log("[MGM] Günlük scheduler başlatıldı (Open-Meteo tabanlı, HDD baz 18°C).");
+  return schedulerHandle;
 }

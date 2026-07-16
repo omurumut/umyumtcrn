@@ -35,10 +35,22 @@ Optional PDF settings:
 Optional startup operations, all disabled by default:
 
 - `ENABLE_MGM_BOOTSTRAP=true`: Import/seed MGM reference data after readiness.
-- `ENABLE_MGM_SCHEDULER=true`: Start the in-process MGM scheduler. Autoscale may run multiple instances, so enabling this can duplicate scheduler execution; use only with an operational single-runner decision.
-- `ENABLE_DEFAULT_SUPERADMIN=true`: Enables the existing explicit superadmin bootstrap flow and requires its associated credential environment values.
+- `ENABLE_MGM_SCHEDULER=true`: Request the in-process MGM scheduler.
+- `MGM_SCHEDULER_INSTANCE_MODE=single`: Required together with the scheduler flag. It is an explicit declaration that this process is deployed as the only scheduler instance. Any other value refuses scheduler startup.
+- `ENABLE_SUPERADMIN_BOOTSTRAP=true`: Enables the existing explicit superadmin bootstrap flow and requires its associated credential environment values.
 
 Legacy/demo flags such as `ENABLE_DEMO_SEED`, `ENABLE_SEED`, and `ENABLE_BOOTSTRAP` must remain unset or `false` in production.
+
+For Autoscale deployments, keep the in-process scheduler disabled. Use an external scheduled job, or run it only in a separately operated single-instance deployment. The `single` declaration is an operational guard, not distributed leader election.
+
+## Liveness, readiness, and shutdown
+
+- `GET /api/healthz` is process liveness. It returns `200 {"status":"ok"}` during normal operation and `503 {"status":"draining"}` after shutdown begins when the listener is still reachable.
+- `GET /api/readyz` checks completed startup state plus a bounded `SELECT 1` through the PostgreSQL pool. It returns `200 {"status":"ready"}` or the safe response `503 {"status":"not_ready"}`.
+- Migrations finish before the listener opens and before readiness becomes true.
+- `SIGTERM` and `SIGINT` mark the process not ready, stop the scheduler, stop accepting new HTTP connections, wait for active requests, and close the PostgreSQL pool.
+- Graceful shutdown is bounded to 15 seconds. A second signal or timeout forces a non-zero exit.
+- The pool currently uses the `pg` defaults because no tuning values are configured. Capacity and timeout tuning remain a separate operational decision.
 
 ## Static serving and PDF guarantees
 
@@ -58,11 +70,12 @@ Legacy/demo flags such as `ENABLE_DEMO_SEED`, `ENABLE_SEED`, and `ENABLE_BOOTSTR
 5. Build production artifacts.
 6. Confirm runtime migrations finish before readiness.
 7. Start `pnpm run start:prod` with `NODE_ENV=production`.
-8. Check `/api/healthz`.
+8. Check `/api/healthz` and `/api/readyz`.
 9. Verify login.
 10. Verify dashboard and SPA route refresh.
 11. Generate a real PDF and check logs for errors.
-12. Confirm MGM bootstrap/scheduler flags match the intended autoscale policy.
+12. Confirm MGM bootstrap/scheduler flags match the intended autoscale policy; do not enable the in-process scheduler on ordinary Autoscale instances.
+13. Send `SIGTERM` in a controlled smoke environment and confirm the listener, database pool, scheduler timers, and browser children close.
 
 ## Development
 

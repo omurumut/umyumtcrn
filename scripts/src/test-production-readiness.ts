@@ -5,10 +5,17 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const STARTUP_TIMEOUT_MS = 30_000;
-const SHUTDOWN_TIMEOUT_MS = 10_000;
+const SHUTDOWN_TIMEOUT_MS = 20_000;
+const DOCKER_TIMEOUT_MS = 15_000;
+const TEST_DB_LABEL = "com.iso50001-ems.test-db";
+const RUN_LABEL = `${TEST_DB_LABEL}.run`;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
 function assertDisposableEnvironment(): void {
@@ -16,6 +23,8 @@ function assertDisposableEnvironment(): void {
   assert(process.env.NODE_ENV === "test", "Production readiness parent ortamı test olmalı.");
   assert(process.env.TEST_DB_DISPOSABLE === "true", "Disposable DB işareti eksik.");
   assert(databaseUrl?.hostname === "127.0.0.1" && databaseUrl.pathname === "/iso50001_test", "Disposable localhost DB zorunlu.");
+  assert(process.env.TEST_DB_CONTAINER_ID && /^[a-f0-9]{64}$/i.test(process.env.TEST_DB_CONTAINER_ID), "Disposable DB container ID eksik.");
+  assert(process.env.TEST_DB_RUN_ID && /^[a-f0-9]{24}$/i.test(process.env.TEST_DB_RUN_ID), "Disposable DB run ID eksik.");
   assert(process.env.E2E_ADMIN_USERNAME && process.env.E2E_TEST_PASSWORD, "Fixture credential env değerleri eksik.");
   assert(process.env.PLAYWRIGHT_BROWSERS_PATH, "İzole PLAYWRIGHT_BROWSERS_PATH zorunlu.");
 }
@@ -31,13 +40,50 @@ async function reservePort(): Promise<number> {
   return address.port;
 }
 
+async function runDocker(args: string[]): Promise<string> {
+  return new Promise((resolveRun, reject) => {
+    const child = spawn("docker", args, {
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("Disposable Docker lifecycle komutu zaman aşımına uğradı."));
+    }, DOCKER_TIMEOUT_MS);
+    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolveRun(stdout.trim());
+      else reject(new Error(`Disposable Docker lifecycle komutu başarısız oldu: ${stderr.trim() || code}`));
+    });
+  });
+}
+
+async function assertTestContainerOwnership(): Promise<string> {
+  const containerId = process.env.TEST_DB_CONTAINER_ID!;
+  const runId = process.env.TEST_DB_RUN_ID!;
+  const format = `{{.Id}}|{{index .Config.Labels "${TEST_DB_LABEL}"}}|{{index .Config.Labels "${RUN_LABEL}"}}`;
+  const inspected = await runDocker(["inspect", "--format", format, containerId]);
+  const [actualId, fixedLabel, actualRunId] = inspected.split("|");
+  assert(actualId === containerId && fixedLabel === "true" && actualRunId === runId, "Disposable DB container sahipliği doğrulanamadı.");
+  return containerId;
+}
+
 type RunningProduction = {
   child: ChildProcess;
   baseUrl: string;
   logs(): string;
 };
 
-async function startProduction(browserPath: string): Promise<RunningProduction> {
+async function spawnProduction(browserPath: string, overrides: NodeJS.ProcessEnv = {}): Promise<RunningProduction> {
   const repoRoot = resolve(import.meta.dirname, "../..");
   const port = await reservePort();
   let captured = "";
@@ -52,46 +98,82 @@ async function startProduction(browserPath: string): Promise<RunningProduction> 
       PDF_CHROMIUM_NO_SANDBOX: "false",
       ENABLE_MGM_BOOTSTRAP: "false",
       ENABLE_MGM_SCHEDULER: "false",
+      MGM_SCHEDULER_INSTANCE_MODE: undefined,
       ENABLE_DEMO_SEED: "false",
       ENABLE_SEED: "false",
       ENABLE_BOOTSTRAP: "false",
-      ENABLE_DEFAULT_SUPERADMIN: "false",
+      ENABLE_SUPERADMIN_BOOTSTRAP: "false",
+      ...overrides,
     },
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
-  const append = (chunk: Buffer) => { captured = `${captured}${chunk.toString("utf8")}`.slice(-50_000); };
+  const append = (chunk: Buffer): void => {
+    captured = `${captured}${chunk.toString("utf8")}`.slice(-50_000);
+  };
   child.stdout?.on("data", append);
   child.stderr?.on("data", append);
-  const baseUrl = `http://127.0.0.1:${port}`;
-  try {
-    const deadline = Date.now() + STARTUP_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error("Production process readiness öncesinde sonlandı.");
-      try {
-        const response = await fetch(`${baseUrl}/api/healthz`);
-        if (response.ok) return { child, baseUrl, logs: () => captured };
-      } catch {
-        // Readiness polling intentionally retries connection refusal.
-      }
-      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+  return { child, baseUrl: `http://127.0.0.1:${port}`, logs: () => captured };
+}
+
+async function waitForReady(running: RunningProduction): Promise<void> {
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (running.child.exitCode !== null) throw new Error("Production process readiness öncesinde sonlandı.");
+    try {
+      const response = await fetch(`${running.baseUrl}/api/readyz`);
+      if (response.status === 200) return;
+    } catch {
+      // Readiness polling intentionally retries connection refusal.
     }
-    throw new Error("Production readiness zaman aşımına uğradı.");
+    await delay(200);
+  }
+  throw new Error("Production readiness zaman aşımına uğradı.");
+}
+
+async function startProduction(browserPath: string, overrides: NodeJS.ProcessEnv = {}): Promise<RunningProduction> {
+  const running = await spawnProduction(browserPath, overrides);
+  try {
+    await waitForReady(running);
+    return running;
   } catch (error) {
-    if (child.exitCode === null) child.kill("SIGTERM");
+    if (running.child.exitCode === null) running.child.kill("SIGTERM");
     throw error;
   }
 }
 
-async function stopProduction(running: RunningProduction | null): Promise<void> {
+async function stopProduction(running: RunningProduction | null, signal: "SIGTERM" | "SIGINT" = "SIGTERM"): Promise<void> {
   if (!running || running.child.exitCode !== null) return;
   const closed = new Promise<void>((resolveClose) => running.child.once("close", () => resolveClose()));
-  running.child.kill("SIGTERM");
+  running.child.kill(signal);
   await Promise.race([
     closed,
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Production process SIGTERM sonrası kapanmadı.")), SHUTDOWN_TIMEOUT_MS)),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Production process ${signal} sonrası kapanmadı.`)), SHUTDOWN_TIMEOUT_MS)),
   ]);
+  if (process.platform !== "win32") {
+    assert(/Graceful shutdown started/.test(running.logs()), `${signal} graceful shutdown handler çalışmadı.`);
+    assert(/Graceful shutdown complete/.test(running.logs()), `${signal} graceful shutdown tamamlanmadı.`);
+  }
+  await assertListenerClosed(running.baseUrl);
+}
+
+async function assertListenerClosed(baseUrl: string): Promise<void> {
+  try {
+    await fetch(`${baseUrl}/api/healthz`);
+    throw new Error("Production listener shutdown sonrasında açık kaldı.");
+  } catch (error) {
+    if (error instanceof Error && error.message === "Production listener shutdown sonrasında açık kaldı.") throw error;
+  }
+}
+
+async function waitForLog(running: RunningProduction, pattern: RegExp): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (pattern.test(running.logs())) return;
+    await delay(50);
+  }
+  throw new Error(`Beklenen lifecycle logu oluşmadı: ${pattern.source}`);
 }
 
 async function login(baseUrl: string): Promise<string> {
@@ -123,6 +205,8 @@ async function assertPdf(response: Response): Promise<void> {
 async function assertStaticAndApi(baseUrl: string): Promise<void> {
   const health = await fetch(`${baseUrl}/api/healthz`);
   assert(health.status === 200 && (await health.json() as { status?: unknown }).status === "ok", "Health response geçersiz.");
+  const ready = await fetch(`${baseUrl}/api/readyz`);
+  assert(ready.status === 200 && (await ready.json() as { status?: unknown }).status === "ready", "Readiness response geçersiz.");
   const unauthenticated = await fetch(`${baseUrl}/api/reports`);
   assert(unauthenticated.status === 401, "Protected API unauthenticated 401 dönmedi.");
   const unknownApi = await fetch(`${baseUrl}/api/not-a-real-endpoint`);
@@ -145,6 +229,43 @@ async function assertStaticAndApi(baseUrl: string): Promise<void> {
   }
 }
 
+async function assertDatabaseOutageRecovery(running: RunningProduction): Promise<void> {
+  const containerId = await assertTestContainerOwnership();
+  await runDocker(["pause", containerId]);
+  try {
+    const deadline = Date.now() + 10_000;
+    let outageResponse: Response | null = null;
+    while (Date.now() < deadline) {
+      outageResponse = await fetch(`${running.baseUrl}/api/readyz`);
+      if (outageResponse.status === 503) break;
+      await delay(100);
+    }
+    assert(outageResponse?.status === 503, "DB outage sırasında readiness 503 dönmedi.");
+    const body = await outageResponse.text();
+    assert(body === '{"status":"not_ready"}', "DB outage readiness response güvenli değil.");
+    assert((await fetch(`${running.baseUrl}/api/healthz`)).status === 200, "DB outage sırasında liveness 200 dönmedi.");
+  } finally {
+    await runDocker(["unpause", containerId]);
+  }
+  await waitForReady(running);
+}
+
+async function assertMissingDatabaseStartup(browserPath: string): Promise<void> {
+  const unavailablePort = await reservePort();
+  const running = await spawnProduction(browserPath, {
+    DATABASE_URL: `postgresql://test_runner@127.0.0.1:${unavailablePort}/iso50001_test?sslmode=disable`,
+  });
+  const result = await Promise.race([
+    new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveClose) => {
+      running.child.once("close", (code, signal) => resolveClose({ code, signal }));
+    }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Missing DB startup process zamanında sonlanmadı.")), STARTUP_TIMEOUT_MS)),
+  ]);
+  assert(result.code !== 0 || result.signal !== null, "Missing DB startup process başarılı exit verdi.");
+  assert(!/postgres(?:ql)?:\/\//i.test(running.logs()), "Missing DB startup logunda connection URL sızdı.");
+  await assertListenerClosed(running.baseUrl);
+}
+
 async function main(): Promise<void> {
   assertDisposableEnvironment();
   let running: RunningProduction | null = null;
@@ -152,10 +273,34 @@ async function main(): Promise<void> {
   try {
     running = await startProduction(process.env.PLAYWRIGHT_BROWSERS_PATH!);
     await assertStaticAndApi(running.baseUrl);
+    await waitForLog(running, /MGM scheduler disabled/);
+    await assertDatabaseOutageRecovery(running);
     const token = await login(running.baseUrl);
     await assertPdf(await fetchPdf(running.baseUrl, token));
-    await Promise.all([1, 2, 3].map(async () => assertPdf(await fetchPdf(running!.baseUrl, token))));
-    await stopProduction(running);
+    const concurrentPdfs = Promise.all([1, 2, 3].map(async () => assertPdf(await fetchPdf(running!.baseUrl, token))));
+    if (process.platform === "win32") {
+      await concurrentPdfs;
+      await stopProduction(running, "SIGTERM");
+    } else {
+      await delay(25);
+      await Promise.all([concurrentPdfs, stopProduction(running, "SIGTERM")]);
+    }
+    running = null;
+
+    running = await startProduction(process.env.PLAYWRIGHT_BROWSERS_PATH!, {
+      ENABLE_MGM_SCHEDULER: "true",
+      MGM_SCHEDULER_INSTANCE_MODE: "autoscale",
+    });
+    await waitForLog(running, /MGM scheduler refused/);
+    await stopProduction(running, "SIGTERM");
+    running = null;
+
+    running = await startProduction(process.env.PLAYWRIGHT_BROWSERS_PATH!, {
+      ENABLE_MGM_SCHEDULER: "true",
+      MGM_SCHEDULER_INSTANCE_MODE: "single",
+    });
+    await waitForLog(running, /MGM scheduler enabled in approved single-instance mode/);
+    await stopProduction(running, "SIGINT");
     running = null;
 
     missingBrowserDirectory = await mkdtemp(join(tmpdir(), "iso50001-missing-browser-"));
@@ -167,6 +312,10 @@ async function main(): Promise<void> {
     assert(missingResponse.headers.get("content-type")?.includes("application/json"), "Missing browser JSON hata dönmedi.");
     assert(!/stack|node_modules|ms-playwright|chromium-[0-9]|[A-Z]:\\/i.test(missingBody), "Missing browser response path/stack sızdırdı.");
     assert((await fetch(`${running.baseUrl}/api/healthz`)).status === 200, "Missing browser sonrası API çalışmıyor.");
+    await stopProduction(running, "SIGTERM");
+    running = null;
+
+    await assertMissingDatabaseStartup(process.env.PLAYWRIGHT_BROWSERS_PATH!);
   } catch (error) {
     const safeLogs = running?.logs().replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "[redacted-database-url]").slice(-2_000);
     if (safeLogs) console.error(`[test-production-readiness] Son process logları:\n${safeLogs}`);
@@ -175,7 +324,7 @@ async function main(): Promise<void> {
     await stopProduction(running).catch(() => undefined);
     if (missingBrowserDirectory) await rm(missingBrowserDirectory, { recursive: true, force: true });
   }
-  console.log("[test-production-readiness] Static, API, PDF, concurrency, missing-browser ve cleanup doğrulandı.");
+  console.log("[test-production-readiness] Readiness, DB outage/recovery, shutdown signals, scheduler guards, static, PDF ve missing dependency senaryoları doğrulandı.");
 }
 
 main().catch((error: unknown) => {

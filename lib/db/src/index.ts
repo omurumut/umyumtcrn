@@ -14,6 +14,17 @@ if (!process.env.DATABASE_URL) {
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool, { schema });
 
+pool.on("error", () => {
+  console.error("[db] Unexpected idle database client error.");
+});
+
+let poolClosePromise: Promise<void> | null = null;
+
+export function closeDatabasePool(): Promise<void> {
+  poolClosePromise ??= pool.end();
+  return poolClosePromise;
+}
+
 export async function runMigrations(migrationsFolder: string): Promise<void> {
   await migrate(db, { migrationsFolder });
 }
