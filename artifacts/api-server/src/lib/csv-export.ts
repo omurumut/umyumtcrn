@@ -81,6 +81,13 @@ export function normalizeCell(value: unknown): string {
   return String(value);
 }
 
+/** Spreadsheet uygulamalarının formül olarak yorumlayabileceği text hücrelerini nötralize eder. */
+export function sanitizeCsvCell(value: unknown): string {
+  const normalized = normalizeCell(value);
+  if (typeof value === "string" && /^[=+\-@\t\r]/.test(value)) return `'${normalized}`;
+  return normalized;
+}
+
 /**
  * Bir CSV hücresini RFC 4180 uyumlu şekilde escape eder.
  * Hücre içinde ; " veya satır sonu varsa çift tırnak ile sarar.
@@ -112,7 +119,7 @@ export function buildCsv(
   const headerLine = headers.map((h) => escapeCell(h.label)).join(DELIMITER);
   const dataLines = rows.map((row) =>
     headers
-      .map((h) => escapeCell(normalizeCell(row[h.key])))
+      .map((h) => escapeCell(sanitizeCsvCell(row[h.key])))
       .join(DELIMITER),
   );
 

@@ -920,7 +920,8 @@ async function assertFixtures(): Promise<void> {
 
     const targetActionVapIntegrity = await client.query<{
       target_count: string; action_count: string; vap_count: string;
-      bad_target_parent: string; bad_action_scope: string; bad_vap_scope: string;
+      bad_target_parent: string; bad_target_lookup_parent: string; duplicate_target_key: string;
+      bad_action_scope: string; bad_vap_scope: string;
     }>(
       `SELECT
          (SELECT count(*) FROM energy_targets WHERE name LIKE $1)::text AS target_count,
@@ -936,13 +937,29 @@ async function assertFixtures(): Promise<void> {
             b.id IS NULL OR b.company_id <> t.company_id OR b.unit_id <> t.unit_id OR b.seu_assessment_item_id <> i.id OR
             b.status <> 'active' OR b.is_valid IS NOT TRUE
           ))::text AS bad_target_parent,
+         (SELECT count(*) FROM energy_targets t
+            LEFT JOIN sub_units su ON su.id = t.sub_unit_id
+            LEFT JOIN energy_sources es ON es.id = t.energy_source_id
+          WHERE t.name LIKE $1 AND (
+            (t.sub_unit_id IS NOT NULL AND (su.id IS NULL OR su.company_id <> t.company_id OR su.unit_id <> t.unit_id)) OR
+            (t.energy_source_id IS NOT NULL AND (es.id IS NULL OR es.company_id <> t.company_id OR (es.unit_id IS NOT NULL AND es.unit_id <> t.unit_id)))
+          ))::text AS bad_target_lookup_parent,
+         (SELECT count(*) FROM (
+            SELECT company_id, unit_id, seu_assessment_item_id, target_year
+            FROM energy_targets
+            WHERE name LIKE $1 AND seu_assessment_item_id IS NOT NULL AND unit_id IS NOT NULL
+            GROUP BY company_id, unit_id, seu_assessment_item_id, target_year
+            HAVING count(*) > 1
+          ) duplicate_keys)::text AS duplicate_target_key,
          (SELECT count(*) FROM energy_action_plans a JOIN energy_targets t ON t.id = a.target_id WHERE a.title LIKE $1 AND a.company_id <> t.company_id)::text AS bad_action_scope,
          (SELECT count(*) FROM vap_projects v JOIN energy_action_plans a ON a.id = v.action_plan_id WHERE v.project_title LIKE $1 AND v.company_id <> a.company_id)::text AS bad_vap_scope`,
       [`${COMPANY_PREFIX}%`],
     );
     const lifecycle = targetActionVapIntegrity.rows[0];
     if (Number(lifecycle?.target_count) !== 5 || Number(lifecycle?.action_count) !== 8 ||
-        Number(lifecycle?.vap_count) !== 5 || Number(lifecycle?.bad_target_parent) !== 0 || Number(lifecycle?.bad_action_scope) !== 0 ||
+        Number(lifecycle?.vap_count) !== 5 || Number(lifecycle?.bad_target_parent) !== 0 ||
+        Number(lifecycle?.bad_target_lookup_parent) !== 0 || Number(lifecycle?.duplicate_target_key) !== 0 ||
+        Number(lifecycle?.bad_action_scope) !== 0 ||
         Number(lifecycle?.bad_vap_scope) !== 0) {
       throw new Error("Fixture target/action/VAP tenant-parent contract is invalid.");
     }

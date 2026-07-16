@@ -36,6 +36,9 @@ const REQUIRED_INDEXES = [
   "vap_projects_action_plan_id_unique",
   "energy_targets_seu_assessment_item_id_idx",
   "energy_targets_baseline_id_idx",
+  "energy_targets_sub_unit_id_idx",
+  "energy_targets_energy_source_id_idx",
+  "energy_targets_company_unit_item_year_unique",
 ] as const;
 
 interface JournalEntry {
@@ -54,10 +57,10 @@ interface SchemaSummary {
   tableCount: number;
   companyCount: number;
   defaultCompanyPresent: boolean;
-  knownRisk: {
-    energyTargetsSubUnitForeignKeyMissing: boolean;
-    energyTargetsEnergySourceForeignKeyMissing: boolean;
-    classification: "known migration drift";
+  targetIntegrity: {
+    partialUniqueIndexPresent: true;
+    subUnitForeignKeyPresent: true;
+    energySourceForeignKeyPresent: true;
   };
 }
 
@@ -208,6 +211,15 @@ async function assertMigrationHistory(
     appliedHashes.has(await fileHash("0020_target_parent_links")),
     "Güncel 0020 hash'i eşleşmiyor.",
   );
+  assert(
+    appliedHashes.has(await fileHash("0021_target_integrity_hardening")),
+    "Güncel 0021 hash'i eşleşmiyor.",
+  );
+  const hardeningSql = await readFile(`${migrationsFolder}/0021_target_integrity_hardening.sql`, "utf8");
+  assert(
+    !/^\s*(?:UPDATE|DELETE\s+FROM|DROP|TRUNCATE)\b/im.test(hardeningSql),
+    "0021 data-loss veya backfill işlemi içermemeli.",
+  );
 }
 
 async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
@@ -264,12 +276,35 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
     assert(indexes.has(index), `${index} index'i fresh şemada yok.`);
   }
 
-  const foreignKeysResult = await queryable.query<{ definition: string; delete_action: string }>(
-    `SELECT pg_get_constraintdef(oid) AS definition, confdeltype::text AS delete_action
+  const targetUniqueIndexResult = await queryable.query<{
+    is_unique: boolean;
+    definition: string;
+    predicate: string | null;
+  }>(
+    `SELECT i.indisunique AS is_unique,
+            pg_get_indexdef(i.indexrelid) AS definition,
+            pg_get_expr(i.indpred, i.indrelid) AS predicate
+     FROM pg_index i
+     JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE c.relname = 'energy_targets_company_unit_item_year_unique'`,
+  );
+  const targetUniqueIndex = targetUniqueIndexResult.rows[0];
+  assert(targetUniqueIndex?.is_unique === true, "Target duplicate index'i unique değil.");
+  assert(
+    /\(company_id, unit_id, seu_assessment_item_id, target_year\)/i.test(targetUniqueIndex.definition),
+    "Target duplicate index kolon sırası geçersiz.",
+  );
+  assert(
+    /seu_assessment_item_id IS NOT NULL/i.test(targetUniqueIndex.predicate ?? "") &&
+      /unit_id IS NOT NULL/i.test(targetUniqueIndex.predicate ?? ""),
+    "Target duplicate partial index predicate'i geçersiz.",
+  );
+
+  const foreignKeysResult = await queryable.query<{ name: string; definition: string; delete_action: string }>(
+    `SELECT conname AS name, pg_get_constraintdef(oid) AS definition, confdeltype::text AS delete_action
      FROM pg_constraint
      WHERE conrelid = 'public.energy_targets'::regclass AND contype = 'f'`,
   );
-  const definitions = foreignKeysResult.rows.map((row) => row.definition);
   assert(
     foreignKeysResult.rows.some((row) => /FOREIGN KEY \(seu_assessment_item_id\).*seu_assessment_items\(id\)/i.test(row.definition) && row.delete_action === "a"),
     "energy_targets.seu_assessment_item_id NO ACTION foreign key fresh şemada yok.",
@@ -278,29 +313,25 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
     foreignKeysResult.rows.some((row) => /FOREIGN KEY \(baseline_id\).*energy_baselines\(id\)/i.test(row.definition) && row.delete_action === "a"),
     "energy_targets.baseline_id NO ACTION foreign key fresh şemada yok.",
   );
-  const energyTargetsSubUnitForeignKeyMissing = !definitions.some(
-    (definition) => /FOREIGN KEY \(sub_unit_id\)/i.test(definition),
+  assert(
+    foreignKeysResult.rows.some((row) => row.name === "energy_targets_sub_unit_id_sub_units_id_fk" &&
+      /FOREIGN KEY \(sub_unit_id\).*sub_units\(id\)/i.test(row.definition) && row.delete_action === "n"),
+    "energy_targets.sub_unit_id SET NULL foreign key fresh şemada yok.",
   );
-  const energyTargetsEnergySourceForeignKeyMissing = !definitions.some(
-    (definition) => /FOREIGN KEY \(energy_source_id\)/i.test(definition),
+  assert(
+    foreignKeysResult.rows.some((row) => row.name === "energy_targets_energy_source_id_energy_sources_id_fk" &&
+      /FOREIGN KEY \(energy_source_id\).*energy_sources\(id\)/i.test(row.definition) && row.delete_action === "n"),
+    "energy_targets.energy_source_id SET NULL foreign key fresh şemada yok.",
   );
-  if (
-    energyTargetsSubUnitForeignKeyMissing ||
-    energyTargetsEnergySourceForeignKeyMissing
-  ) {
-    console.warn(
-      "[test-db] WARNING known migration drift: energy_targets sub_unit_id/energy_source_id foreign key eksikliği.",
-    );
-  }
 
   return {
     tableCount: tables.size,
     companyCount,
     defaultCompanyPresent,
-    knownRisk: {
-      energyTargetsSubUnitForeignKeyMissing,
-      energyTargetsEnergySourceForeignKeyMissing,
-      classification: "known migration drift",
+    targetIntegrity: {
+      partialUniqueIndexPresent: true,
+      subUnitForeignKeyPresent: true,
+      energySourceForeignKeyPresent: true,
     },
   };
 }

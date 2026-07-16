@@ -15,6 +15,7 @@ class BadRequestError extends Error {}
 
 const TARGET_TYPES = new Set(["consumption_reduction", "efficiency_improvement", "emission_reduction", "cost_reduction", "monitoring"]);
 const TARGET_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
+const TARGET_DUPLICATE_INDEX = "energy_targets_company_unit_item_year_unique";
 const MAX_REAL = 3.4028235e38;
 
 function isCompanyAdmin(role: string) {
@@ -200,6 +201,24 @@ async function resolveTargetMutationCompany(role: string, sessionCompanyId: numb
 function handleBadRequest(res: Response, err: unknown) {
   if (!(err instanceof BadRequestError)) return false;
   res.status(400).json({ error: err.message });
+  return true;
+}
+
+function isTargetDuplicateViolation(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (candidate.code === "23505" && candidate.constraint === TARGET_DUPLICATE_INDEX) return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
+function handleTargetDuplicate(res: Response, err: unknown): boolean {
+  if (!isTargetDuplicateViolation(err)) return false;
+  res.status(409).json({ error: "Bu ÖEK kalemi ve hedef yılı için hedef zaten mevcut" });
   return true;
 }
 
@@ -609,6 +628,7 @@ router.post("/targets", requireAuth, async (req, res) => {
     res.status(201).json(item);
   } catch (err) {
     if (handleBadRequest(res, err)) return;
+    if (handleTargetDuplicate(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }
@@ -713,6 +733,7 @@ router.patch("/targets/:id", requireAuth, async (req, res) => {
     res.json(item);
   } catch (err) {
     if (handleBadRequest(res, err)) return;
+    if (handleTargetDuplicate(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
   }

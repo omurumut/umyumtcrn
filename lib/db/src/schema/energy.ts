@@ -1,4 +1,5 @@
-import { pgTable, serial, text, integer, real, timestamp, boolean, index, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, serial, text, integer, real, timestamp, boolean, index, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -374,6 +375,11 @@ export const energyTargetsTable = pgTable("energy_targets", {
 }, (table) => ({
   seuAssessmentItemIdIdx: index("energy_targets_seu_assessment_item_id_idx").on(table.seuAssessmentItemId),
   baselineIdIdx: index("energy_targets_baseline_id_idx").on(table.baselineId),
+  subUnitIdIdx: index("energy_targets_sub_unit_id_idx").on(table.subUnitId),
+  energySourceIdIdx: index("energy_targets_energy_source_id_idx").on(table.energySourceId),
+  companyUnitItemYearUnique: uniqueIndex("energy_targets_company_unit_item_year_unique")
+    .on(table.companyId, table.unitId, table.seuAssessmentItemId, table.targetYear)
+    .where(sql`${table.seuAssessmentItemId} is not null and ${table.unitId} is not null`),
 }));
 
 export const insertEnergyTargetSchema = createInsertSchema(energyTargetsTable).omit({ id: true, createdAt: true, updatedAt: true });

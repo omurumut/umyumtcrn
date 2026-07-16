@@ -141,6 +141,13 @@
       "when": 1783700000000,
       "tag": "0020_target_parent_links",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783800000000,
+      "tag": "0021_target_integrity_hardening",
+      "breakpoints": true
     }
   ]
 }
