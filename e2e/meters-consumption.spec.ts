@@ -611,11 +611,39 @@ test("CONSUMPTION-06 duplicate meter/year/month 409 ve tek kayıt bırakır", as
   let id: number | null = null;
   try {
     const first = await createConsumption(request, session.token, { year: 2092, month: 1, kwh: 10 });
+    expect(first.response.status()).toBe(201);
     id = first.record!.id;
     const second = await createConsumption(request, session.token, { year: 2092, month: 1, kwh: 20 });
     expect(second.response.status()).toBe(409);
+    expect(await second.response.json()).toEqual({ error: "Bu sayaç ve dönem için tüketim kaydı zaten mevcut." });
     expect(await countConsumption(ids.importMeterA1, 2092, 1)).toBe(1);
   } finally { await cleanupConsumption(id); }
+});
+
+test("CONSUMPTION-RACE eşzamanlı duplicate create 201/409 ve tek kayıt bırakır", async ({ request }) => {
+  const session = await login(request, credentials.adminA);
+  let meterId: number | null = null;
+  try {
+    const createdMeter = await createMeter(request, session.token);
+    expect(createdMeter.response.status()).toBe(201);
+    meterId = createdMeter.meter!.id;
+    const data = { meterId, year: 2092, month: 8, kwh: 321.5, hdd: 11.25, cdd: 3.75 };
+
+    const responses = await Promise.all([
+      request.post("/api/consumption", { headers: authorization(session.token), data }),
+      request.post("/api/consumption", { headers: authorization(session.token), data }),
+    ]);
+    expect(responses.map((response) => response.status()).sort((a, b) => a - b)).toEqual([201, 409]);
+    const conflict = responses.find((response) => response.status() === 409)!;
+    expect(await conflict.json()).toEqual({ error: "Bu sayaç ve dönem için tüketim kaydı zaten mevcut." });
+
+    const stored = await pool.query<{ hdd: number; cdd: number; kwh: number }>(
+      "SELECT hdd, cdd, kwh FROM consumption WHERE meter_id = $1 AND year = 2092 AND month = 8",
+      [meterId],
+    );
+    expect(stored.rowCount).toBe(1);
+    expect(stored.rows[0]).toMatchObject({ hdd: 11.25, cdd: 3.75, kwh: 321.5 });
+  } finally { await cleanupMeter(meterId); }
 });
 
 test("CONSUMPTION-07 kwh güncellemesinde TEP/CO2 yeniden hesaplanır", async ({ request }) => {
@@ -637,9 +665,22 @@ test("CONSUMPTION-07 kayıt duplicate döneme taşınamaz", async ({ request }) 
     const first = await createConsumption(request, session.token, { year: 2092, month: 3 });
     const second = await createConsumption(request, session.token, { year: 2092, month: 4 });
     idsToDelete.push(first.record!.id, second.record!.id);
-    expect((await request.patch(`/api/consumption/${second.record!.id}`, {
+    const before = await pool.query<{ meter_id: number; year: number; month: number; kwh: number; hdd: number | null; cdd: number | null }>(
+      "SELECT meter_id, year, month, kwh, hdd, cdd FROM consumption WHERE id = $1",
+      [second.record!.id],
+    );
+    const response = await request.patch(`/api/consumption/${second.record!.id}`, {
       headers: authorization(session.token), data: { month: 3 },
-    })).status()).toBe(409);
+    });
+    expect(response.status()).toBe(409);
+    expect(await response.json()).toEqual({ error: "Bu sayaç ve dönem için tüketim kaydı zaten mevcut." });
+    expect(await countConsumption(ids.importMeterA1, 2092, 3)).toBe(1);
+    expect(await countConsumption(ids.importMeterA1, 2092, 4)).toBe(1);
+    const after = await pool.query<{ meter_id: number; year: number; month: number; kwh: number; hdd: number | null; cdd: number | null }>(
+      "SELECT meter_id, year, month, kwh, hdd, cdd FROM consumption WHERE id = $1",
+      [second.record!.id],
+    );
+    expect(after.rows).toEqual(before.rows);
   } finally { for (const id of idsToDelete) await cleanupConsumption(id); }
 });
 
@@ -763,6 +804,7 @@ test("CONSUMPTION-IMPORT-03 batch duplicate satırı overwrite etmeden raporlar"
     const body = await response.json() as { imported: number; errors: unknown[] };
     expect(body.imported).toBe(1);
     expect(body.errors).toHaveLength(1);
+    expect(body.errors).toEqual([{ row: 2, message: "Bu sayaç ve dönem için tüketim kaydı zaten mevcut." }]);
     expect(await countConsumption(ids.importMeterA1, 2095, 3)).toBe(1);
   } finally { await cleanupPeriod(ids.importMeterA1, 2095, [3]); }
 });

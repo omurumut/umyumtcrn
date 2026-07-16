@@ -39,6 +39,7 @@ const REQUIRED_INDEXES = [
   "energy_targets_sub_unit_id_idx",
   "energy_targets_energy_source_id_idx",
   "energy_targets_company_unit_item_year_unique",
+  "consumption_meter_year_month_unique",
 ] as const;
 
 interface JournalEntry {
@@ -61,6 +62,9 @@ interface SchemaSummary {
     partialUniqueIndexPresent: true;
     subUnitForeignKeyPresent: true;
     energySourceForeignKeyPresent: true;
+  };
+  consumptionIntegrity: {
+    periodUniqueIndexPresent: true;
   };
 }
 
@@ -215,10 +219,19 @@ async function assertMigrationHistory(
     appliedHashes.has(await fileHash("0021_target_integrity_hardening")),
     "Güncel 0021 hash'i eşleşmiyor.",
   );
+  assert(
+    appliedHashes.has(await fileHash("0022_consumption_period_unique")),
+    "Güncel 0022 hash'i eşleşmiyor.",
+  );
   const hardeningSql = await readFile(`${migrationsFolder}/0021_target_integrity_hardening.sql`, "utf8");
   assert(
     !/^\s*(?:UPDATE|DELETE\s+FROM|DROP|TRUNCATE)\b/im.test(hardeningSql),
     "0021 data-loss veya backfill işlemi içermemeli.",
+  );
+  const consumptionUniqueSql = await readFile(`${migrationsFolder}/0022_consumption_period_unique.sql`, "utf8");
+  assert(
+    !/^\s*(?:UPDATE|DELETE\s+FROM|DROP|TRUNCATE)\b/im.test(consumptionUniqueSql),
+    "0022 data-loss veya backfill işlemi içermemeli.",
   );
 }
 
@@ -300,6 +313,26 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
     "Target duplicate partial index predicate'i geçersiz.",
   );
 
+  const consumptionUniqueIndexResult = await queryable.query<{
+    is_unique: boolean;
+    definition: string;
+    predicate: string | null;
+  }>(
+    `SELECT i.indisunique AS is_unique,
+            pg_get_indexdef(i.indexrelid) AS definition,
+            pg_get_expr(i.indpred, i.indrelid) AS predicate
+     FROM pg_index i
+     JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE c.relname = 'consumption_meter_year_month_unique'`,
+  );
+  const consumptionUniqueIndex = consumptionUniqueIndexResult.rows[0];
+  assert(consumptionUniqueIndex?.is_unique === true, "Consumption dönem index'i unique değil.");
+  assert(
+    /\(meter_id, year, month\)/i.test(consumptionUniqueIndex.definition),
+    "Consumption dönem index kolon sırası geçersiz.",
+  );
+  assert(consumptionUniqueIndex.predicate === null, "Consumption dönem index'i partial olmamalı.");
+
   const foreignKeysResult = await queryable.query<{ name: string; definition: string; delete_action: string }>(
     `SELECT conname AS name, pg_get_constraintdef(oid) AS definition, confdeltype::text AS delete_action
      FROM pg_constraint
@@ -333,7 +366,46 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
       subUnitForeignKeyPresent: true,
       energySourceForeignKeyPresent: true,
     },
+    consumptionIntegrity: {
+      periodUniqueIndexPresent: true,
+    },
   };
+}
+
+async function assertConsumptionUniqueEnforced(databasePool: Pool): Promise<void> {
+  const client = await databasePool.connect();
+  let transactionStarted = false;
+  try {
+    await client.query("BEGIN");
+    transactionStarted = true;
+    const meterResult = await client.query<{ id: number }>(
+      `INSERT INTO meters (company_id, name, type, location, city, unit)
+       VALUES (1, '[E2E] migration unique probe', 'elektrik', 'E2E', 'Ankara / Cankaya', 'kWh')
+       RETURNING id`,
+    );
+    const meterId = meterResult.rows[0]?.id;
+    assert(Number.isSafeInteger(meterId), "Unique probe sayacı oluşturulamadı.");
+    await client.query(
+      `INSERT INTO consumption (company_id, meter_id, year, month, kwh)
+       VALUES (1, ${meterId}, 2099, 12, 1)`,
+    );
+
+    let blockedByExpectedConstraint = false;
+    try {
+      await client.query(
+        `INSERT INTO consumption (company_id, meter_id, year, month, kwh)
+         VALUES (1, ${meterId}, 2099, 12, 2)`,
+      );
+    } catch (error: unknown) {
+      const pgError = error as { code?: unknown; constraint?: unknown };
+      blockedByExpectedConstraint = pgError.code === "23505" &&
+        pgError.constraint === "consumption_meter_year_month_unique";
+    }
+    assert(blockedByExpectedConstraint, "Consumption duplicate SQL insert beklenen unique constraint ile engellenmedi.");
+  } finally {
+    if (transactionStarted) await client.query("ROLLBACK");
+    client.release();
+  }
 }
 
 async function runReadOnlyAssertions(
@@ -403,6 +475,7 @@ async function main(): Promise<void> {
       (await migrationCount(pool)) === journal.entries.length,
       "İkinci migrator çalışması no-op olmadı.",
     );
+    await assertConsumptionUniqueEnforced(pool);
   }
 
   const summary = await runReadOnlyAssertions(pool, journal);

@@ -149,7 +149,10 @@ export const consumptionTable = pgTable("consumption", {
   weatherStationName: text("weather_station_name"),
   weatherStationNote: text("weather_station_note"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  meterYearMonthUnique: uniqueIndex("consumption_meter_year_month_unique")
+    .on(table.meterId, table.year, table.month),
+}));
 
 export const insertConsumptionSchema = createInsertSchema(consumptionTable).omit({ id: true, createdAt: true });
 export type InsertConsumption = z.infer<typeof insertConsumptionSchema>;

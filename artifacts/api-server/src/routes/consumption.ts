@@ -21,6 +21,21 @@ function isPrivileged(role: string) {
 
 class BadRequestError extends Error {}
 
+const CONSUMPTION_PERIOD_UNIQUE_CONSTRAINT = "consumption_meter_year_month_unique";
+const CONSUMPTION_PERIOD_CONFLICT_MESSAGE = "Bu sayaç ve dönem için tüketim kaydı zaten mevcut.";
+
+function isConsumptionPeriodUniqueViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && typeof current === "object" && current !== null; depth++) {
+    const candidate = current as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (candidate.code === "23505" && candidate.constraint === CONSUMPTION_PERIOD_UNIQUE_CONSTRAINT) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
 function parsePositiveInteger(value: unknown): number | null {
   if (typeof value === "number") {
     return Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -490,7 +505,7 @@ router.post("/consumption", requireAuth, async (req, res) => {
         eq(consumptionTable.month, mo)
       ));
     if (dupCheck) {
-      res.status(409).json({ error: `Bu sayaç ve dönem (${yr}/${mo}) için kayıt zaten mevcut` }); return;
+      res.status(409).json({ error: CONSUMPTION_PERIOD_CONFLICT_MESSAGE }); return;
     }
 
     const weatherSnapshot = await resolveConsumptionWeatherSnapshot(meter, yr, mo, parsedHdd, parsedCdd);
@@ -518,6 +533,9 @@ router.post("/consumption", requireAuth, async (req, res) => {
   } catch (err) {
     if (isBadRequestError(err)) {
       res.status(400).json({ error: err.message }); return;
+    }
+    if (isConsumptionPeriodUniqueViolation(err)) {
+      res.status(409).json({ error: CONSUMPTION_PERIOD_CONFLICT_MESSAGE }); return;
     }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
@@ -599,7 +617,7 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
         ne(consumptionTable.id, id)
       ));
     if (dupCheck) {
-      res.status(409).json({ error: `Bu sayaç ve dönem (${finalYear}/${finalMonth}) için başka bir kayıt zaten mevcut` }); return;
+      res.status(409).json({ error: CONSUMPTION_PERIOD_CONFLICT_MESSAGE }); return;
     }
 
     const updates: Record<string, unknown> = {};
@@ -649,6 +667,9 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
   } catch (err) {
     if (isBadRequestError(err)) {
       res.status(400).json({ error: err.message }); return;
+    }
+    if (isConsumptionPeriodUniqueViolation(err)) {
+      res.status(409).json({ error: CONSUMPTION_PERIOD_CONFLICT_MESSAGE }); return;
     }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
@@ -772,7 +793,7 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
             eq(consumptionTable.month, month)
           ));
         if (batchDup) {
-          errors.push({ row: rowNum, message: `Sayaç "${meter.name}" için ${year}/${month} kaydı zaten mevcut (atlandı)` });
+          errors.push({ row: rowNum, message: CONSUMPTION_PERIOD_CONFLICT_MESSAGE });
           continue;
         }
 
@@ -785,8 +806,13 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
              ${hddVal}, ${cddVal}, ${row.notes ? String(row.notes) : null})
         `);
         imported++;
-      } catch (rowErr: any) {
-        errors.push({ row: rowNum, message: rowErr?.message ?? "Bilinmeyen hata" });
+      } catch (rowErr: unknown) {
+        errors.push({
+          row: rowNum,
+          message: isConsumptionPeriodUniqueViolation(rowErr)
+            ? CONSUMPTION_PERIOD_CONFLICT_MESSAGE
+            : rowErr instanceof Error ? rowErr.message : "Bilinmeyen hata",
+        });
       }
     }
 
