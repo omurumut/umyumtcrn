@@ -30,6 +30,12 @@ function parsePositiveInteger(value: unknown): number | undefined {
   return undefined;
 }
 
+function parseExportFormat(value: unknown): "csv" | "xlsx" {
+  if (value === undefined) return "csv";
+  if (value === "csv" || value === "xlsx") return value;
+  throw new BadRequestError("Geçersiz format");
+}
+
 function requiredString(value: unknown, field: string, maxLength = 255): string {
   if (typeof value !== "string") throw new BadRequestError(`Geçersiz ${field}`);
   const parsed = value.trim();
@@ -114,6 +120,7 @@ async function getScopedActionPlan(actionPlanId: number, companyId: number, stan
 // GET /api/vap-projects/export
 router.get("/vap-projects/export", requireAuth, async (req, res) => {
   try {
+    const format = parseExportFormat(req.query.format);
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
 
     // Non-admin kullanıcıların mutlaka bir birime atanmış olması gerekir
@@ -236,8 +243,6 @@ router.get("/vap-projects/export", requireAuth, async (req, res) => {
       notlar: p.notes ?? "",
     }));
 
-    const format = req.query.format === "xlsx" ? "xlsx" : "csv";
-
     const HEADERS: import("../lib/xlsx-export.js").XlsxColDef[] = [
       { key: "projeKodu", label: "Proje Kodu" },
       { key: "vapAdi", label: "VAP Adı", width: 35, wrapText: true },
@@ -278,6 +283,7 @@ router.get("/vap-projects/export", requireAuth, async (req, res) => {
       sendCsvResponse(res, filename, csv);
     }
   } catch (err) {
+    if (handleBadRequest(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "VAP export hatası" });
   }

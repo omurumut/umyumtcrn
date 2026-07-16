@@ -1,10 +1,17 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { db, reportsTable, consumptionTable, swotTable, risksTable, seuTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
+import { db, companiesTable, reportsTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
 import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { renderHtmlToPdf, safePdfFilename } from "../lib/pdf-render.js";
 
 const router = Router();
+const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
+const SEU_DECISION_LABELS: Record<string, string> = {
+  accepted_as_seu: "ÖEK",
+  not_seu: "ÖEK Dışı",
+  monitor: "İzleme",
+};
 
 class ReportScopeError extends Error {
   constructor(public status: number, message: string) {
@@ -33,11 +40,19 @@ function escapeHtml(value: unknown): string {
 function parsePositiveInteger(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
-  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
-    const parsed = Number(value);
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value.trim())) {
+    const parsed = Number(value.trim());
     if (Number.isSafeInteger(parsed)) return parsed;
   }
   throw new ReportScopeError(400, `Geçersiz ${field}`);
+}
+
+function parseTargetReportStatus(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !TARGET_REPORT_STATUSES.has(value)) {
+    throw new ReportScopeError(400, "Geçersiz status");
+  }
+  return value;
 }
 
 function parseRequiredId(value: unknown, field: string): number {
@@ -52,6 +67,86 @@ function parseReportYear(value: unknown): number {
   return year;
 }
 
+async function getOfficialSeuReportSection({
+  companyId,
+  unitId,
+  year,
+}: {
+  companyId: number;
+  unitId: number | null;
+  year: number;
+}) {
+  const assessmentConditions: SQL[] = [
+    eq(seuAssessmentsTable.companyId, companyId),
+    eq(unitsTable.companyId, companyId),
+    eq(seuAssessmentsTable.year, year),
+    eq(seuAssessmentsTable.recordType, "unit_official"),
+    eq(seuAssessmentsTable.isOfficial, true),
+  ];
+  if (unitId !== null) assessmentConditions.push(eq(seuAssessmentsTable.unitId, unitId));
+
+  const candidates = await db
+    .select({
+      id: seuAssessmentsTable.id,
+      unitId: seuAssessmentsTable.unitId,
+      createdAt: seuAssessmentsTable.createdAt,
+    })
+    .from(seuAssessmentsTable)
+    .innerJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
+    .where(and(...assessmentConditions))
+    .orderBy(asc(seuAssessmentsTable.unitId), desc(seuAssessmentsTable.createdAt), desc(seuAssessmentsTable.id));
+
+  // Official kayıt üretim sözleşmesindeki gibi her birim için en son kaydı kullan.
+  const latestByUnit = new Map<number, number>();
+  for (const assessment of candidates) {
+    if (assessment.unitId !== null && !latestByUnit.has(assessment.unitId)) {
+      latestByUnit.set(assessment.unitId, assessment.id);
+    }
+  }
+  const assessmentIds = [...latestByUnit.values()];
+  if (assessmentIds.length === 0) return { assessmentCount: 0, items: [] };
+
+  const items = await db
+    .select({
+      assessmentId: seuAssessmentsTable.id,
+      assessmentYear: seuAssessmentsTable.year,
+      unitId: seuAssessmentsTable.unitId,
+      unitName: unitsTable.name,
+      id: seuAssessmentItemsTable.id,
+      name: seuAssessmentItemsTable.name,
+      energySourceName: energySourcesTable.name,
+      energyTep: seuAssessmentItemsTable.energyTep,
+      consumptionSharePercent: seuAssessmentItemsTable.consumptionSharePercent,
+      priorityResult: seuAssessmentItemsTable.priorityResult,
+      userDecision: seuAssessmentItemsTable.userDecision,
+      decisionReason: seuAssessmentItemsTable.decisionReason,
+    })
+    .from(seuAssessmentItemsTable)
+    .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
+    .innerJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
+    .leftJoin(energySourcesTable, and(
+      eq(seuAssessmentItemsTable.energySourceId, energySourcesTable.id),
+      eq(energySourcesTable.companyId, companyId),
+      or(isNull(energySourcesTable.unitId), eq(energySourcesTable.unitId, seuAssessmentsTable.unitId)),
+    ))
+    .where(and(
+      inArray(seuAssessmentsTable.id, assessmentIds),
+      eq(seuAssessmentsTable.companyId, companyId),
+      eq(unitsTable.companyId, companyId),
+      eq(seuAssessmentsTable.year, year),
+      eq(seuAssessmentsTable.recordType, "unit_official"),
+      eq(seuAssessmentsTable.isOfficial, true),
+      ...(unitId !== null ? [eq(seuAssessmentsTable.unitId, unitId)] : []),
+    ))
+    .orderBy(
+      asc(seuAssessmentsTable.unitId),
+      asc(seuAssessmentItemsTable.consumptionSharePercent),
+      asc(seuAssessmentItemsTable.id),
+    );
+
+  return { assessmentCount: assessmentIds.length, items };
+}
+
 async function resolveReportScope(
   req: Request,
   source: Record<string, unknown>,
@@ -63,7 +158,20 @@ async function resolveReportScope(
 
   if (!isCompanyAdmin(role) && !isSuperAdmin(role)) {
     if (sessionUnitId === null) throw new ReportScopeError(403, "Bu rapor için birim yetkisi gerekli");
+    if (requestedUnitId !== undefined && requestedUnitId !== sessionUnitId) {
+      throw new ReportScopeError(403, "Bu birim için yetkiniz yok");
+    }
     return { companyId: sessionCompanyId, unitId: sessionUnitId };
+  }
+
+  if (isSuperAdmin(role) && requireSuperAdminCompany && requestedCompanyId === undefined) {
+    throw new ReportScopeError(400, "companyId zorunludur");
+  }
+
+  if (isSuperAdmin(role) && requestedCompanyId !== undefined) {
+    const [company] = await db.select({ id: companiesTable.id })
+      .from(companiesTable).where(eq(companiesTable.id, requestedCompanyId));
+    if (!company) throw new ReportScopeError(400, "Geçersiz companyId");
   }
 
   let companyId = isSuperAdmin(role) ? requestedCompanyId : sessionCompanyId;
@@ -77,10 +185,6 @@ async function resolveReportScope(
       throw new ReportScopeError(403, "Bu birim için yetkiniz yok");
     }
     if (isSuperAdmin(role) && companyId === undefined) companyId = unit.companyId;
-  }
-
-  if (isSuperAdmin(role) && requireSuperAdminCompany && companyId === undefined) {
-    throw new ReportScopeError(400, "companyId zorunludur");
   }
 
   return { companyId, unitId: unitId ?? null };
@@ -174,13 +278,11 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
     const meterConditions: SQL[] = [eq(metersTable.companyId, effectiveCompanyId)];
     const swotConditions: SQL[] = [eq(swotTable.companyId, effectiveCompanyId)];
     const riskConditions: SQL[] = [eq(risksTable.companyId, effectiveCompanyId)];
-    const seuConditions: SQL[] = [eq(seuTable.companyId, effectiveCompanyId)];
     if (resolvedUnitId !== null) {
       consumptionConditions.push(eq(metersTable.unitId, resolvedUnitId));
       meterConditions.push(eq(metersTable.unitId, resolvedUnitId));
       swotConditions.push(eq(swotTable.unitId, resolvedUnitId));
       riskConditions.push(eq(risksTable.unitId, resolvedUnitId));
-      seuConditions.push(eq(seuTable.unitId, resolvedUnitId));
     }
 
     const consumptionRows = await db
@@ -191,7 +293,12 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
     const meters = await db.select().from(metersTable).where(and(...meterConditions));
     const swotItems = await db.select().from(swotTable).where(and(...swotConditions));
     const riskItems = await db.select().from(risksTable).where(and(...riskConditions));
-    const seuItems = await db.select().from(seuTable).where(and(...seuConditions));
+    const officialSeu = await getOfficialSeuReportSection({
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      year: yr,
+    });
+    const acceptedSeuCount = officialSeu.items.filter((item) => item.userDecision === "accepted_as_seu").length;
 
     const totalKwh = consumptionRows.reduce((a, r) => a + r.kwh, 0);
     const totalTep = consumptionRows.reduce((a, r) => a + r.tep, 0);
@@ -221,11 +328,20 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
          ${riskItems.map(r => `<tr><td>${escapeHtml(r.type)}</td><td>${escapeHtml(r.title)}</td><td>${r.probability}/5</td><td>${r.severity}/5</td><td>${r.score}</td><td>${escapeHtml(r.status)}</td></tr>`).join("")}
          </table>` : "";
 
-    const seuHtml = includeSeu !== false && seuItems.length > 0
-      ? `<h2>Önemli Enerji Kullanımları (ÖEK)</h2>
-         <table><tr><th>Öncelik</th><th>Ad</th><th>Kategori</th><th>Yıllık tüketim (kWh)</th><th>Yüzde (%)</th><th>Hedef İndirim (%)</th></tr>
-         ${seuItems.map(s => `<tr><td>${s.priority}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.category)}</td><td>${Math.round(s.annualKwh).toLocaleString("tr-TR")}</td><td>${s.percentage}%</td><td>${s.targetReductionPercent ?? "-"}%</td></tr>`).join("")}
-         </table>` : "";
+    const formatSeuNumber = (value: number | null | undefined, digits: number) =>
+      typeof value === "number" && Number.isFinite(value)
+        ? value.toLocaleString("tr-TR", { minimumFractionDigits: digits, maximumFractionDigits: digits })
+        : "—";
+    const seuHtml = includeSeu === false
+      ? ""
+      : officialSeu.assessmentCount === 0
+        ? "<h2>Önemli Enerji Kullanımları (ÖEK)</h2><p>Bu yıl için resmî ÖEK değerlendirmesi bulunamadı.</p>"
+        : officialSeu.items.length === 0
+          ? "<h2>Önemli Enerji Kullanımları (ÖEK)</h2><p>Resmî ÖEK değerlendirmesinde kayıtlı kalem bulunamadı.</p>"
+          : `<h2>Önemli Enerji Kullanımları (ÖEK)</h2>
+         <table><tr><th>Sıra</th><th>Birim</th><th>Ad</th><th>Enerji Kaynağı</th><th>TEP</th><th>Pay (%)</th><th>Öncelik</th><th>Karar</th><th>Karar Gerekçesi</th><th>Değerlendirme Yılı</th></tr>
+         ${officialSeu.items.map((item, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(item.unitName)}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.energySourceName ?? "—")}</td><td>${formatSeuNumber(item.energyTep, 4)}</td><td>${formatSeuNumber(item.consumptionSharePercent, 1)}</td><td>${item.priorityResult ?? "—"}</td><td>${escapeHtml(SEU_DECISION_LABELS[item.userDecision ?? ""] ?? "—")}</td><td>${escapeHtml(item.decisionReason ?? "—")}</td><td>${item.assessmentYear}</td></tr>`).join("")}
+         </table>`;
 
     const unitLabel = resolvedUnitId !== null ? ` — Birim #${resolvedUnitId}` : "";
 
@@ -267,7 +383,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       <div class="kpi-label">CO₂ Emisyonu (ton)</div>
     </div>
   </div>
-  <p>Aktif Sayaç Sayısı: ${meters.length} | Toplam ÖEK: ${seuItems.length}</p>
+  <p>Aktif Sayaç Sayısı: ${meters.length} | Toplam ÖEK: ${acceptedSeuCount}</p>
 
   <h2>Aylık Enerji Tüketimi</h2>
   <table>
@@ -329,11 +445,11 @@ const FEASIBILITY_STATUS_LABELS: Record<string, string> = {
 // GET /api/reports/energy-targets/pdf
 router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
   try {
+    const statusParam = parseTargetReportStatus(req.query.status);
     const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
 
     // ── Auth / scope ─────────────────────────────────────────────────────────
     const yearParam = parseReportYear(req.query.year ?? new Date().getFullYear());
-    const statusParam = req.query.status as string | undefined;
     const includeVap = req.query.includeVap !== "false";
     const includeProgress = req.query.includeProgress !== "false";
 
@@ -664,18 +780,19 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
 </body>
 </html>`;
 
-    const b64 = Buffer.from(htmlContent).toString("base64");
-    const dataUrl = `data:text/html;base64,${b64}`;
-
-    res.json({
-      year: yearParam,
-      unitId: resolvedUnitId,
-      unitLabel,
-      targetCount: totalTargets,
-      actionCount: actions.length,
-      vapCount,
-      dataUrl,
+    const pdf = await renderHtmlToPdf({
+      html: htmlContent,
+      title: `Enerji Hedefleri ${yearParam}`,
+      landscape: true,
     });
+    const filename = safePdfFilename(["enerji-hedefleri", yearParam]);
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+      "Content-Length": String(pdf.length),
+    });
+    res.status(200).send(pdf);
   } catch (err) {
     if (handleReportScopeError(res, err)) return;
     req.log.error(err);
@@ -690,7 +807,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
 // rawConsumption alias'ı tercih edilmelidir.
 router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   try {
-    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, false);
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
     const baselineId = parseRequiredId(req.query.baselineId, "baselineId");
     const year = parseReportYear(req.query.year ?? new Date().getFullYear());
     const baselineConditions: SQL[] = [eq(energyBaselinesTable.id, baselineId)];
@@ -761,6 +878,8 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
         seuItemName = seuRow.itemName ?? "—";
         unitName = seuRow.unitName ?? "—";
         energySourceName = seuRow.energySourceName ?? "—";
+      } else {
+        throw new ReportScopeError(404, "EnRÇ ilişkisi bulunamadı");
       }
     }
 
@@ -978,10 +1097,19 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
 </body>
 </html>`;
 
-    const b64 = Buffer.from(htmlContent).toString("base64");
-    const dataUrl = `data:text/html;base64,${b64}`;
-
-    res.json({ dataUrl, year, baselineId, seuItemName, rawUnit });
+    const pdf = await renderHtmlToPdf({
+      html: htmlContent,
+      title: `Enerji Performansi ${year}`,
+      landscape: true,
+    });
+    const filename = safePdfFilename(["enerji-performansi", year]);
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+      "Content-Length": String(pdf.length),
+    });
+    res.status(200).send(pdf);
   } catch (err) {
     if (handleReportScopeError(res, err)) return;
     req.log.error(err);

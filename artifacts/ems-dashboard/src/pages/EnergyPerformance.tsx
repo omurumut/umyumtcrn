@@ -16,6 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/context/AuthContext";
 import { useUnit } from "@/context/UnitContext";
 import { useYear } from "@/context/YearContext";
+import { downloadPdfResponse } from "@/lib/download";
 import { useListUnits, getListUnitsQueryKey } from "@workspace/api-client-react";
 import {
   AlertCircle, AlertTriangle, CheckCircle2, ChevronRight, BarChart2, Database,
@@ -408,14 +409,7 @@ export default function EnergyPerformance() {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as any)?.error ?? "PDF üretme hatası");
       }
-      const data = await res.json();
-      if (!data.dataUrl) throw new Error("dataUrl eksik");
-      const a = document.createElement("a");
-      a.href = data.dataUrl;
-      a.download = `enpg-izleme-raporu-${data.seuItemName ?? "rapor"}-${monitorYear}.html`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      await downloadPdfResponse(res, `enerji-performansi-${monitorYear}.pdf`);
     } catch (e: any) {
       alert(e?.message ?? "PDF indirme başarısız");
     } finally {

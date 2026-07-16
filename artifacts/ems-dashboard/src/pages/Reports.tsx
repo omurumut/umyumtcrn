@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FileText, Download, RefreshCw, ClipboardList } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { downloadPdfResponse } from "@/lib/download";
 
 export default function Reports() {
   const { year } = useYear();
@@ -49,20 +50,18 @@ export default function Reports() {
       });
 
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
 
-      const data = await res.json();
-      if (!data.dataUrl) throw new Error("dataUrl eksik");
-
-      const a = document.createElement("a");
-      a.href = data.dataUrl;
-      a.download = `iso50001-hedef-eylem-vap-raporu-${targetYear}.html`;
-      a.click();
+      await downloadPdfResponse(res, `enerji-hedefleri-${targetYear}.pdf`);
 
       toast({ title: `${targetYear} yılı yönetim raporu indirildi` });
-    } catch {
-      toast({ title: "Yönetim raporu oluşturulamadı.", variant: "destructive" });
+    } catch (error) {
+      toast({
+        title: error instanceof Error ? error.message : "Yönetim raporu oluşturulamadı.",
+        variant: "destructive",
+      });
     } finally {
       setTargetLoading(false);
     }
@@ -228,11 +227,11 @@ export default function Reports() {
               {targetLoading ? (
                 <><RefreshCw className="h-4 w-4 animate-spin" /> Rapor hazırlanıyor...</>
               ) : (
-                <><Download className="h-4 w-4" /> HTML Raporu İndir</>
+                <><Download className="h-4 w-4" /> PDF Raporu İndir</>
               )}
             </Button>
             <p className="text-xs text-muted-foreground">
-              Rapor tarayıcıda açıldıktan sonra PDF olarak kaydedilebilir.
+              Rapor güvenli PDF dosyası olarak indirilir.
             </p>
           </div>
         </CardContent>

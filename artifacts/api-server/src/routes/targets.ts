@@ -36,6 +36,18 @@ function parsePositiveInteger(value: unknown, field = "id"): number | undefined 
   throw new BadRequestError(`Geçersiz ${field}`);
 }
 
+function parseExportFormat(value: unknown): "csv" | "xlsx" {
+  if (value === undefined) return "csv";
+  if (value === "csv" || value === "xlsx") return value;
+  throw new BadRequestError("Geçersiz format");
+}
+
+function parseQueryEnum(value: unknown, field: string, allowed: Set<string>): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !allowed.has(value)) throw new BadRequestError(`Geçersiz ${field}`);
+  return value;
+}
+
 function parseRequiredString(value: unknown, field: string, maxLength = 255): string {
   if (typeof value !== "string") throw new BadRequestError(`Geçersiz ${field}`);
   const parsed = value.trim();
@@ -306,6 +318,8 @@ export async function calcProgress(unitId: number | null, baselineYear: number, 
 // GET /api/targets/export
 router.get("/targets/export", requireAuth, async (req, res) => {
   try {
+    const format = parseExportFormat(req.query.format);
+    const statusParam = parseQueryEnum(req.query.status, "status", TARGET_STATUSES);
     const scope = await resolveTargetListScope(req);
     if (scope.empty) {
       res.status(403).json({ error: "Export için birim yetkisi gerekli" });
@@ -319,7 +333,6 @@ router.get("/targets/export", requireAuth, async (req, res) => {
     if (scope.energySourceId !== undefined) conditions.push(eq(energyTargetsTable.energySourceId, scope.energySourceId));
 
     const yearParam = parsePositiveInteger(req.query.year, "year");
-    const statusParam = req.query.status as string | undefined;
     if (statusParam) conditions.push(eq(energyTargetsTable.status, statusParam));
 
     // ── Hedefleri çek ─────────────────────────────────────────
@@ -454,8 +467,6 @@ router.get("/targets/export", requireAuth, async (req, res) => {
     }
 
     // ── Format & başlıklar ────────────────────────────────────
-    const format = req.query.format === "xlsx" ? "xlsx" : "csv";
-
     const HEADERS: XlsxColDef[] = [
       { key: "yil", label: "Yıl" },
       { key: "birim", label: "Birim" },
