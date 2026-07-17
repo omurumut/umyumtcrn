@@ -574,7 +574,65 @@ Günlük kullanım için tek sayfalık özet checklist:
 - [ ] Kullanıcı deneyimi sade ve anlaşılır.
 - [ ] Release hazır.
 
-## 17. Son Hatırlatma
+## 17. CI Quality Gate ve Production Preflight
+
+GitHub üzerinde production'a aday her değişiklik için otomatik kalite kapısı:
+
+```text
+CI Quality Gate / verify
+```
+
+Bu check yeşil olmadan production deploy kararı verilmemelidir.
+
+CI kapısı şu kontrolleri içerir:
+
+- [ ] `pnpm install --frozen-lockfile`
+- [ ] `pnpm run typecheck`
+- [ ] `pnpm run build`
+- [ ] `pnpm run test:db:smoke`
+- [ ] `pnpm run test:fixtures`
+- [ ] `pnpm run test:audit`
+- [ ] `pnpm run test:audit-restore`
+- [ ] `pnpm run test:e2e`
+- [ ] `pnpm run test:production-readiness`
+- [ ] `git diff --exit-code`
+
+Release öncesi manuel karar listesi:
+
+1. CI yeşil.
+2. Working tree temiz.
+3. `main` güncel.
+4. Production backup alındı.
+5. Consumption duplicate precheck çalıştırıldı.
+6. Migration planı ve rollback kararı hazır.
+7. Environment validation tamamlandı.
+8. Chromium/PDF runtime hazır.
+9. Deploy gerçekleştirildi.
+10. Health/ready kontrol edildi.
+11. Login kontrol edildi.
+12. Dashboard açıldı.
+13. Audit event üretimi ve audit listeleme kontrol edildi.
+14. PDF/export smoke kontrol edildi.
+15. Rollback ihtiyacı tekrar değerlendirildi.
+
+Production DB migration preflight:
+
+```sql
+SELECT meter_id, year, month, COUNT(*)
+FROM consumption
+GROUP BY meter_id, year, month
+HAVING COUNT(*) > 1;
+```
+
+`0024_audit_events` migration'ı yeni audit tablosu ve index/FK ekler; mevcut business tablolarda destructive/data-loss işlem yapmaz. CI production DB'ye bağlanmaz; production backup ve preflight manuel release sorumluluğudur.
+
+Detaylar için:
+
+```text
+docs/CI.md
+```
+
+## 18. Son Hatırlatma
 
 EnYS release ilkeleri:
 

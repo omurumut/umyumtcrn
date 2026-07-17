@@ -1,0 +1,122 @@
+name: CI Quality Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci_runner
+          POSTGRES_PASSWORD: ci_runner_password
+          POSTGRES_DB: iso50001_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_runner -d iso50001_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      CI: "true"
+      PLAYWRIGHT_BROWSERS_PATH: .cache/ms-playwright
+      TEST_DB_CHILD_TIMEOUT_MS: "600000"
+      ENABLE_SUPERADMIN_BOOTSTRAP: "false"
+      ENABLE_DEMO_SEED: "false"
+      ENABLE_DEMO_SEED_USERS: "false"
+      ENABLE_MGM_SCHEDULER: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.10.0 --activate
+          pnpm --version
+
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: .cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for Playwright
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build
+        run: pnpm run build
+
+      - name: DB smoke
+        run: pnpm run test:db:smoke
+
+      - name: Fixtures
+        run: pnpm run test:fixtures
+
+      - name: Audit tests
+        run: pnpm run test:audit
+
+      - name: Audit restore-upgrade
+        run: pnpm run test:audit-restore
+
+      - name: Full E2E
+        run: pnpm run test:e2e
+
+      - name: Production readiness
+        run: pnpm run test:production-readiness
+
+      - name: Generated file consistency
+        run: git diff --exit-code
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-artifacts
+          path: |
+            test-results
+            playwright-report
+          if-no-files-found: ignore
+          retention-days: 7

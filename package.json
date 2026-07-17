@@ -2,6 +2,7 @@
   "name": "workspace",
   "version": "0.0.0",
   "license": "MIT",
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
     "build": "pnpm run typecheck && pnpm -r --filter \"!@workspace/mockup-sandbox\" --if-present run build",
@@ -24,6 +25,7 @@
     "test:auth-migration-upgrade": "pnpm --filter @workspace/scripts run test:auth-migration-upgrade",
     "test:audit": "pnpm --filter @workspace/scripts run test:audit",
     "test:audit-restore": "pnpm --filter @workspace/scripts run test:audit-restore",
+    "verify:ci": "pnpm run typecheck && pnpm run build && pnpm run test:db:smoke && pnpm run test:fixtures && pnpm run test:audit && pnpm run test:audit-restore && pnpm run test:e2e && pnpm run test:production-readiness",
     "auth:cleanup": "pnpm --filter @workspace/scripts run auth:cleanup",
     "start": "ts-node scripts/index.ts",
     "dev": "ts-node-dev scripts/index.ts"
