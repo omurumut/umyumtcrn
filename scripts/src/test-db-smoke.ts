@@ -10,6 +10,8 @@ const migrationsFolder = fileURLToPath(
 const REQUIRED_TABLES = [
   "companies",
   "users",
+  "auth_sessions",
+  "auth_rate_limits",
   "units",
   "sub_units",
   "energy_sources",
@@ -40,6 +42,12 @@ const REQUIRED_INDEXES = [
   "energy_targets_energy_source_id_idx",
   "energy_targets_company_unit_item_year_unique",
   "consumption_meter_year_month_unique",
+  "auth_sessions_token_hash_unique",
+  "auth_sessions_expires_at_idx",
+  "auth_sessions_user_id_idx",
+  "auth_rate_limits_scope_key_unique",
+  "auth_rate_limits_blocked_until_idx",
+  "auth_rate_limits_updated_at_idx",
 ] as const;
 
 interface JournalEntry {
@@ -65,6 +73,12 @@ interface SchemaSummary {
   };
   consumptionIntegrity: {
     periodUniqueIndexPresent: true;
+  };
+  authIntegrity: {
+    rawTokenColumnAbsent: true;
+    tokenHashUnique: true;
+    expirationIndexPresent: true;
+    userForeignKeyCascadePresent: true;
   };
 }
 
@@ -223,6 +237,10 @@ async function assertMigrationHistory(
     appliedHashes.has(await fileHash("0022_consumption_period_unique")),
     "Güncel 0022 hash'i eşleşmiyor.",
   );
+  assert(
+    appliedHashes.has(await fileHash("0023_shared_auth_state")),
+    "Güncel 0023 hash'i eşleşmiyor.",
+  );
   const hardeningSql = await readFile(`${migrationsFolder}/0021_target_integrity_hardening.sql`, "utf8");
   assert(
     !/^\s*(?:UPDATE|DELETE\s+FROM|DROP|TRUNCATE)\b/im.test(hardeningSql),
@@ -357,6 +375,43 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
     "energy_targets.energy_source_id SET NULL foreign key fresh şemada yok.",
   );
 
+  const authColumnsResult = await queryable.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'auth_sessions'`,
+  );
+  const authColumns = new Set(authColumnsResult.rows.map((row) => row.column_name));
+  for (const column of [
+    "token_hash",
+    "user_id",
+    "created_at",
+    "expires_at",
+    "last_used_at",
+    "revoked_at",
+  ]) {
+    assert(authColumns.has(column), `auth_sessions.${column} fresh şemada yok.`);
+  }
+  assert(
+    !authColumns.has("token") && !authColumns.has("raw_token"),
+    "auth_sessions raw token kolonu içermemeli.",
+  );
+
+  const authForeignKeysResult = await queryable.query<{
+    definition: string;
+    delete_action: string;
+  }>(
+    `SELECT pg_get_constraintdef(oid) AS definition, confdeltype::text AS delete_action
+     FROM pg_constraint
+     WHERE conrelid = 'public.auth_sessions'::regclass AND contype = 'f'`,
+  );
+  assert(
+    authForeignKeysResult.rows.some(
+      (row) =>
+        /FOREIGN KEY \(user_id\).*users\(id\)/i.test(row.definition) &&
+        row.delete_action === "c",
+    ),
+    "auth_sessions.user_id CASCADE foreign key fresh şemada yok.",
+  );
+
   return {
     tableCount: tables.size,
     companyCount,
@@ -368,6 +423,12 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
     },
     consumptionIntegrity: {
       periodUniqueIndexPresent: true,
+    },
+    authIntegrity: {
+      rawTokenColumnAbsent: true,
+      tokenHashUnique: true,
+      expirationIndexPresent: true,
+      userForeignKeyCascadePresent: true,
     },
   };
 }

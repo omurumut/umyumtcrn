@@ -1,15 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
-import { db, usersTable, companiesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import {
+  authenticateSessionToken,
+  runAuthStoreOperation,
+  type AuthenticatedSessionUser,
+} from "../lib/auth-session-store.js";
 
-export interface SessionUser {
-  userId: number;
-  username: string;
-  name: string;
-  role: string;
-  unitId: number | null;
-  companyId: number;
-}
+export type SessionUser = AuthenticatedSessionUser;
 
 declare global {
   namespace Express {
@@ -19,9 +15,7 @@ declare global {
   }
 }
 
-export const sessions = new Map<string, SessionUser>();
-
-function getBearerToken(req: Request): string | null {
+export function getBearerToken(req: Request): string | null {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) return null;
 
@@ -29,95 +23,30 @@ function getBearerToken(req: Request): string | null {
   return token.length > 0 ? token : null;
 }
 
-function parseSessionUserId(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : null;
-}
-
-function destroyRequestSession(req: Request, token: string | null) {
-  if (token) sessions.delete(token);
-  req.user = null;
-}
-
-function sessionUserChanged(current: SessionUser, next: SessionUser) {
-  return current.userId !== next.userId
-    || current.username !== next.username
-    || current.name !== next.name
-    || current.role !== next.role
-    || current.unitId !== next.unitId
-    || current.companyId !== next.companyId;
-}
-
-export function authMiddleware(req: Request, _res: Response, next: NextFunction) {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const token = getBearerToken(req);
-  if (token) {
-    const user = sessions.get(token);
-    req.user = user ?? null;
-  } else {
+  if (!token) {
     req.user = null;
-  }
-  next();
-}
-
-export async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = getBearerToken(req);
-  const sessionUser = req.user;
-  const userId = parseSessionUserId(sessionUser?.userId);
-
-  if (!token || !sessionUser || userId === null) {
-    destroyRequestSession(req, token);
-    res.status(401).json({ error: "Giriş yapmalısınız" });
+    next();
     return;
   }
 
   try {
-    const [currentUser] = await db.select({
-      id: usersTable.id,
-      username: usersTable.username,
-      name: usersTable.name,
-      role: usersTable.role,
-      unitId: usersTable.unitId,
-      companyId: usersTable.companyId,
-      active: usersTable.active,
-    }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
-
-    if (!currentUser || !currentUser.active) {
-      destroyRequestSession(req, token);
-      res.status(401).json({ error: "Giriş yapmalısınız" });
-      return;
-    }
-
-    const [currentCompany] = await db.select({ isActive: companiesTable.isActive })
-      .from(companiesTable)
-      .where(eq(companiesTable.id, currentUser.companyId))
-      .limit(1);
-
-    if (!currentCompany || currentCompany.isActive !== true) {
-      destroyRequestSession(req, token);
-      res.status(401).json({ error: "Giriş yapmalısınız" });
-      return;
-    }
-
-    const refreshedUser: SessionUser = {
-      userId: currentUser.id,
-      username: currentUser.username,
-      name: currentUser.name,
-      role: currentUser.role,
-      unitId: currentUser.unitId,
-      companyId: currentUser.companyId,
-    };
-
-    if (sessionUserChanged(sessionUser, refreshedUser)) {
-      sessions.set(token, refreshedUser);
-    }
-    req.user = refreshedUser;
+    req.user = await runAuthStoreOperation(authenticateSessionToken(token));
     next();
-  } catch (err) {
+  } catch (error) {
     req.user = null;
-    req.log.error(err);
-    res.status(500).json({ error: "Sunucu hatası" });
+    req.log.error(error);
+    res.status(503).json({ error: "Kimlik doğrulama hizmeti geçici olarak kullanılamıyor" });
   }
+}
+
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (!req.user) {
+    res.status(401).json({ error: "Giriş yapmalısınız" });
+    return;
+  }
+  next();
 }
 
 // Tenant-level company administration.

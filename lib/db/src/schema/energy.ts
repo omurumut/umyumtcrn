@@ -34,6 +34,39 @@ export const insertUserSchema = createInsertSchema(usersTable).omit({ id: true, 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type UserRecord = typeof usersTable.$inferSelect;
 
+// Shared authentication state.
+export const authSessionsTable = pgTable("auth_sessions", {
+  id: serial("id").primaryKey(),
+  tokenHash: text("token_hash").notNull(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  lastUsedAt: timestamp("last_used_at").defaultNow().notNull(),
+  revokedAt: timestamp("revoked_at"),
+}, (table) => ({
+  tokenHashUnique: uniqueIndex("auth_sessions_token_hash_unique").on(table.tokenHash),
+  expiresAtIndex: index("auth_sessions_expires_at_idx").on(table.expiresAt),
+  userIdIndex: index("auth_sessions_user_id_idx").on(table.userId),
+}));
+
+export type AuthSession = typeof authSessionsTable.$inferSelect;
+
+export const authRateLimitsTable = pgTable("auth_rate_limits", {
+  id: serial("id").primaryKey(),
+  scope: text("scope").notNull(),
+  keyHash: text("key_hash").notNull(),
+  windowStartedAt: timestamp("window_started_at").notNull(),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  blockedUntil: timestamp("blocked_until"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  scopeKeyUnique: uniqueIndex("auth_rate_limits_scope_key_unique").on(table.scope, table.keyHash),
+  blockedUntilIndex: index("auth_rate_limits_blocked_until_idx").on(table.blockedUntil),
+  updatedAtIndex: index("auth_rate_limits_updated_at_idx").on(table.updatedAt),
+}));
+
+export type AuthRateLimit = typeof authRateLimitsTable.$inferSelect;
+
 // ── Units (Birimler) ──────────────────────────────────────
 export const unitsTable = pgTable("units", {
   id: serial("id").primaryKey(),

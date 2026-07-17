@@ -41,6 +41,27 @@ Optional startup operations, all disabled by default:
 
 Legacy/demo flags such as `ENABLE_DEMO_SEED`, `ENABLE_SEED`, and `ENABLE_BOOTSTRAP` must remain unset or `false` in production.
 
+## Shared authentication state
+
+Sessions and login rate-limit counters are stored in PostgreSQL, so all Autoscale instances observe the same authentication state. Only a SHA-256 hash of each bearer token is stored; the raw token is returned once at login and remains compatible with the existing frontend Bearer-token contract.
+
+- `AUTH_SESSION_TTL_HOURS`: Session lifetime in hours. Default: `24`; accepted range: `1`-`720`.
+- `LOGIN_RATE_LIMIT_WINDOW_MS`: Shared failed-login window. Default: `900000`.
+- `LOGIN_RATE_LIMIT_IP_MAX`: Maximum failed attempts per hashed client-IP key in a window. Default: `20`.
+- `LOGIN_RATE_LIMIT_USERNAME_MAX`: Maximum failed attempts per normalized, hashed username key in a window. Default: `8`.
+
+Authentication and login fail closed with a safe `503` response if PostgreSQL is unavailable. Logout revokes the shared session, so the token is rejected by every instance. Successful login clears only the matching username limiter; it does not erase the shared IP limiter.
+
+Expired/revoked sessions and stale rate-limit rows can be removed in bounded batches with:
+
+```bash
+ENABLE_AUTH_MAINTENANCE=true pnpm run auth:cleanup
+```
+
+The exact opt-in flag is required. Schedule this command externally; do not run cleanup in every Autoscale process.
+
+Migration `0023_shared_auth_state` adds the shared authentication tables and indexes. Before deploying over an existing database, take the normal managed-database backup, verify the current migration history ends at `0022`, deploy the migration, and confirm readiness before increasing instance count. The migration does not convert in-memory sessions: users holding a pre-deployment process-local token must sign in again after rollout.
+
 For Autoscale deployments, keep the in-process scheduler disabled. Use an external scheduled job, or run it only in a separately operated single-instance deployment. The `single` declaration is an operational guard, not distributed leader election.
 
 ## Liveness, readiness, and shutdown
