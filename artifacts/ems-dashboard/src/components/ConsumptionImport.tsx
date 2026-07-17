@@ -69,9 +69,10 @@ interface ImportResult {
 interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
+  onImported?: () => void;
 }
 
-export default function ConsumptionImport({ open, onOpenChange }: Props) {
+export default function ConsumptionImport({ open, onOpenChange, onImported }: Props) {
   const { token } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -151,6 +152,7 @@ export default function ConsumptionImport({ open, onOpenChange }: Props) {
         return;
       }
       setResult(data);
+      onImported?.();
       queryClient.invalidateQueries({ queryKey: ["consumption"] });
       if (data.imported > 0) {
         toast({ title: `${data.imported} kayıt başarıyla içe aktarıldı` });

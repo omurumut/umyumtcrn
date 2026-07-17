@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable, energySourcesTable } from "@workspace/db";
-import { eq, and, ne, sql, inArray, SQL } from "drizzle-orm";
+import { db, consumptionTable, metersTable, subUnitsTable, energyUseGroupsTable, energySourcesTable, unitsTable } from "@workspace/db";
+import { eq, and, ne, sql, inArray, SQL, count, desc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { parseIlIlce } from "../services/mgm-stations-data.js";
 import { toStationKey, lookupOfficialByStationKey, lookupOfficialWeatherDegreeDay, lookupStationKeyByLocation } from "../services/mgm-sync.js";
@@ -56,6 +56,13 @@ function invalidId(field: string): never {
 function parseOptionalId(value: unknown, field = "id"): number | undefined {
   if (value === undefined || value === null) return undefined;
   return parsePositiveInteger(value) ?? invalidId(field);
+}
+
+function parsePaginationParam(value: unknown, field: "page" | "pageSize", defaultValue: number, max?: number): number {
+  if (value === undefined || value === null) return defaultValue;
+  const parsed = parsePositiveInteger(value) ?? invalidId(field);
+  if (max !== undefined && parsed > max) invalidId(field);
+  return parsed;
 }
 
 function parseRequiredId(value: unknown, field = "id"): number | null {
@@ -376,6 +383,8 @@ async function resolveConsumptionWeatherSnapshot(
 router.get("/consumption", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId } = req.user!;
+    const page = parsePaginationParam(req.query.page, "page", 1);
+    const pageSize = parsePaginationParam(req.query.pageSize, "pageSize", 50, 100);
     const meterId = parseOptionalId(req.query.meterId, "meterId");
     const unitId = parseOptionalId(req.query.unitId, "unitId");
     const subUnitId = parseOptionalId(req.query.subUnitId, "subUnitId");
@@ -390,17 +399,30 @@ router.get("/consumption", requireAuth, async (req, res) => {
         conditions.push(eq(consumptionTable.companyId, companyId));
         conditions.push(eq(metersTable.companyId, companyId));
       }
-      if (unitId !== undefined) conditions.push(eq(metersTable.unitId, unitId));
+      if (unitId !== undefined) {
+        const [unit] = await db.select({ companyId: unitsTable.companyId }).from(unitsTable).where(eq(unitsTable.id, unitId));
+        if (!unit || (companyId !== undefined && unit.companyId !== companyId)) {
+          res.status(403).json({ error: "Yetki yok" }); return;
+        }
+        conditions.push(eq(metersTable.unitId, unitId));
+      }
     } else {
       conditions.push(eq(consumptionTable.companyId, sessionCompanyId));
       conditions.push(eq(metersTable.companyId, sessionCompanyId));
       if (!isPrivileged(role)) {
         if (sessionUnitId === null) {
-          res.json([]);
+          res.json({
+            items: [],
+            pagination: { page, pageSize, totalItems: 0, totalPages: 0 },
+          });
           return;
         }
         conditions.push(eq(metersTable.unitId, sessionUnitId));
       } else if (unitId !== undefined) {
+        const [unit] = await db.select({ companyId: unitsTable.companyId }).from(unitsTable).where(eq(unitsTable.id, unitId));
+        if (!unit || unit.companyId !== sessionCompanyId) {
+          res.status(403).json({ error: "Yetki yok" }); return;
+        }
         conditions.push(eq(metersTable.unitId, unitId));
       }
     }
@@ -440,11 +462,25 @@ router.get("/consumption", requireAuth, async (req, res) => {
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
       .leftJoin(energyUseGroupsTable, eq(metersTable.energyUseGroupId, energyUseGroupsTable.id));
 
-    const rows = conditions.length > 0
-      ? await query.where(and(...conditions)).orderBy(consumptionTable.year, consumptionTable.month)
-      : await query.orderBy(consumptionTable.year, consumptionTable.month);
+    const totalQuery = db
+      .select({ totalItems: count() })
+      .from(consumptionTable)
+      .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id));
+    const totalRows = conditions.length > 0
+      ? await totalQuery.where(and(...conditions))
+      : await totalQuery;
+    const totalItems = Number(totalRows[0]?.totalItems ?? 0);
+    const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / pageSize);
+    const offset = (page - 1) * pageSize;
 
-    res.json(rows.map(({ meterUnitId, meterCompanyId, meterSubUnitId, meterEnergySourceId, ...r }) => r));
+    const rows = conditions.length > 0
+      ? await query.where(and(...conditions)).orderBy(desc(consumptionTable.year), desc(consumptionTable.month), desc(consumptionTable.id)).limit(pageSize).offset(offset)
+      : await query.orderBy(desc(consumptionTable.year), desc(consumptionTable.month), desc(consumptionTable.id)).limit(pageSize).offset(offset);
+
+    res.json({
+      items: rows.map(({ meterUnitId, meterCompanyId, meterSubUnitId, meterEnergySourceId, ...r }) => r),
+      pagination: { page, pageSize, totalItems, totalPages },
+    });
   } catch (err) {
     if (isBadRequestError(err)) {
       res.status(400).json({ error: err.message }); return;

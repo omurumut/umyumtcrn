@@ -31,6 +31,8 @@ const TYPE_COLORS: Record<string, string> = {
 interface EnergySource { id: number; type: string; name: string; unit: string; }
 interface SubUnit { id: number; name: string; city: string; }
 interface Meter { id: number; name: string; type: string; subUnitId?: number | null; energySourceId?: number | null; energyUseGroupId?: number | null; energyUseGroupName?: string | null; unit: string; city?: string; }
+interface ConsumptionPagination { page: number; pageSize: number; totalItems: number; totalPages: number; }
+interface ConsumptionListResponse { items: any[]; pagination: ConsumptionPagination; }
 
 const apiFetch = (token: string | null, url: string) =>
   fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
@@ -79,6 +81,8 @@ export default function Consumption() {
   const [formSubUnit, setFormSubUnit] = useState("");
   const [hddFetching, setHddFetching] = useState(false);
   const [weatherManuallyEdited, setWeatherManuallyEdited] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [mgmStation, setMgmStation] = useState<{
     name: string | null;
     note: string | null;
@@ -151,21 +155,34 @@ export default function Consumption() {
 
   const consParams = new URLSearchParams();
   consParams.set("year", year.toString());
+  consParams.set("page", page.toString());
+  consParams.set("pageSize", pageSize.toString());
+  if (unitId !== null) consParams.set("unitId", unitId.toString());
   if (filterMeter !== "all") consParams.set("meterId", filterMeter);
-  const { data: records, isLoading } = useQuery<any[]>({
-    queryKey: ["consumption", year, filterMeter, filterEnergySource, filterSubUnit],
+  if (filterEnergySource !== "all") consParams.set("energySourceId", filterEnergySource);
+  if (filterSubUnit !== "all") consParams.set("subUnitId", filterSubUnit);
+  const { data: consumptionResponse, isLoading, isError } = useQuery<ConsumptionListResponse>({
+    queryKey: ["consumption", year, unitId, filterMeter, filterEnergySource, filterSubUnit, page, pageSize],
     queryFn: () => apiFetch(token, `/api/consumption?${consParams}`),
     enabled: !!token,
   });
+  const records = consumptionResponse?.items ?? [];
+  const pagination = consumptionResponse?.pagination ?? { page, pageSize, totalItems: 0, totalPages: 0 };
 
   const prevParams = new URLSearchParams();
   prevParams.set("year", (year - 1).toString());
+  prevParams.set("page", "1");
+  prevParams.set("pageSize", "100");
+  if (unitId !== null) prevParams.set("unitId", unitId.toString());
   if (filterMeter !== "all") prevParams.set("meterId", filterMeter);
-  const { data: prevRecords } = useQuery<any[]>({
-    queryKey: ["consumption", year - 1, filterMeter, filterEnergySource, filterSubUnit],
+  if (filterEnergySource !== "all") prevParams.set("energySourceId", filterEnergySource);
+  if (filterSubUnit !== "all") prevParams.set("subUnitId", filterSubUnit);
+  const { data: prevResponse } = useQuery<ConsumptionListResponse>({
+    queryKey: ["consumption", year - 1, unitId, filterMeter, filterEnergySource, filterSubUnit, "prev"],
     queryFn: () => apiFetch(token, `/api/consumption?${prevParams}`),
     enabled: !!token,
   });
+  const prevRecords = prevResponse?.items ?? [];
 
   const prevMap: Record<number, Record<number, number>> = {};
   for (const r of Array.isArray(prevRecords) ? prevRecords : []) {
@@ -173,7 +190,7 @@ export default function Consumption() {
     prevMap[r.meterId][r.month] = r.kwh ?? 0;
   }
 
-  const filteredRecords = (Array.isArray(records) ? records : []).filter(r => {
+  const filteredRecords = records.filter(r => {
     if (filterMeter !== "all") return r.meterId?.toString() === filterMeter;
     const m = (allMeters ?? []).find(m => m.id === r.meterId);
     if (!m) return false;
@@ -184,7 +201,7 @@ export default function Consumption() {
 
   const createC = useMutation({
     mutationFn: (d: any) => apiMutate(token, "POST", "/api/consumption", d),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["consumption"] }); setOpen(false); toast({ title: "Veri eklendi" }); },
+    onSuccess: () => { setPage(1); queryClient.invalidateQueries({ queryKey: ["consumption"] }); setOpen(false); toast({ title: "Veri eklendi" }); },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
   });
   const updateC = useMutation({
@@ -194,8 +211,18 @@ export default function Consumption() {
   });
   const deleteC = useMutation({
     mutationFn: (id: number) => apiMutate(token, "DELETE", `/api/consumption/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["consumption"] }); toast({ title: "Silindi" }); },
+    onSuccess: () => {
+      if (filteredRecords.length === 1 && page > 1) setPage(p => Math.max(1, p - 1));
+      queryClient.invalidateQueries({ queryKey: ["consumption"] });
+      toast({ title: "Silindi" });
+    },
   });
+
+  useEffect(() => { setPage(1); }, [year, unitId, filterMeter, filterEnergySource, filterSubUnit, pageSize]);
+  useEffect(() => { setSelectedIds(new Set()); }, [page, pageSize, year, unitId, filterMeter, filterEnergySource, filterSubUnit]);
+  useEffect(() => {
+    if (pagination.totalPages > 0 && page > pagination.totalPages) setPage(pagination.totalPages);
+  }, [page, pagination.totalPages]);
 
   async function fetchHddCdd(city: string, year: string, month: string) {
     if (!city) return;
@@ -317,8 +344,30 @@ export default function Consumption() {
     return m?.energyUseGroupName ?? null;
   };
 
-  function buildExportRows() {
-    return filteredRecords.map((r: any) => {
+  async function fetchAllFilteredConsumption() {
+    const exportParams = new URLSearchParams();
+    exportParams.set("year", year.toString());
+    exportParams.set("pageSize", "100");
+    if (unitId !== null) exportParams.set("unitId", unitId.toString());
+    if (filterMeter !== "all") exportParams.set("meterId", filterMeter);
+    if (filterEnergySource !== "all") exportParams.set("energySourceId", filterEnergySource);
+    if (filterSubUnit !== "all") exportParams.set("subUnitId", filterSubUnit);
+
+    const rows: any[] = [];
+    let currentPage = 1;
+    let totalPages = 1;
+    do {
+      exportParams.set("page", currentPage.toString());
+      const data = await apiFetch(token, `/api/consumption?${exportParams}`) as ConsumptionListResponse;
+      rows.push(...(data.items ?? []));
+      totalPages = data.pagination?.totalPages ?? 0;
+      currentPage += 1;
+    } while (currentPage <= totalPages);
+    return rows;
+  }
+
+  function buildExportRows(recordsToExport: any[]) {
+    return recordsToExport.map((r: any) => {
       const m = (allMeters ?? []).find(m => m.id === r.meterId);
       const src = (energySources ?? []).find(s => s.id === m?.energySourceId);
       const su = (subUnits ?? []).find(s => s.id === m?.subUnitId);
@@ -369,6 +418,7 @@ export default function Consumption() {
       apiMutate(token, "DELETE", `/api/consumption/${id}`).catch(() => { failed++; })
     ));
     await queryClient.invalidateQueries({ queryKey: ["consumption"] });
+    if (ids.length >= filteredRecords.length && page > 1) setPage(p => Math.max(1, p - 1));
     setSelectedIds(new Set());
     setBulkDeleting(false);
     if (failed === 0) {
@@ -378,16 +428,16 @@ export default function Consumption() {
     }
   }
 
-  function exportExcel() {
-    const rows = buildExportRows();
+  async function exportExcel() {
+    const rows = buildExportRows(await fetchAllFilteredConsumption());
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Tüketim");
     XLSX.writeFile(wb, `tuketim_${year}.xlsx`);
   }
 
-  function exportCsv() {
-    const rows = buildExportRows();
+  async function exportCsv() {
+    const rows = buildExportRows(await fetchAllFilteredConsumption());
     if (rows.length === 0) return;
     const headers = Object.keys(rows[0]);
     const lines = [
@@ -415,7 +465,7 @@ export default function Consumption() {
         <div className="flex gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="gap-2" disabled={filteredRecords.length === 0}>
+              <Button variant="outline" className="gap-2" disabled={pagination.totalItems === 0}>
                 <Download className="h-4 w-4" /> Dışa Aktar
               </Button>
             </DropdownMenuTrigger>
@@ -462,7 +512,9 @@ export default function Consumption() {
             {filteredMeters.map(m => <SelectItem key={m.id} value={m.id.toString()}>{m.name}</SelectItem>)}
           </SelectContent>
         </Select>
-        <span className="text-sm text-muted-foreground">{filteredRecords.length} kayıt</span>
+        <span className="text-sm text-muted-foreground">
+          {pagination.totalItems} kayıt{pagination.totalItems > 0 ? ` · bu sayfada ${filteredRecords.length}` : ""}
+        </span>
         {deepLinkMonth && (
           <span className="text-xs text-primary border border-primary/20 bg-primary/5 rounded-md px-2 py-1">
             Odak ay: {MONTHS[deepLinkMonth - 1]}
@@ -490,6 +542,8 @@ export default function Consumption() {
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-6 space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10" />)}</div>
+          ) : isError ? (
+            <div className="p-10 text-center text-destructive">Tüketim verileri yüklenemedi.</div>
           ) : (
             <Table>
               <TableHeader>
@@ -608,9 +662,31 @@ export default function Consumption() {
           )}
         </CardContent>
       </Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span>Sayfa boyutu</span>
+          <Select value={pageSize.toString()} onValueChange={v => setPageSize(Number(v))}>
+            <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {[25, 50, 100].map(size => <SelectItem key={size} value={size.toString()}>{size}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={page <= 1 || isLoading} onClick={() => setPage(p => Math.max(1, p - 1))}>
+            Önceki
+          </Button>
+          <span className="text-sm text-muted-foreground min-w-28 text-center">
+            Sayfa {pagination.totalPages === 0 ? 0 : page} / {pagination.totalPages}
+          </span>
+          <Button variant="outline" size="sm" disabled={pagination.totalPages === 0 || page >= pagination.totalPages || isLoading} onClick={() => setPage(p => p + 1)}>
+            Sonraki
+          </Button>
+        </div>
+      </div>
       </>)}
 
-      <ConsumptionImport open={importOpen} onOpenChange={setImportOpen} />
+      <ConsumptionImport open={importOpen} onOpenChange={setImportOpen} onImported={() => setPage(1)} />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-lg">

@@ -115,6 +115,11 @@ type Consumption = {
   weatherDataMethod?: string | null;
 };
 
+type ConsumptionListResponse = {
+  items: Consumption[];
+  pagination: { page: number; pageSize: number; totalItems: number; totalPages: number };
+};
+
 let ids: FixtureIds;
 let markerCounter = 0;
 
@@ -213,6 +218,15 @@ async function createConsumption(
   return { response, record: response.status() === 201 ? (await response.json()) as Consumption : null };
 }
 
+async function getConsumptionPage(
+  request: APIRequestContext,
+  token: string,
+  query = "",
+): Promise<{ response: APIResponse; body: ConsumptionListResponse }> {
+  const response = await request.get(`/api/consumption${query}`, { headers: authorization(token) });
+  return { response, body: await response.json() as ConsumptionListResponse };
+}
+
 async function cleanupMeter(id: number | null): Promise<void> {
   if (id === null) return;
   await pool.query("DELETE FROM consumption WHERE meter_id = $1", [id]);
@@ -241,6 +255,19 @@ async function countConsumption(meterId: number, year: number, month: number): P
     "SELECT count(*)::text AS count FROM consumption WHERE meter_id = $1 AND year = $2 AND month = $3",
     [meterId, year, month],
   );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+async function countVisibleConsumptionForCompany(companyId: number, unitId?: number): Promise<number> {
+  const result = unitId === undefined
+    ? await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM consumption c JOIN meters m ON m.id = c.meter_id WHERE c.company_id = $1 AND m.company_id = $1",
+        [companyId],
+      )
+    : await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM consumption c JOIN meters m ON m.id = c.meter_id WHERE c.company_id = $1 AND m.company_id = $1 AND m.unit_id = $2",
+        [companyId, unitId],
+      );
   return Number(result.rows[0]?.count ?? 0);
 }
 
@@ -515,9 +542,10 @@ test("METER-VAL aşırı uzun name reddedilir", async ({ request }) => {
 
 test("CONSUMPTION-01 standard yalnız Unit A1 tüketimlerini listeler", async ({ request }) => {
   const session = await login(request, credentials.standardA1);
-  const response = await request.get("/api/consumption", { headers: authorization(session.token) });
+  const { response, body } = await getConsumptionPage(request, session.token);
   expect(response.status()).toBe(200);
-  const rows = (await response.json()) as Consumption[];
+  const rows = body.items;
+  expect(body.pagination).toMatchObject({ page: 1, pageSize: 50 });
   expect(rows.length).toBeGreaterThanOrEqual(6);
   expect(rows.every((row) => row.companyId === ids.companyA && row.meterId !== ids.meterA2 && row.meterId !== ids.meterB1)).toBe(true);
 });
@@ -525,8 +553,8 @@ test("CONSUMPTION-01 standard yalnız Unit A1 tüketimlerini listeler", async ({
 for (const [label, username] of [["admin", credentials.adminA], ["kontrol_admin", credentials.kontrolAdminA]] as const) {
   test(`CONSUMPTION-02 ${label} Tenant A tüketim scope'unu korur`, async ({ request }) => {
     const session = await login(request, username);
-    const response = await request.get(`/api/consumption?companyId=${ids.companyB}`, { headers: authorization(session.token) });
-    const rows = (await response.json()) as Consumption[];
+    const { response, body } = await getConsumptionPage(request, session.token, `?companyId=${ids.companyB}`);
+    const rows = body.items;
     expect(response.status()).toBe(200);
     expect(rows.length).toBeGreaterThanOrEqual(6);
     expect(rows.every((row) => row.companyId === ids.companyA)).toBe(true);
@@ -535,9 +563,8 @@ for (const [label, username] of [["admin", credentials.adminA], ["kontrol_admin"
 
 test("CONSUMPTION-03 superadmin company filtreleri Tenant A/B'yi ayırır", async ({ request }) => {
   const session = await login(request, credentials.superadmin);
-  const headers = authorization(session.token);
-  const tenantA = (await (await request.get(`/api/consumption?companyId=${ids.companyA}`, { headers })).json()) as Consumption[];
-  const tenantB = (await (await request.get(`/api/consumption?companyId=${ids.companyB}`, { headers })).json()) as Consumption[];
+  const tenantA = (await getConsumptionPage(request, session.token, `?companyId=${ids.companyA}`)).body.items;
+  const tenantB = (await getConsumptionPage(request, session.token, `?companyId=${ids.companyB}`)).body.items;
   expect(tenantA.every((row) => row.companyId === ids.companyA)).toBe(true);
   expect(tenantB.length).toBeGreaterThanOrEqual(2);
   expect(tenantB.every((row) => row.companyId === ids.companyB)).toBe(true);
@@ -546,7 +573,10 @@ test("CONSUMPTION-03 superadmin company filtreleri Tenant A/B'yi ayırır", asyn
 test("CONSUMPTION-04 null-unit standard boş liste ve mutation 403 alır", async ({ request }) => {
   const session = await login(request, credentials.nullUnit);
   const headers = authorization(session.token);
-  expect(await (await request.get("/api/consumption", { headers })).json()).toEqual([]);
+  expect(await (await request.get("/api/consumption", { headers })).json()).toEqual({
+    items: [],
+    pagination: { page: 1, pageSize: 50, totalItems: 0, totalPages: 0 },
+  });
   expect((await request.post("/api/consumption", {
     headers, data: { meterId: ids.electricMeterA1, year: 2090, month: 1, kwh: 1 },
   })).status()).toBe(403);
@@ -558,6 +588,163 @@ for (const [field, value] of [["companyId", "123abc"], ["meterId", "0"], ["unitI
     expect((await request.get(`/api/consumption?${field}=${encodeURIComponent(value)}`, { headers: authorization(session.token) })).status()).toBe(400);
   });
 }
+
+test("PAGINATION-01 default response shape ve toplam sayÄ± company scope ile uyumludur", async ({ request }) => {
+  const session = await login(request, credentials.adminA);
+  const expectedTotal = await countVisibleConsumptionForCompany(ids.companyA);
+  const { response, body } = await getConsumptionPage(request, session.token);
+  expect(response.status()).toBe(200);
+  expect(body.items.length).toBeLessThanOrEqual(50);
+  expect(body.pagination).toEqual({
+    page: 1,
+    pageSize: 50,
+    totalItems: expectedTotal,
+    totalPages: Math.ceil(expectedTotal / 50),
+  });
+  expect(body.items.every((row) => row.companyId === ids.companyA)).toBe(true);
+});
+
+test("PAGINATION-02 page/pageSize stabil sÄ±ralama ve Ã§akÄ±ÅŸmayan sayfalar Ã¼retir", async ({ request }) => {
+  const session = await login(request, credentials.adminA);
+  const first = await getConsumptionPage(request, session.token, "?page=1&pageSize=5");
+  const second = await getConsumptionPage(request, session.token, "?page=2&pageSize=5");
+  expect(first.response.status()).toBe(200);
+  expect(second.response.status()).toBe(200);
+  expect(first.body.items).toHaveLength(5);
+  expect(second.body.items).toHaveLength(5);
+  expect(new Set(first.body.items.map((row) => row.id)).size).toBe(5);
+  expect(first.body.items.some((row) => second.body.items.some((other) => other.id === row.id))).toBe(false);
+  const ordered = [...first.body.items, ...second.body.items];
+  for (let i = 1; i < ordered.length; i++) {
+    const prev = ordered[i - 1]!;
+    const current = ordered[i]!;
+    expect(
+      prev.year > current.year
+      || (prev.year === current.year && prev.month > current.month)
+      || (prev.year === current.year && prev.month === current.month && prev.id > current.id),
+    ).toBe(true);
+  }
+});
+
+test("PAGINATION-03 boÅŸ sonrasÄ± sayfa response shape'i ve total bilgisini korur", async ({ request }) => {
+  const session = await login(request, credentials.adminA);
+  const { response, body } = await getConsumptionPage(request, session.token, "?page=999&pageSize=10");
+  expect(response.status()).toBe(200);
+  expect(body.items).toEqual([]);
+  expect(body.pagination.page).toBe(999);
+  expect(body.pagination.pageSize).toBe(10);
+  expect(body.pagination.totalItems).toBeGreaterThan(0);
+});
+
+for (const [field, value] of [["page", "0"], ["page", "1.5"], ["page", "1&page=2"], ["pageSize", "101"], ["pageSize", ""], ["pageSize", "9007199254740992"]] as const) {
+  test(`PAGINATION-04 ${field}=${value} strict 400`, async ({ request }) => {
+    const session = await login(request, credentials.adminA);
+    expect((await request.get(`/api/consumption?${field}=${value}`, { headers: authorization(session.token) })).status()).toBe(400);
+  });
+}
+
+test("PAGINATION-05 pageSize 100 Ã¼st sÄ±nÄ±rÄ± kabul edilir", async ({ request }) => {
+  const session = await login(request, credentials.adminA);
+  const { response, body } = await getConsumptionPage(request, session.token, "?page=1&pageSize=100");
+  expect(response.status()).toBe(200);
+  expect(body.pagination.pageSize).toBe(100);
+  expect(body.items.length).toBeLessThanOrEqual(100);
+});
+
+test("PAGINATION-06 year ve meter filtrelerinde count aynÄ± scope koÅŸullarÄ±nÄ± kullanÄ±r", async ({ request }) => {
+  const session = await login(request, credentials.adminA);
+  const expected = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM consumption WHERE company_id = $1 AND meter_id = $2 AND year = 2025",
+    [ids.companyA, ids.electricMeterA1],
+  );
+  const { response, body } = await getConsumptionPage(request, session.token, `?meterId=${ids.electricMeterA1}&year=2025&pageSize=5`);
+  expect(response.status()).toBe(200);
+  expect(body.pagination.totalItems).toBe(Number(expected.rows[0]?.count ?? 0));
+  expect(body.items.every((row) => row.meterId === ids.electricMeterA1 && row.year === 2025)).toBe(true);
+});
+
+test("PAGINATION-07 standard query unitId ile kendi unit scope'unu aÅŸamaz", async ({ request }) => {
+  const session = await login(request, credentials.standardA1);
+  const { response, body } = await getConsumptionPage(request, session.token, `?unitId=${ids.unitA2}&pageSize=100`);
+  expect(response.status()).toBe(200);
+  expect(body.items.length).toBeGreaterThan(0);
+  expect(body.items.every((row) => row.companyId === ids.companyA && row.meterId !== ids.meterA2 && row.meterId !== ids.meterB1)).toBe(true);
+});
+
+for (const [label, username] of [["admin", credentials.adminA], ["kontrol_admin", credentials.kontrolAdminA]] as const) {
+  test(`PAGINATION-08 ${label} baÅŸka tenant unit filtresiyle 403 alÄ±r`, async ({ request }) => {
+    const session = await login(request, username);
+    expect((await request.get(`/api/consumption?unitId=${ids.unitB1}`, { headers: authorization(session.token) })).status()).toBe(403);
+  });
+}
+
+test("PAGINATION-09 superadmin company/unit uyumsuzluÄŸunda 403 alÄ±r", async ({ request }) => {
+  const session = await login(request, credentials.superadmin);
+  expect((await request.get(`/api/consumption?companyId=${ids.companyA}&unitId=${ids.unitB1}`, { headers: authorization(session.token) })).status()).toBe(403);
+});
+
+test("PAGINATION-10 null-unit standard pagination shape ile boÅŸ kalÄ±r", async ({ request }) => {
+  const session = await login(request, credentials.nullUnit);
+  const { response, body } = await getConsumptionPage(request, session.token, "?page=2&pageSize=25");
+  expect(response.status()).toBe(200);
+  expect(body).toEqual({ items: [], pagination: { page: 2, pageSize: 25, totalItems: 0, totalPages: 0 } });
+});
+
+test("PAGINATION-11 10k disposable smoke first/middle/last ve query plan", async ({ request }) => {
+  test.setTimeout(120_000);
+  const session = await login(request, credentials.adminA);
+  const markerNote = "[F3B5] large pagination smoke";
+  await pool.query("DELETE FROM consumption WHERE meter_id = $1 AND year BETWEEN 3000 AND 3999 AND notes = $2", [ids.importMeterA1, markerNote]);
+  try {
+    await pool.query(
+      `INSERT INTO consumption (company_id, meter_id, year, month, kwh, tep, co2, hdd, cdd, notes)
+       SELECT $1, $2, 3000 + ((gs - 1) / 12)::int, ((gs - 1) % 12) + 1,
+              gs::real, (gs * 0.000086)::real, (gs * 0.4)::real, NULL, NULL, $3
+       FROM generate_series(1, 10000) AS gs`,
+      [ids.companyA, ids.importMeterA1, markerNote],
+    );
+
+    const firstStarted = Date.now();
+    const first = await getConsumptionPage(request, session.token, `?meterId=${ids.importMeterA1}&page=1&pageSize=50`);
+    const firstMs = Date.now() - firstStarted;
+    const middleStarted = Date.now();
+    const middle = await getConsumptionPage(request, session.token, `?meterId=${ids.importMeterA1}&page=100&pageSize=50`);
+    const middleMs = Date.now() - middleStarted;
+    const lastStarted = Date.now();
+    const last = await getConsumptionPage(request, session.token, `?meterId=${ids.importMeterA1}&page=200&pageSize=50`);
+    const lastMs = Date.now() - lastStarted;
+    const yearFiltered = await getConsumptionPage(request, session.token, `?meterId=${ids.importMeterA1}&year=3000&page=1&pageSize=50`);
+    const explain = await pool.query<{ "QUERY PLAN": string }>(
+      `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+       SELECT c.id
+       FROM consumption c
+       JOIN meters m ON m.id = c.meter_id
+       WHERE c.company_id = $1 AND m.company_id = $1 AND c.meter_id = $2
+       ORDER BY c.year DESC, c.month DESC, c.id DESC
+       LIMIT 50 OFFSET 4950`,
+      [ids.companyA, ids.importMeterA1],
+    );
+    const payloadBytes = Buffer.byteLength(JSON.stringify(first.body), "utf8");
+
+    expect(first.response.status()).toBe(200);
+    expect(middle.response.status()).toBe(200);
+    expect(last.response.status()).toBe(200);
+    expect(first.body.pagination.totalItems).toBeGreaterThanOrEqual(10000);
+    expect(first.body.items).toHaveLength(50);
+    expect(middle.body.items).toHaveLength(50);
+    expect(last.body.items).toHaveLength(50);
+    expect(yearFiltered.body.pagination.totalItems).toBe(12);
+    expect(payloadBytes).toBeLessThan(100_000);
+    console.log(JSON.stringify({
+      f3b5ConsumptionPaginationSmoke: {
+        firstMs, middleMs, lastMs, payloadBytes,
+        explain: explain.rows.map((row) => row["QUERY PLAN"]).slice(0, 8),
+      },
+    }));
+  } finally {
+    await pool.query("DELETE FROM consumption WHERE meter_id = $1 AND year BETWEEN 3000 AND 3999 AND notes = $2", [ids.importMeterA1, markerNote]);
+  }
+});
 
 test("CONSUMPTION-05 elektrik tüketimi default TEP ve CO2 hesaplar", async ({ request }) => {
   const session = await login(request, credentials.adminA);
