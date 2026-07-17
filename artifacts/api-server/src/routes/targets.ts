@@ -8,6 +8,7 @@ import {
   TARGET_STATUS_LABELS, TARGET_TYPE_LABELS, ACTION_STATUS_LABELS, PRIORITY_LABELS,
 } from "../lib/csv-export.js";
 import { buildXlsx, sendXlsxResponse, type XlsxColDef } from "../lib/xlsx-export.js";
+import { changedAuditFields, writeAuditEvent } from "../lib/audit.js";
 
 const router = Router();
 
@@ -614,28 +615,40 @@ router.post("/targets", requireAuth, async (req, res) => {
     if (duplicate) {
       res.status(409).json({ error: "Bu ÖEK kalemi ve hedef yılı için hedef zaten mevcut" }); return;
     }
-    const [item] = await db.insert(energyTargetsTable).values({
-      name: parsedName,
-      baselineYear: parsedBaselineYear,
-      targetYear: parsedTargetYear,
-      targetReductionPercent: parsedReduction,
-      notes: parsedNotes ?? null,
-      unitId: resolvedUnitId,
-      companyId: effectiveCompanyId,
-      objectiveText: parsedObjectiveText ?? null,
-      targetText: parsedTargetText ?? null,
-      targetType: parsedTargetType,
-      baselineValue: parsedBaselineValue ?? null,
-      targetValue: parsedTargetValue ?? null,
-      actualValue: null,
-      unitLabel: parsedUnitLabel ?? null,
-      status: parsedStatus,
-      subUnitId: parsedSubUnitId,
-      energySourceId: parsedEnergySourceId,
-      seuAssessmentId: parsedSeuAssessmentId,
-      seuAssessmentItemId: parsedSeuAssessmentItemId,
-      baselineId: parsedBaselineId,
-    }).returning();
+    const item = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(energyTargetsTable).values({
+        name: parsedName,
+        baselineYear: parsedBaselineYear,
+        targetYear: parsedTargetYear,
+        targetReductionPercent: parsedReduction,
+        notes: parsedNotes ?? null,
+        unitId: resolvedUnitId,
+        companyId: effectiveCompanyId,
+        objectiveText: parsedObjectiveText ?? null,
+        targetText: parsedTargetText ?? null,
+        targetType: parsedTargetType,
+        baselineValue: parsedBaselineValue ?? null,
+        targetValue: parsedTargetValue ?? null,
+        actualValue: null,
+        unitLabel: parsedUnitLabel ?? null,
+        status: parsedStatus,
+        subUnitId: parsedSubUnitId,
+        energySourceId: parsedEnergySourceId,
+        seuAssessmentId: parsedSeuAssessmentId,
+        seuAssessmentItemId: parsedSeuAssessmentItemId,
+        baselineId: parsedBaselineId,
+      }).returning();
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: created.companyId,
+        unitId: created.unitId,
+        action: "target.create",
+        entityType: "target",
+        entityId: created.id,
+        changes: { created: { targetYear: created.targetYear, targetValue: created.targetValue, targetReductionPercent: created.targetReductionPercent, status: created.status } },
+      });
+      return created;
+    });
     res.status(201).json(item);
   } catch (err) {
     if (handleBadRequest(res, err)) return;
@@ -740,7 +753,23 @@ router.patch("/targets/:id", requireAuth, async (req, res) => {
     if (seuAssessmentItemId !== undefined) updates.seuAssessmentItemId = parsedSeuAssessmentItemId;
     if (baselineId !== undefined) updates.baselineId = parsedBaselineId;
     if (Object.keys(updates).length === 0) { res.json(existing); return; }
-    const [item] = await db.update(energyTargetsTable).set(updates).where(targetScope).returning();
+    const item = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(energyTargetsTable).set(updates).where(targetScope).returning();
+      if (!updated) return null;
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: updated.companyId,
+        unitId: updated.unitId,
+        action: "target.update",
+        entityType: "target",
+        entityId: updated.id,
+        changes: changedAuditFields(existing as unknown as Record<string, unknown>, updated as unknown as Record<string, unknown>, [
+          "name", "baselineYear", "targetYear", "targetReductionPercent", "unitId", "status", "targetValue", "baselineValue", "subUnitId", "energySourceId", "seuAssessmentItemId", "baselineId",
+        ]),
+      });
+      return updated;
+    });
+    if (!item) { res.status(404).json({ error: "Bulunamadı" }); return; }
     res.json(item);
   } catch (err) {
     if (handleBadRequest(res, err)) return;
@@ -765,6 +794,9 @@ router.delete("/targets/:id", requireAuth, async (req, res) => {
       const [existing] = await tx.select({
         id: energyTargetsTable.id,
         companyId: energyTargetsTable.companyId,
+        unitId: energyTargetsTable.unitId,
+        status: energyTargetsTable.status,
+        targetYear: energyTargetsTable.targetYear,
       }).from(energyTargetsTable).where(targetScope).limit(1).for("update");
       if (!existing) return "not_found" as const;
 
@@ -804,6 +836,17 @@ router.delete("/targets/:id", requireAuth, async (req, res) => {
       const [deleted] = await tx.delete(energyTargetsTable)
         .where(and(...deleteConditions))
         .returning({ id: energyTargetsTable.id });
+      if (deleted) {
+        await writeAuditEvent(tx, {
+          request: req,
+          companyId: existing.companyId,
+          unitId: existing.unitId,
+          action: "target.delete",
+          entityType: "target",
+          entityId: id,
+          changes: { deleted: { targetYear: existing.targetYear, status: existing.status } },
+        });
+      }
       return deleted ? "deleted" as const : "not_found" as const;
     });
 

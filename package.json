@@ -22,6 +22,8 @@
     "test:production-readiness": "pnpm --filter @workspace/scripts run test:production-readiness",
     "test:shared-auth": "pnpm --filter @workspace/scripts run test:shared-auth",
     "test:auth-migration-upgrade": "pnpm --filter @workspace/scripts run test:auth-migration-upgrade",
+    "test:audit": "pnpm --filter @workspace/scripts run test:audit",
+    "test:audit-restore": "pnpm --filter @workspace/scripts run test:audit-restore",
     "auth:cleanup": "pnpm --filter @workspace/scripts run auth:cleanup",
     "start": "ts-node scripts/index.ts",
     "dev": "ts-node-dev scripts/index.ts"

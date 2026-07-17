@@ -18,6 +18,7 @@ import {
 } from "@workspace/db";
 import { eq, and, gte, lte, sql, desc, inArray } from "drizzle-orm";
 import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
+import { changedAuditFields, writeAuditEvent } from "../lib/audit.js";
 
 const router = Router();
 
@@ -675,6 +676,15 @@ router.post("/seu/assessments", requireAuth, async (req, res) => {
       );
     }
 
+    await writeAuditEvent(tx, {
+      request: req,
+      companyId: assessment.companyId,
+      unitId: assessment.unitId,
+      action: isOfficial ? "seu.assessment.accept" : "seu.assessment.create",
+      entityType: "seu_assessment",
+      entityId: assessment.id,
+      changes: { created: { recordType: assessment.recordType, isOfficial: assessment.isOfficial, year: assessment.year, itemCount: validatedItems.length } },
+    });
     return assessment;
     });
 
@@ -744,11 +754,26 @@ router.patch("/seu/assessments/:id/items/:itemId", requireAuth, async (req, res)
       updates.systemRecommendation = computeRecommendation(priority);
     }
 
-    const [updated] = await db
-      .update(seuAssessmentItemsTable)
-      .set(updates)
-      .where(and(eq(seuAssessmentItemsTable.id, itemId), eq(seuAssessmentItemsTable.assessmentId, assessmentId)))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx.update(seuAssessmentItemsTable)
+        .set(updates)
+        .where(and(eq(seuAssessmentItemsTable.id, itemId), eq(seuAssessmentItemsTable.assessmentId, assessmentId)))
+        .returning();
+      if (!row) return null;
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: assessment.companyId,
+        unitId: assessment.unitId,
+        action: parsedDecision === "accepted_as_seu" ? "seu.assessment.accept" : "seu.assessment.update",
+        entityType: "seu_assessment_item",
+        entityId: row.id,
+        changes: changedAuditFields(existingItem as unknown as Record<string, unknown>, row as unknown as Record<string, unknown>, [
+          "hasOpportunity", "userDecision", "targetReductionPercent", "priorityResult", "systemRecommendation",
+        ]),
+        metadata: { assessmentId },
+      });
+      return row;
+    });
     if (!updated) { res.status(404).json({ error: "Kalem bulunamadı" }); return; }
     res.json(updated);
   } catch (err) {
@@ -814,14 +839,29 @@ router.patch("/seu/decision-items/analysis/:itemId", requireAuth, async (req, re
       updates.systemRecommendation = computeRecommendation(priority);
     }
 
-    const [updated] = await db
-      .update(seuAssessmentItemsTable)
-      .set(updates)
-      .where(and(
-        eq(seuAssessmentItemsTable.id, itemId),
-        eq(seuAssessmentItemsTable.assessmentId, existingItem.assessmentId),
-      ))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx.update(seuAssessmentItemsTable)
+        .set(updates)
+        .where(and(
+          eq(seuAssessmentItemsTable.id, itemId),
+          eq(seuAssessmentItemsTable.assessmentId, existingItem.assessmentId),
+        ))
+        .returning();
+      if (!row) return null;
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: sessionCompanyId,
+        unitId: standardUser ? sessionUnitId : null,
+        action: parsedDecision === "accepted_as_seu" ? "seu.assessment.accept" : "seu.assessment.update",
+        entityType: "seu_assessment_item",
+        entityId: row.id,
+        changes: changedAuditFields(existingItem as unknown as Record<string, unknown>, row as unknown as Record<string, unknown>, [
+          "hasOpportunity", "userDecision", "targetReductionPercent", "priorityResult", "systemRecommendation",
+        ]),
+        metadata: { assessmentId: existingItem.assessmentId },
+      });
+      return row;
+    });
     if (!updated) { res.status(404).json({ error: "Kalem bulunamadı" }); return; }
     res.json(updated);
   } catch (err) {
@@ -853,6 +893,7 @@ router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
         .select({
           id: seuAssessmentsTable.id,
           companyId: seuAssessmentsTable.companyId,
+          unitId: seuAssessmentsTable.unitId,
           recordType: seuAssessmentsTable.recordType,
         })
         .from(seuAssessmentsTable)
@@ -919,6 +960,17 @@ router.delete("/seu/assessments/:id", requireAuth, async (req, res) => {
       const [deleted] = await tx.delete(seuAssessmentsTable)
         .where(and(...assessmentConditions))
         .returning({ id: seuAssessmentsTable.id });
+      if (deleted) {
+        await writeAuditEvent(tx, {
+          request: req,
+          companyId: assessment.companyId,
+          unitId: assessment.unitId,
+          action: "seu.assessment.delete",
+          entityType: "seu_assessment",
+          entityId: assessment.id,
+          changes: { deleted: { recordType: assessment.recordType, itemCount: itemIds.length } },
+        });
+      }
       return deleted ? "deleted" as const : "not_found" as const;
     });
 

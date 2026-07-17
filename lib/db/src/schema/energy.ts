@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, serial, text, integer, real, timestamp, boolean, index, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, real, timestamp, boolean, index, uniqueIndex, jsonb, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -68,6 +68,30 @@ export const authRateLimitsTable = pgTable("auth_rate_limits", {
 export type AuthRateLimit = typeof authRateLimitsTable.$inferSelect;
 
 // ── Units (Birimler) ──────────────────────────────────────
+export const auditEventsTable = pgTable("audit_events", {
+  id: serial("id").primaryKey(),
+  occurredAt: timestamp("occurred_at").defaultNow().notNull(),
+  requestId: text("request_id").notNull(),
+  actorUserId: integer("actor_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  actorRole: text("actor_role"),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "set null" }),
+  unitId: integer("unit_id"),
+  action: text("action").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id"),
+  outcome: text("outcome").notNull(),
+  changes: jsonb("changes_json"),
+  metadata: jsonb("metadata_json"),
+}, (table) => ({
+  companyOccurredIdx: index("audit_events_company_occurred_idx").on(table.companyId, table.occurredAt),
+  actorOccurredIdx: index("audit_events_actor_occurred_idx").on(table.actorUserId, table.occurredAt),
+  entityIdx: index("audit_events_entity_idx").on(table.entityType, table.entityId),
+  actionOccurredIdx: index("audit_events_action_occurred_idx").on(table.action, table.occurredAt),
+  requestIdx: index("audit_events_request_id_idx").on(table.requestId),
+}));
+
+export type AuditEvent = typeof auditEventsTable.$inferSelect;
+
 export const unitsTable = pgTable("units", {
   id: serial("id").primaryKey(),
   companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),

@@ -6,6 +6,7 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { authMiddleware } from "./middlewares/auth.js";
+import { requestIdMiddleware } from "./lib/request-id.js";
 import {
   createCorsMiddleware,
   securityHeaders,
@@ -13,6 +14,7 @@ import {
 
 const app: Express = express();
 
+app.use(requestIdMiddleware);
 app.use(
   pinoHttp({
     logger,

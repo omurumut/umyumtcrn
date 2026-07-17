@@ -3,6 +3,7 @@ import type { Response } from "express";
 import { db, companiesTable, energyActionPlansTable, energyTargetsTable, usersTable, vapProjectsTable } from "@workspace/db";
 import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { changedAuditFields, writeAuditEvent } from "../lib/audit.js";
 
 const router = Router();
 
@@ -239,7 +240,8 @@ router.post("/energy-action-plans", requireAuth, async (req, res) => {
     const owner = await resolveResponsibleUserId(responsibleUserId, target.companyId, target.unitId);
     if (owner.error) { res.status(400).json({ error: owner.error }); return; }
 
-    const [item] = await db.insert(energyActionPlansTable).values({
+    const item = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(energyActionPlansTable).values({
       companyId: target.companyId,
       targetId: parsedTargetId,
       title: parsedTitle,
@@ -260,13 +262,13 @@ router.post("/energy-action-plans", requireAuth, async (req, res) => {
       isVap: parsedIsVap,
       notes: parsedNotes ?? null,
       createdBy: userName,
-    }).returning();
+      }).returning();
 
     // isVap=true ise otomatik VAP projesi oluştur
     if (parsedIsVap) {
-      await db.insert(vapProjectsTable).values({
+      const [vap] = await tx.insert(vapProjectsTable).values({
         companyId: target.companyId,
-        actionPlanId: item.id,
+        actionPlanId: created.id,
         projectTitle: parsedTitle,
         annualCostSaving: parsedExpectedCostSaving ?? null,
         investmentCost: parsedInvestmentCost ?? null,
@@ -276,13 +278,36 @@ router.post("/energy-action-plans", requireAuth, async (req, res) => {
         status: "idea",
         notes: parsedNotes ?? null,
         createdBy: userName,
+      }).returning({ id: vapProjectsTable.id });
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: target.companyId,
+        unitId: target.unitId,
+        action: "vap.create",
+        entityType: "vap_project",
+        entityId: vap.id,
+        changes: { createdByActionPlan: created.id },
       });
     }
+    await writeAuditEvent(tx, {
+      request: req,
+      companyId: created.companyId,
+      unitId: target.unitId,
+      action: "action.create",
+      entityType: "action_plan",
+      entityId: created.id,
+      changes: { created: { targetId: created.targetId, status: created.status, priority: created.priority, progressPercent: created.progressPercent, isVap: created.isVap } },
+    });
+    return created;
+    });
 
     res.status(201).json(item);
   } catch (err) {
     if (handleBadRequest(res, err)) return;
-    req.log.error(err);
+    req.log.error({
+      errorName: err instanceof Error ? err.name : "UnknownError",
+      requestId: req.id,
+    }, "Energy action plan create failed");
     res.status(500).json({ error: "Sunucu hatası" });
   }
 });
@@ -400,6 +425,17 @@ router.put("/energy-action-plans/:id", requireAuth, async (req, res) => {
         }
       }
 
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: updatedItem.companyId,
+        unitId: target.unitId,
+        action: "action.update",
+        entityType: "action_plan",
+        entityId: updatedItem.id,
+        changes: changedAuditFields(existing as unknown as Record<string, unknown>, updatedItem as unknown as Record<string, unknown>, [
+          "title", "priority", "expectedSavingValue", "expectedCostSaving", "investmentCost", "paybackMonths", "progressPercent", "status", "isVap",
+        ]),
+      });
       return updatedItem;
     });
 
@@ -431,7 +467,18 @@ router.delete("/energy-action-plans/:id", requireAuth, async (req, res) => {
       if (target?.unitId !== sessionUnitId) { res.status(403).json({ error: "Yetki yok" }); return; }
     }
     recordConditions.push(eq(energyActionPlansTable.targetId, existing.targetId));
-    await db.delete(energyActionPlansTable).where(and(...recordConditions));
+    await db.transaction(async (tx) => {
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: existing.companyId,
+        unitId: isStandard(role) ? sessionUnitId : null,
+        action: "action.delete",
+        entityType: "action_plan",
+        entityId: existing.id,
+        changes: { deleted: { targetId: existing.targetId, status: existing.status } },
+      });
+      await tx.delete(energyActionPlansTable).where(and(...recordConditions));
+    });
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

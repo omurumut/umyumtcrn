@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db, energyTargetProgressTable, energyTargetsTable } from "@workspace/db";
 import { eq, and, SQL, desc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { writeAuditEvent } from "../lib/audit.js";
 
 const router = Router();
 
@@ -105,6 +106,15 @@ router.post("/energy-target-progress", requireAuth, async (req, res) => {
         .where(and(...targetConditions))
         .returning({ id: energyTargetsTable.id });
       if (!updatedTarget) throw new Error("Target update failed");
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: insertedItem.companyId,
+        unitId: target.unitId,
+        action: "target.progress.update",
+        entityType: "target_progress",
+        entityId: insertedItem.id,
+        changes: { operation: "create", targetId: insertedItem.targetId, periodYear: insertedItem.periodYear, periodMonth: insertedItem.periodMonth, actualValue: insertedItem.actualValue },
+      });
 
       return insertedItem;
     });
@@ -149,6 +159,15 @@ router.delete("/energy-target-progress/:id", requireAuth, async (req, res) => {
           eq(energyTargetsTable.id, existing.targetId),
           eq(energyTargetsTable.companyId, sessionCompanyId),
         ));
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: existing.companyId,
+        unitId: existing.targetUnitId,
+        action: "target.progress.update",
+        entityType: "target_progress",
+        entityId: id,
+        changes: { operation: "delete", targetId: existing.targetId },
+      });
     });
     res.status(204).send();
   } catch (err) {

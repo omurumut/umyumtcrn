@@ -3,6 +3,7 @@ import type { Response } from "express";
 import { db, companiesTable, vapProjectsTable, energyActionPlansTable, energyTargetsTable, energySourcesTable, unitsTable, subUnitsTable } from "@workspace/db";
 import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { changedAuditFields, writeAuditEvent } from "../lib/audit.js";
 import {
   buildCsv, sendCsvResponse,
   VAP_STATUS_LABELS, FEASIBILITY_STATUS_LABELS, INCENTIVE_STATUS_LABELS,
@@ -412,30 +413,42 @@ router.post("/vap-projects", requireAuth, async (req, res) => {
       res.status(409).json({ error: "Bu eylem planına zaten bir VAP projesi bağlı" }); return;
     }
 
-    const [item] = await db.insert(vapProjectsTable).values({
-      companyId: effectiveCompanyId,
-      actionPlanId: parsedActionPlanId,
-      projectCode: parsedProjectCode ?? null,
-      projectTitle: parsedProjectTitle,
-      projectType: parsedProjectType ?? null,
-      currentSituation: parsedCurrentSituation ?? null,
-      proposedSolution: parsedProposedSolution ?? null,
-      technicalDescription: parsedTechnicalDescription ?? null,
-      annualEnergySavingValue: parsedAnnualEnergySavingValue ?? null,
-      annualEnergySavingUnit: parsedAnnualEnergySavingUnit ?? null,
-      annualCostSaving: parsedAnnualCostSaving ?? null,
-      investmentCost: parsedInvestmentCost ?? null,
-      paybackMonths: calculatedPaybackMonths,
-      co2ReductionTon: parsedCo2ReductionTon ?? null,
-      measurementVerificationMethod: parsedMeasurementMethod ?? null,
-      incentiveStatus: parsedIncentiveStatus,
-      feasibilityStatus: parsedFeasibilityStatus,
-      startDate: parsedStartDate ?? null,
-      endDate: parsedEndDate ?? null,
-      status: parsedStatus,
-      notes: parsedNotes ?? null,
-      createdBy: userName,
-    }).returning();
+    const item = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(vapProjectsTable).values({
+        companyId: effectiveCompanyId,
+        actionPlanId: parsedActionPlanId,
+        projectCode: parsedProjectCode ?? null,
+        projectTitle: parsedProjectTitle,
+        projectType: parsedProjectType ?? null,
+        currentSituation: parsedCurrentSituation ?? null,
+        proposedSolution: parsedProposedSolution ?? null,
+        technicalDescription: parsedTechnicalDescription ?? null,
+        annualEnergySavingValue: parsedAnnualEnergySavingValue ?? null,
+        annualEnergySavingUnit: parsedAnnualEnergySavingUnit ?? null,
+        annualCostSaving: parsedAnnualCostSaving ?? null,
+        investmentCost: parsedInvestmentCost ?? null,
+        paybackMonths: calculatedPaybackMonths,
+        co2ReductionTon: parsedCo2ReductionTon ?? null,
+        measurementVerificationMethod: parsedMeasurementMethod ?? null,
+        incentiveStatus: parsedIncentiveStatus,
+        feasibilityStatus: parsedFeasibilityStatus,
+        startDate: parsedStartDate ?? null,
+        endDate: parsedEndDate ?? null,
+        status: parsedStatus,
+        notes: parsedNotes ?? null,
+        createdBy: userName,
+      }).returning();
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: created.companyId,
+        unitId: ap.targetUnitId,
+        action: "vap.create",
+        entityType: "vap_project",
+        entityId: created.id,
+        changes: { created: { actionPlanId: created.actionPlanId, status: created.status, paybackMonths: created.paybackMonths } },
+      });
+      return created;
+    });
     res.status(201).json(item);
   } catch (err) {
     if (handleBadRequest(res, err)) return;
@@ -514,7 +527,23 @@ router.put("/vap-projects/:id", requireAuth, async (req, res) => {
     if (parsedNotes !== undefined) updates.notes = parsedNotes;
 
     recordConditions.push(eq(vapProjectsTable.actionPlanId, existing.actionPlanId));
-    const [item] = await db.update(vapProjectsTable).set(updates).where(and(...recordConditions)).returning();
+    const item = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(vapProjectsTable).set(updates).where(and(...recordConditions)).returning();
+      if (!updated) return null;
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: updated.companyId,
+        unitId: ap.targetUnitId,
+        action: "vap.update",
+        entityType: "vap_project",
+        entityId: updated.id,
+        changes: changedAuditFields(existing as unknown as Record<string, unknown>, updated as unknown as Record<string, unknown>, [
+          "projectCode", "projectTitle", "annualEnergySavingValue", "annualCostSaving", "investmentCost", "paybackMonths", "co2ReductionTon", "incentiveStatus", "feasibilityStatus", "status",
+        ]),
+      });
+      return updated;
+    });
+    if (!item) { res.status(404).json({ error: "Bulunamadı" }); return; }
     res.json(item);
   } catch (err) {
     if (handleBadRequest(res, err)) return;
@@ -540,7 +569,18 @@ router.delete("/vap-projects/:id", requireAuth, async (req, res) => {
     if (!ap) { res.status(403).json({ error: "Yetki yok" }); return; }
 
     recordConditions.push(eq(vapProjectsTable.actionPlanId, existing.actionPlanId));
-    await db.delete(vapProjectsTable).where(and(...recordConditions));
+    await db.transaction(async (tx) => {
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: existing.companyId,
+        unitId: ap.targetUnitId,
+        action: "vap.delete",
+        entityType: "vap_project",
+        entityId: existing.id,
+        changes: { deleted: { actionPlanId: existing.actionPlanId, status: existing.status } },
+      });
+      await tx.delete(vapProjectsTable).where(and(...recordConditions));
+    });
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

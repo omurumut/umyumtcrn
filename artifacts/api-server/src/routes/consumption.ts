@@ -4,6 +4,7 @@ import { eq, and, ne, sql, inArray, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { parseIlIlce } from "../services/mgm-stations-data.js";
 import { toStationKey, lookupOfficialByStationKey, lookupOfficialWeatherDegreeDay, lookupStationKeyByLocation } from "../services/mgm-sync.js";
+import { changedAuditFields, writeAuditEvent } from "../lib/audit.js";
 
 const router = Router();
 
@@ -510,20 +511,33 @@ router.post("/consumption", requireAuth, async (req, res) => {
 
     const weatherSnapshot = await resolveConsumptionWeatherSnapshot(meter, yr, mo, parsedHdd, parsedCdd);
 
-    const [record] = await db.insert(consumptionTable).values({
-      companyId: meter.companyId,
-      meterId: meter.id,
-      year: yr,
-      month: mo,
-      kwh: kwhVal,
-      tep: tepVal,
-      co2: co2Val,
-      hdd: weatherSnapshot.hdd,
-      cdd: weatherSnapshot.cdd,
-      notes: notes || null,
-      weatherStationName: weatherSnapshot.weatherStationName,
-      weatherStationNote: weatherSnapshot.weatherStationNote,
-    }).returning();
+    const record = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(consumptionTable).values({
+        companyId: meter.companyId,
+        meterId: meter.id,
+        year: yr,
+        month: mo,
+        kwh: kwhVal,
+        tep: tepVal,
+        co2: co2Val,
+        hdd: weatherSnapshot.hdd,
+        cdd: weatherSnapshot.cdd,
+        notes: notes || null,
+        weatherStationName: weatherSnapshot.weatherStationName,
+        weatherStationNote: weatherSnapshot.weatherStationNote,
+      }).returning();
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: created.companyId,
+        unitId: meter.unitId,
+        action: "consumption.create",
+        entityType: "consumption",
+        entityId: created.id,
+        outcome: "success",
+        changes: { created: { meterId: created.meterId, year: created.year, month: created.month, kwh: created.kwh, tep: created.tep, co2: created.co2, hdd: created.hdd, cdd: created.cdd } },
+      });
+      return created;
+    });
 
     res.status(201).json({
       ...record,
@@ -557,6 +571,10 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
         year: consumptionTable.year,
         month: consumptionTable.month,
         kwh: consumptionTable.kwh,
+        tep: consumptionTable.tep,
+        co2: consumptionTable.co2,
+        hdd: consumptionTable.hdd,
+        cdd: consumptionTable.cdd,
         meterUnitId: metersTable.unitId,
         meterCompanyId: metersTable.companyId,
       })
@@ -662,7 +680,22 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
     }
     if (notes !== undefined) updates.notes = notes;
 
-    const [record] = await db.update(consumptionTable).set(updates).where(scopedConsumptionCondition(id, role, sessionCompanyId)).returning();
+    const record = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(consumptionTable).set(updates).where(scopedConsumptionCondition(id, role, sessionCompanyId)).returning();
+      if (!updated) return null;
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: updated.companyId,
+        unitId: finalMeter.unitId,
+        action: "consumption.update",
+        entityType: "consumption",
+        entityId: updated.id,
+        outcome: "success",
+        changes: changedAuditFields(existing, updated as unknown as Record<string, unknown>, ["meterId", "year", "month", "kwh", "tep", "co2", "hdd", "cdd"]),
+      });
+      return updated;
+    });
+    if (!record) { res.status(404).json({ error: "KayÄ±t bulunamadÄ±" }); return; }
     res.json(responseWeatherDataMethod === undefined ? record : { ...record, weatherDataMethod: responseWeatherDataMethod });
   } catch (err) {
     if (isBadRequestError(err)) {
@@ -713,9 +746,10 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
     let imported = 0;
     const errors: { row: number; message: string }[] = [];
 
-    for (const [i, row] of rows.entries()) {
-      const rowNum = i + 1;
-      try {
+    await db.transaction(async (tx) => {
+      for (const [i, row] of rows.entries()) {
+        const rowNum = i + 1;
+        try {
         const rowMeterId = parseOptionalId(row.meterId, "meterId");
         let meter: typeof metersTable.$inferSelect | undefined;
         if (rowMeterId !== undefined) {
@@ -783,7 +817,7 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
           }
         }
 
-        const [batchDup] = await db
+        const [batchDup] = await tx
           .select({ id: consumptionTable.id })
           .from(consumptionTable)
           .where(and(
@@ -797,7 +831,7 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
           continue;
         }
 
-        await db.execute(sql`
+        await tx.execute(sql`
           INSERT INTO consumption
             (company_id, meter_id, year, month, kwh, tep, co2, hdd, cdd, notes)
           VALUES
@@ -805,16 +839,28 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
              ${kwh}, ${tepVal}, ${co2Val},
              ${hddVal}, ${cddVal}, ${row.notes ? String(row.notes) : null})
         `);
-        imported++;
-      } catch (rowErr: unknown) {
-        errors.push({
-          row: rowNum,
-          message: isConsumptionPeriodUniqueViolation(rowErr)
-            ? CONSUMPTION_PERIOD_CONFLICT_MESSAGE
-            : rowErr instanceof Error ? rowErr.message : "Bilinmeyen hata",
-        });
+          imported++;
+        } catch (rowErr: unknown) {
+          errors.push({
+            row: rowNum,
+            message: isConsumptionPeriodUniqueViolation(rowErr)
+              ? CONSUMPTION_PERIOD_CONFLICT_MESSAGE
+              : rowErr instanceof Error ? rowErr.message : "Bilinmeyen hata",
+          });
+        }
       }
-    }
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: importCompanyId ?? (isSuperAdmin(role) ? null : sessionCompanyId),
+        unitId: !isPrivileged(role) ? sessionUnitId : null,
+        action: "consumption.import",
+        entityType: "consumption_import",
+        entityId: req.id === undefined ? null : String(req.id),
+        outcome: errors.length > 0 ? (imported > 0 ? "partial" : "failure") : "success",
+        changes: { total: rows.length, inserted: imported, failed: errors.length },
+        metadata: { errors: errors.slice(0, 20) },
+      });
+    });
 
     res.json({ imported, total: rows.length, errors });
   } catch (err) {
@@ -920,7 +966,15 @@ router.delete("/consumption/:id", requireAuth, async (req, res) => {
     }
 
     const [existing] = await db
-      .select({ meterUnitId: metersTable.unitId, meterCompanyId: metersTable.companyId })
+      .select({
+        companyId: consumptionTable.companyId,
+        meterId: consumptionTable.meterId,
+        year: consumptionTable.year,
+        month: consumptionTable.month,
+        kwh: consumptionTable.kwh,
+        meterUnitId: metersTable.unitId,
+        meterCompanyId: metersTable.companyId,
+      })
       .from(consumptionTable)
       .leftJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
       .where(scopedConsumptionCondition(id, role, sessionCompanyId));
@@ -932,7 +986,19 @@ router.delete("/consumption/:id", requireAuth, async (req, res) => {
       res.status(403).json({ error: "Yetki yok" }); return;
     }
 
-    await db.delete(consumptionTable).where(scopedConsumptionCondition(id, role, sessionCompanyId));
+    await db.transaction(async (tx) => {
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: existing.companyId,
+        unitId: existing.meterUnitId,
+        action: "consumption.delete",
+        entityType: "consumption",
+        entityId: id,
+        outcome: "success",
+        changes: { deleted: { meterId: existing.meterId, year: existing.year, month: existing.month, kwh: existing.kwh } },
+      });
+      await tx.delete(consumptionTable).where(scopedConsumptionCondition(id, role, sessionCompanyId));
+    });
     res.status(204).send();
   } catch (err) {
     if (isBadRequestError(err)) {

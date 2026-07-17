@@ -21,6 +21,8 @@
     "test:production-readiness": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-production-readiness.ts",
     "test:shared-auth": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-shared-auth.ts",
     "test:auth-migration-upgrade": "tsx ./src/test-db.ts --with-child -- node ./node_modules/tsx/dist/cli.mjs ./src/test-auth-migration-upgrade.ts",
+    "test:audit": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-audit.ts",
+    "test:audit-restore": "tsx ./src/test-db.ts --with-child -- node ./node_modules/tsx/dist/cli.mjs ./src/test-audit-restore.ts",
     "auth:cleanup": "tsx ./src/cleanup-auth-state.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

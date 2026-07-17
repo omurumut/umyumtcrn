@@ -17,6 +17,7 @@ import {
   type RateLimitKey,
 } from "../lib/login-rate-limit.js";
 import { hashPassword, needsPasswordRehash, verifyPassword } from "../security/passwords.js";
+import { changedAuditFields, hashAuditValue, writeAuditEvent, writeBestEffortAudit } from "../lib/audit.js";
 
 const router = Router();
 
@@ -127,14 +128,30 @@ export async function bootstrapSuperAdminIfEnabled() {
     throw new SuperAdminBootstrapError("Superadmin bootstrap şirketi bulunamadı.");
   }
 
-  await db.insert(usersTable).values({
-    companyId,
-    username,
-    passwordHash: await hashPassword(password),
-    name: displayName,
-    role: "superadmin",
-    unitId: null,
-    active: true,
+  const passwordHash = await hashPassword(password);
+  await db.transaction(async (tx) => {
+    const [user] = await tx.insert(usersTable).values({
+      companyId,
+      username,
+      passwordHash,
+      name: displayName,
+      role: "superadmin",
+      unitId: null,
+      active: true,
+    }).returning({ id: usersTable.id, role: usersTable.role, companyId: usersTable.companyId });
+    await writeAuditEvent(tx, {
+      requestId: "system-bootstrap",
+      actorUserId: null,
+      actorRole: "system",
+      companyId,
+      unitId: null,
+      action: "superadmin.bootstrap",
+      entityType: "user",
+      entityId: user.id,
+      outcome: "success",
+      changes: { created: true, role: user.role },
+      metadata: { source: "env_bootstrap" },
+    });
   });
   console.info("İlk superadmin hesabı oluşturuldu. Bootstrap environment ayarlarını devre dışı bırakın.");
 }
@@ -150,6 +167,13 @@ router.post("/auth/login", async (req, res) => {
       checkLoginRateLimits(rateLimitKeys),
     );
     if (currentRetryAfter !== null) {
+      await writeBestEffortAudit(db, {
+        request: req,
+        action: "auth.login.rate_limited",
+        entityType: "auth",
+        outcome: "denied",
+        metadata: { usernameHash: hashAuditValue(typeof username === "string" ? username : "") },
+      });
       res.set("Retry-After", String(currentRetryAfter));
       res.status(429).json({ error: "Çok fazla giriş denemesi yapıldı. Lütfen daha sonra tekrar deneyin." });
       return;
@@ -159,6 +183,13 @@ router.post("/auth/login", async (req, res) => {
       const result = await runAuthStoreOperation(
         registerFailedLogin(rateLimitKeys, LOGIN_RATE_LIMIT_WINDOW_MS),
       );
+      await writeBestEffortAudit(db, {
+        request: req,
+        action: result.blocked ? "auth.login.rate_limited" : "auth.login.failure",
+        entityType: "auth",
+        outcome: result.blocked ? "denied" : "failure",
+        metadata: { usernameHash: hashAuditValue(typeof username === "string" ? username : "") },
+      });
       if (result.blocked) {
         res.set("Retry-After", String(Math.max(1, result.retryAfterSeconds)));
         res.status(429).json({ error: "Çok fazla giriş denemesi yapıldı. Lütfen daha sonra tekrar deneyin." });
@@ -205,6 +236,17 @@ router.post("/auth/login", async (req, res) => {
 
     await runAuthStoreOperation(resetUsernameRateLimit(usernameKey));
     const { token } = await runAuthStoreOperation(createAuthSession(user.id));
+    await writeBestEffortAudit(db, {
+      request: req,
+      actorUserId: user.id,
+      actorRole: user.role,
+      companyId: user.companyId,
+      unitId: user.unitId,
+      action: "auth.login.success",
+      entityType: "auth",
+      entityId: user.id,
+      outcome: "success",
+    });
 
     res.json({
       token,
@@ -233,6 +275,12 @@ router.post("/auth/logout", async (req, res) => {
   try {
     const token = getBearerToken(req);
     if (token) await runAuthStoreOperation(revokeAuthSession(token));
+    await writeBestEffortAudit(db, {
+      request: req,
+      action: "auth.logout",
+      entityType: "auth",
+      outcome: "success",
+    });
     res.status(204).send();
   } catch (error) {
     req.log.error(error);
@@ -330,15 +378,30 @@ router.post("/users", requireAuth, async (req, res) => {
       return;
     }
 
-    const [user] = await db.insert(usersTable).values({
-      username: normalizedUsername,
-      passwordHash: await hashPassword(password),
-      name: normalizedName,
-      role: targetRole,
-      unitId: targetUnitId,
-      companyId: targetCompanyId,
-      active: true,
-    }).returning();
+    const passwordHash = await hashPassword(password);
+    const user = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(usersTable).values({
+        username: normalizedUsername,
+        passwordHash,
+        name: normalizedName,
+        role: targetRole,
+        unitId: targetUnitId,
+        companyId: targetCompanyId,
+        active: true,
+      }).returning();
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: created.companyId,
+        unitId: created.unitId,
+        action: "user.create",
+        entityType: "user",
+        entityId: created.id,
+        outcome: "success",
+        changes: { created: { role: created.role, companyId: created.companyId, unitId: created.unitId, active: created.active } },
+        metadata: { usernameHash: hashAuditValue(created.username) },
+      });
+      return created;
+    });
 
     res.status(201).json({
       id: user.id,
@@ -373,7 +436,7 @@ router.patch("/users/:id", requireAuth, async (req, res) => {
     // Hedef kullanıcının firmasını kontrol et
     const targetConditions = [eq(usersTable.id, id)];
     if (role !== "superadmin") targetConditions.push(eq(usersTable.companyId, sessionCompanyId));
-    const [target] = await db.select({ companyId: usersTable.companyId, unitId: usersTable.unitId, role: usersTable.role })
+    const [target] = await db.select({ companyId: usersTable.companyId, unitId: usersTable.unitId, role: usersTable.role, active: usersTable.active, name: usersTable.name })
       .from(usersTable).where(and(...targetConditions));
     if (!target) {
       res.status(404).json({ error: "Kullanıcı bulunamadı" });
@@ -424,7 +487,26 @@ router.patch("/users/:id", requireAuth, async (req, res) => {
 
     const mutationConditions = [eq(usersTable.id, id)];
     if (role !== "superadmin") mutationConditions.push(eq(usersTable.companyId, sessionCompanyId));
-    const [user] = await db.update(usersTable).set(updates).where(and(...mutationConditions)).returning();
+    const user = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(usersTable).set(updates).where(and(...mutationConditions)).returning();
+      if (!updated) return null;
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: updated.companyId,
+        unitId: updated.unitId,
+        action: "user.update",
+        entityType: "user",
+        entityId: updated.id,
+        outcome: "success",
+        changes: changedAuditFields(
+          { name: target.name, role: target.role, unitId: target.unitId, companyId: target.companyId, active: target.active, passwordChanged: false },
+          { name: updated.name, role: updated.role, unitId: updated.unitId, companyId: updated.companyId, active: updated.active, passwordChanged: Boolean(password) },
+          ["name", "role", "unitId", "companyId", "active", "passwordChanged"],
+        ),
+        metadata: { actorRole: role },
+      });
+      return updated;
+    });
     if (!user) {
       res.status(404).json({ error: "Kullanıcı bulunamadı" });
       return;
@@ -470,7 +552,19 @@ router.delete("/users/:id", requireAuth, async (req, res) => {
 
     const mutationConditions = [eq(usersTable.id, id)];
     if (role !== "superadmin") mutationConditions.push(eq(usersTable.companyId, sessionCompanyId));
-    await db.delete(usersTable).where(and(...mutationConditions));
+    await db.transaction(async (tx) => {
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: target.companyId,
+        unitId: null,
+        action: "user.delete",
+        entityType: "user",
+        entityId: id,
+        outcome: "success",
+        changes: { deleted: true, role: target.role },
+      });
+      await tx.delete(usersTable).where(and(...mutationConditions));
+    });
     res.status(204).send();
   } catch (err) {
     req.log.error(err);

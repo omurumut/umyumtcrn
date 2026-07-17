@@ -29,6 +29,7 @@ import vapProjectsRouter from "./vap-projects";
 import energyReviewRouter from "./energy-review";
 import energyReviewRecordsRouter from "./energy-review-records";
 import pendingWorkItemsRouter from "./pending-work-items";
+import auditEventsRouter from "./audit-events";
 
 const router: IRouter = Router();
 
@@ -62,5 +63,6 @@ router.use(vapProjectsRouter);
 router.use(energyReviewRouter);
 router.use(energyReviewRecordsRouter);
 router.use(pendingWorkItemsRouter);
+router.use(auditEventsRouter);
 
 export default router;

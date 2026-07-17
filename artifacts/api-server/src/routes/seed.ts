@@ -17,6 +17,7 @@ import {
 import { requireAuth, requireCompanyAdmin, requireSuperAdmin } from "../middlewares/auth.js";
 import { hashPassword } from "../security/passwords.js";
 import { eq, inArray, ne, and } from "drizzle-orm";
+import { writeAuditEvent } from "../lib/audit.js";
 
 
 const router = Router();
@@ -446,6 +447,15 @@ router.post("/admin/seed", requireAuth, requireSuperAdmin, async (req, res) => {
         users: preparedDemoUsers.length,
       };
     });
+    await writeAuditEvent(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "seed.execute",
+      entityType: "seed",
+      entityId: "demo",
+      changes: summary,
+    });
     res.json({ ok: true, summary });
   } catch (err: any) {
     if (err?.code === "23505") {
@@ -496,6 +506,15 @@ router.post("/admin/reset", requireAuth, requireCompanyAdmin, async (req, res) =
     }
 
     await db.transaction(async (db) => {
+      await writeAuditEvent(db, {
+        request: req,
+        companyId: effectiveCompanyId ?? null,
+        unitId: null,
+        action: "seed.reset",
+        entityType: "seed",
+        entityId: mode === "global" ? "platform" : String(effectiveCompanyId),
+        changes: { mode },
+      });
     if (mode === "global") {
         // Superadmin: tüm verileri temizle, sadece "admin" kullanıcısını koru
         await db.delete(consumptionTable);

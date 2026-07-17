@@ -12,6 +12,7 @@ const REQUIRED_TABLES = [
   "users",
   "auth_sessions",
   "auth_rate_limits",
+  "audit_events",
   "units",
   "sub_units",
   "energy_sources",
@@ -48,6 +49,11 @@ const REQUIRED_INDEXES = [
   "auth_rate_limits_scope_key_unique",
   "auth_rate_limits_blocked_until_idx",
   "auth_rate_limits_updated_at_idx",
+  "audit_events_company_occurred_idx",
+  "audit_events_actor_occurred_idx",
+  "audit_events_entity_idx",
+  "audit_events_action_occurred_idx",
+  "audit_events_request_id_idx",
 ] as const;
 
 interface JournalEntry {
@@ -79,6 +85,11 @@ interface SchemaSummary {
     tokenHashUnique: true;
     expirationIndexPresent: true;
     userForeignKeyCascadePresent: true;
+  };
+  auditIntegrity: {
+    tablePresent: true;
+    userForeignKeySetNullPresent: true;
+    companyForeignKeySetNullPresent: true;
   };
 }
 
@@ -412,6 +423,36 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
     "auth_sessions.user_id CASCADE foreign key fresh şemada yok.",
   );
 
+  const auditColumnsResult = await queryable.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'audit_events'`,
+  );
+  const auditColumns = new Set(auditColumnsResult.rows.map((row) => row.column_name));
+  for (const column of [
+    "id", "occurred_at", "request_id", "actor_user_id", "actor_role",
+    "company_id", "unit_id", "action", "entity_type", "entity_id",
+    "outcome", "changes_json", "metadata_json",
+  ]) {
+    assert(auditColumns.has(column), `audit_events.${column} fresh schema missing.`);
+  }
+
+  const auditForeignKeysResult = await queryable.query<{
+    definition: string;
+    delete_action: string;
+  }>(
+    `SELECT pg_get_constraintdef(oid) AS definition, confdeltype::text AS delete_action
+     FROM pg_constraint
+     WHERE conrelid = 'public.audit_events'::regclass AND contype = 'f'`,
+  );
+  const auditUserForeignKeySetNullPresent = auditForeignKeysResult.rows.some((row) =>
+    /FOREIGN KEY \(actor_user_id\).*users\(id\)/i.test(row.definition) && row.delete_action === "n",
+  );
+  const auditCompanyForeignKeySetNullPresent = auditForeignKeysResult.rows.some((row) =>
+    /FOREIGN KEY \(company_id\).*companies\(id\)/i.test(row.definition) && row.delete_action === "n",
+  );
+  assert(auditUserForeignKeySetNullPresent, "audit_events.actor_user_id SET NULL foreign key missing.");
+  assert(auditCompanyForeignKeySetNullPresent, "audit_events.company_id SET NULL foreign key missing.");
+
   return {
     tableCount: tables.size,
     companyCount,
@@ -429,6 +470,11 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
       tokenHashUnique: true,
       expirationIndexPresent: true,
       userForeignKeyCascadePresent: true,
+    },
+    auditIntegrity: {
+      tablePresent: true,
+      userForeignKeySetNullPresent: true,
+      companyForeignKeySetNullPresent: true,
     },
   };
 }

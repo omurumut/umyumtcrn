@@ -7,6 +7,7 @@ import { MGM_STATIONS, findStationByCity, parseIlIlce, findNearestStation, haver
 import { syncOfficialDegreeDays } from "../services/mgm-official-sync.js";
 import { importStationMapping, importDegreeDays, DEFAULT_MAPPING_FILE, DEFAULT_DEGREE_DAYS_FILE } from "../services/mgm-excel-import.js";
 import { getMgmBootstrapStatus } from "../services/mgm-bootstrap.js";
+import { writeAuditEvent, writeBestEffortAudit } from "../lib/audit.js";
 
 const router = Router();
 
@@ -434,6 +435,15 @@ router.get("/mgm/sync-log", requireAuth, requireSuperAdmin, async (req, res) => 
 router.post("/mgm/sync", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const result = await syncCurrentMonthData();
+    await writeAuditEvent(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "mgm.sync",
+      entityType: "mgm",
+      entityId: "current-month",
+      changes: { synced: result.synced, errors: result.errors },
+    });
     res.json({
       message: "Open-Meteo sync tamamlandı",
       synced: result.synced,
@@ -441,6 +451,16 @@ router.post("/mgm/sync", requireAuth, requireSuperAdmin, async (req, res) => {
     });
   } catch (err) {
     req.log.error(err);
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "mgm.sync",
+      entityType: "mgm",
+      entityId: "current-month",
+      outcome: "failure",
+      metadata: { operation: "current-month" },
+    });
     res.status(500).json({ error: "Sync hatası" });
   }
 });
@@ -472,6 +492,16 @@ router.post("/admin/weather-degree-days/sync", requireAuth, requireSuperAdmin, a
     };
 
     const results = await syncOfficialDegreeDays(years, onProgress);
+    await writeAuditEvent(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "mgm.sync",
+      entityType: "weather_degree_days",
+      entityId: "official-sync",
+      outcome: results.some(r => r.errors > 0) ? "partial" : "success",
+      changes: { years, results: results.map(r => ({ year: r.year, inserted: r.inserted, updated: r.updated, errors: r.errors })) },
+    });
 
     const summary = results.map(r =>
       `${r.year}: +${r.inserted} eklendi, ~${r.updated} güncellendi, ${r.stationCount} istasyon, ${r.errors} hata`
@@ -487,6 +517,16 @@ router.post("/admin/weather-degree-days/sync", requireAuth, requireSuperAdmin, a
   } catch (err) {
     if (handleInvalidMgmParameter(res, err)) return;
     req.log.error(err);
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "mgm.sync",
+      entityType: "weather_degree_days",
+      entityId: "official-sync",
+      outcome: "failure",
+      metadata: { operation: "official-sync" },
+    });
     res.status(500).json({ error: "MGM resmi sync hatası" });
   }
 });
@@ -526,6 +566,16 @@ router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireSuper
     };
 
     const result = await importStationMapping(filePath, onProgress);
+    await writeAuditEvent(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "mgm.import",
+      entityType: "mgm_station_mapping",
+      entityId: "excel",
+      outcome: result.failed > 0 ? "partial" : "success",
+      changes: { total: result.totalRows, inserted: result.inserted, updated: result.updated, failed: result.failed },
+    });
     res.json({
       message: "MGM istasyon eşleştirme import tamamlandı",
       filePath,
@@ -534,6 +584,16 @@ router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireSuper
     });
   } catch (err) {
     req.log.error(err);
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "mgm.import",
+      entityType: "mgm_station_mapping",
+      entityId: "excel",
+      outcome: "failure",
+      metadata: { operation: "station-mapping-import" },
+    });
     res.status(500).json({ error: `Import hatası: ${String(err)}` });
   }
 });
@@ -550,6 +610,16 @@ router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuper
     };
 
     const result = await importDegreeDays(filePath, onProgress);
+    await writeAuditEvent(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "mgm.import",
+      entityType: "weather_degree_days",
+      entityId: "excel",
+      outcome: result.failed > 0 ? "partial" : "success",
+      changes: { total: result.totalRows, inserted: result.inserted, updated: result.updated, failed: result.failed },
+    });
     const processed = result.inserted + result.updated;
     if (result.totalRows === 0 || processed === 0) {
       res.status(400).json({
@@ -567,6 +637,16 @@ router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuper
     });
   } catch (err) {
     req.log.error(err);
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: null,
+      unitId: null,
+      action: "mgm.import",
+      entityType: "weather_degree_days",
+      entityId: "excel",
+      outcome: "failure",
+      metadata: { operation: "degree-days-import" },
+    });
     res.status(400).json({ error: "MGM gün derece import dosyası işlenemedi" });
   }
 });
