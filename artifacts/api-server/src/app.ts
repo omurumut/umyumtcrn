@@ -2,11 +2,14 @@ import express, { type Express } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { authMiddleware } from "./middlewares/auth.js";
+import {
+  createCorsMiddleware,
+  securityHeaders,
+} from "./lib/http-security.js";
 
 const app: Express = express();
 
@@ -29,7 +32,8 @@ app.use(
     },
   }),
 );
-app.use(cors());
+app.use(securityHeaders);
+app.use(createCorsMiddleware());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(authMiddleware);

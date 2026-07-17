@@ -128,6 +128,8 @@ async function main(): Promise<number> {
   let viteServer: ViteServer | null = null;
 
   try {
+    const requestedFrontendPort = await reserveLocalPort();
+    process.env.TEST_CORS_ALLOWED_ORIGIN = `http://127.0.0.1:${requestedFrontendPort}`;
     const appUrl = pathToFileURL(
       resolve(repoRoot, "artifacts/api-server/src/app.ts"),
     ).href;
@@ -144,7 +146,6 @@ async function main(): Promise<number> {
     const viteModule = (await import(viteModuleUrl)) as {
       createServer(config: Record<string, unknown>): Promise<ViteServer>;
     };
-    const requestedFrontendPort = await reserveLocalPort();
     viteServer = await viteModule.createServer({
       configFile: resolve(dashboardRoot, "vite.config.ts"),
       root: dashboardRoot,
@@ -174,6 +175,7 @@ async function main(): Promise<number> {
       E2E_BASE_URL: baseUrl,
     });
   } finally {
+    delete process.env.TEST_CORS_ALLOWED_ORIGIN;
     if (viteServer) await viteServer.close().catch(() => undefined);
     await closeServer(apiServer).catch(() => undefined);
     const dbUrl = pathToFileURL(resolve(repoRoot, "lib/db/src/index.ts")).href;

@@ -32,6 +32,27 @@ Optional PDF settings:
 - `PDF_CHROMIUM_EXECUTABLE_PATH`: Explicit executable override. Leave unset to use the provisioned Playwright Chromium. Invalid or non-executable paths fail safely.
 - `PDF_CHROMIUM_NO_SANDBOX=true`: Adds Chromium no-sandbox flags. It is disabled by default. Enable only when the deployment runtime demonstrably cannot launch the sandbox, because it weakens browser process isolation.
 
+## CORS and HTTP security policy
+
+Production uses an exact CORS allowlist from `CORS_ALLOWED_ORIGINS`. The value is a comma-separated list of canonical `http://` or `https://` origins without paths, query strings, fragments, credentials, trailing slashes, or wildcards:
+
+```text
+CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+```
+
+The value is not a secret, but its entries are not logged. Duplicate entries are removed. Invalid entries make production startup fail. An unset or empty allowlist is a supported same-origin-only mode: requests without an `Origin` header and browser requests whose Origin host exactly matches the request Host continue to work, while other origins are rejected. Same-host HTTP/HTTPS schemes are both recognized so TLS termination does not require broad proxy trust. This preserves CLI, health, readiness, same-origin module assets, navigation, and server-to-server access without creating an open fallback.
+
+Development accepts only `http://localhost:5000` and `http://127.0.0.1:5000`. These origins are never added to production automatically. Allowed browser requests may use `GET`, `POST`, `PATCH`, `PUT`, `DELETE`, and `OPTIONS`, with only `Authorization` and `Content-Type` request headers. `Content-Disposition` and `Retry-After` are exposed. Cookie credentials are disabled because authentication uses a Bearer token.
+
+Production responses enforce:
+
+- CSP with same-origin scripts/API connections, no `unsafe-eval`, no objects, and no framing. Runtime inline styles remain allowed because the React/Radix UI generates style attributes and style elements. Google Fonts is the only external style/font source.
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains` without `preload`.
+- `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: strict-origin-when-cross-origin`.
+- A Permissions Policy denying camera, microphone, geolocation, payment, and USB.
+
+HSTS is emitted only by the production application and is honored by browsers only over HTTPS. Replit terminates TLS at its reverse proxy, so deployment smoke testing must confirm the public HTTPS response retains this header. The application does not enable broad Express `trust proxy`: before relying on `req.ip` for externally observed client identity, verify Replit's forwarding chain in staging and configure only a documented trusted hop policy. Never enable unrestricted `trust proxy = true` merely to accept `X-Forwarded-For`.
+
 Optional startup operations, all disabled by default:
 
 - `ENABLE_MGM_BOOTSTRAP=true`: Import/seed MGM reference data after readiness.
