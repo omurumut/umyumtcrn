@@ -1,6 +1,7 @@
 import { db, mgmStationsTable, mgmDegreeDataTable, mgmSyncLogTable, weatherDegreeDaysTable, mgmStationMappingsTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { MGM_STATIONS, type StationSeed } from "./mgm-stations-data.js";
+import { observeMgmSync } from "../lib/metrics.js";
 
 // ── MGM Resmi Baz Sıcaklıkları ─────────────────────────────────────
 // HDD: Tm ≤ 15°C eşiği → HDD = 18 - Tm  (eşik: 15, baz: 18)
@@ -589,6 +590,7 @@ export function startMgmDailyScheduler(): MgmSchedulerHandle {
   const runSync = async () => {
     console.log("[MGM] Günlük sync başladı (Open-Meteo)...");
     const result = await syncCurrentMonthData();
+    observeMgmSync("scheduler", result.errors > 0 ? (result.synced > 0 ? "partial" : "failure") : "success");
     console.log(`[MGM] Günlük sync tamamlandı: ${result.synced} güncellendi, ${result.errors} hata.`);
   };
 

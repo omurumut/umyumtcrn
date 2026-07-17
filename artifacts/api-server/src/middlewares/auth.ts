@@ -4,6 +4,7 @@ import {
   runAuthStoreOperation,
   type AuthenticatedSessionUser,
 } from "../lib/auth-session-store.js";
+import { observeAuthEvent } from "../lib/metrics.js";
 
 export type SessionUser = AuthenticatedSessionUser;
 
@@ -24,6 +25,12 @@ export function getBearerToken(req: Request): string | null {
 }
 
 export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  if (req.path === "/api/metrics") {
+    req.user = null;
+    next();
+    return;
+  }
+
   const token = getBearerToken(req);
   if (!token) {
     req.user = null;
@@ -33,9 +40,11 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
 
   try {
     req.user = await runAuthStoreOperation(authenticateSessionToken(token));
+    if (!req.user) observeAuthEvent("session_validation_failure", "invalid_or_expired");
     next();
   } catch (error) {
     req.user = null;
+    observeAuthEvent("session_store_unavailable", "store_unavailable");
     req.log.error(error);
     res.status(503).json({ error: "Kimlik doğrulama hizmeti geçici olarak kullanılamıyor" });
   }

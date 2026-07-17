@@ -7,12 +7,18 @@ import { chromium } from "playwright";
 
 const ALLOWED_ORIGIN = "https://allowed.example";
 const UNKNOWN_ORIGIN = "https://unknown.example";
+const METRICS_TOKEN = "metrics-readiness-token-000000000000";
+const WRONG_METRICS_TOKEN = "wrong-readiness-token-0000000000000";
 
 const STARTUP_TIMEOUT_MS = 30_000;
 const SHUTDOWN_TIMEOUT_MS = 20_000;
 const DOCKER_TIMEOUT_MS = 15_000;
 const TEST_DB_LABEL = "com.iso50001-ems.test-db";
 const RUN_LABEL = `${TEST_DB_LABEL}.run`;
+const METRICS_ENV: NodeJS.ProcessEnv = {
+  ENABLE_METRICS_ENDPOINT: "true",
+  METRICS_ACCESS_TOKEN: METRICS_TOKEN,
+};
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -194,6 +200,127 @@ async function login(baseUrl: string, origin?: string): Promise<string> {
   const body = await response.json() as { token?: unknown };
   assert(typeof body.token === "string" && body.token.length > 0, "Production login token üretmedi.");
   return body.token;
+}
+
+async function fetchMetrics(baseUrl: string, token?: string, origin?: string): Promise<Response> {
+  return fetch(`${baseUrl}/api/metrics`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(origin ? { Origin: origin } : {}),
+    },
+  });
+}
+
+async function assertMetricsDisabled(baseUrl: string): Promise<void> {
+  const response = await fetchMetrics(baseUrl, METRICS_TOKEN);
+  assert(response.status === 404, "Metrics endpoint feature flag kapalıyken 404 dönmedi.");
+  assertSecurityHeaders(response);
+}
+
+async function assertMetricsAuth(baseUrl: string, appToken: string): Promise<void> {
+  const missing = await fetchMetrics(baseUrl);
+  assert(missing.status === 401, "Metrics endpoint token yokken 401 dönmedi.");
+  assertSecurityHeaders(missing);
+
+  const wrong = await fetchMetrics(baseUrl, WRONG_METRICS_TOKEN);
+  assert(wrong.status === 403, "Metrics endpoint yanlış token ile 403 dönmedi.");
+  assertSecurityHeaders(wrong);
+
+  const appBearer = await fetchMetrics(baseUrl, appToken);
+  assert(appBearer.status === 403, "Application bearer token metrics endpointine erişti.");
+  assertSecurityHeaders(appBearer);
+
+  const unknownOrigin = await fetchMetrics(baseUrl, METRICS_TOKEN, UNKNOWN_ORIGIN);
+  assert(unknownOrigin.status === 403, "Metrics endpoint unknown Origin politikasını korumadı.");
+  assertSecurityHeaders(unknownOrigin);
+
+  const ok = await fetchMetrics(baseUrl, METRICS_TOKEN, ALLOWED_ORIGIN);
+  assert(ok.status === 200, "Metrics endpoint doğru token ile 200 dönmedi.");
+  assert(ok.headers.get("content-type")?.includes("text/plain"), "Metrics endpoint text/plain dönmedi.");
+  assert(ok.headers.get("content-type")?.includes("version=0.0.4"), "Metrics endpoint Prometheus content type taşımıyor.");
+  assertSecurityHeaders(ok);
+}
+
+function assertNoMetricsLeak(metricsText: string): void {
+  for (const forbidden of [
+    "DATABASE_URL",
+    "Bearer",
+    "password",
+    "token",
+    "tokenHash",
+    "authorization",
+    "cookie",
+    process.env.E2E_ADMIN_USERNAME ?? "",
+    process.env.E2E_TEST_PASSWORD ?? "",
+    "123abc",
+    ALLOWED_ORIGIN,
+    UNKNOWN_ORIGIN,
+  ]) {
+    if (forbidden) assert(!metricsText.includes(forbidden), `Metrics çıktısı hassas değer içeriyor: ${forbidden}`);
+  }
+  assert(!/postgres(?:ql)?:\/\//i.test(metricsText), "Metrics çıktısı database URL içeriyor.");
+}
+
+async function assertMetricsOutput(baseUrl: string): Promise<void> {
+  const response = await fetchMetrics(baseUrl, METRICS_TOKEN);
+  assert(response.status === 200, "Metrics okunamadı.");
+  const body = await response.text();
+  assertNoMetricsLeak(body);
+  for (const expected of [
+    "iso50001_http_requests_total",
+    "iso50001_http_request_duration_seconds_bucket",
+    "iso50001_http_request_duration_seconds_count",
+    "iso50001_http_request_duration_seconds_sum",
+    "iso50001_http_requests_active",
+    "iso50001_auth_events_total",
+    "iso50001_db_events_total",
+    "iso50001_db_pool_connections",
+    "iso50001_pdf_renders_total",
+    "iso50001_pdf_render_duration_seconds_count",
+    "iso50001_import_attempts_total",
+    "iso50001_mgm_sync_total",
+    "iso50001_audit_events_total",
+    "iso50001_audit_write_failures_total",
+    "iso50001_process_resident_memory_bytes",
+    "iso50001_nodejs_eventloop_lag_seconds",
+  ]) {
+    assert(body.includes(expected), `Metrics çıktısında beklenen seri yok: ${expected}`);
+  }
+  assert(/route="\/api\/healthz"/.test(body), "Health route normalize edilmedi.");
+  assert(/route="\/api\/readyz"/.test(body), "Ready route normalize edilmedi.");
+  assert(/route="unknown"/.test(body), "Unknown route tek label altında toplanmadı.");
+  assert(/status_class="4xx"/.test(body), "4xx status class metriği oluşmadı.");
+  assert(/status_class="5xx"/.test(body), "5xx status class metriği oluşmadı.");
+  assert(/event="readiness_check",outcome="failure"/.test(body), "DB outage readiness failure metriği oluşmadı.");
+  assert(/event="login_success",reason="none"/.test(body), "Login success metriği oluşmadı.");
+  assert(/event="login_failure",reason="invalid_credentials"/.test(body), "Login failure metriği oluşmadı.");
+  assert(/event="login_rate_limited",reason="rate_limited"/.test(body), "Login rate-limit metriği oluşmadı.");
+  assert(/report_type="energy_targets",outcome="success"/.test(body), "PDF success metriği oluşmadı.");
+}
+
+async function assertMetricsPerformanceSmoke(baseUrl: string): Promise<void> {
+  const startedAt = Date.now();
+  const totalRequests = 1_000;
+  let nextRequest = 0;
+  async function worker(): Promise<void> {
+    while (nextRequest < totalRequests) {
+      nextRequest += 1;
+      const response = await fetch(`${baseUrl}/api/healthz`);
+      assert(response.status === 200, "Metrics performance smoke health request başarısız oldu.");
+    }
+  }
+  await Promise.all(Array.from({ length: 20 }, () => worker()));
+  const durationMs = Date.now() - startedAt;
+  assert(durationMs < 30_000, "Metrics performance smoke makul sürede tamamlanmadı.");
+
+  const metricsResponse = await fetchMetrics(baseUrl, METRICS_TOKEN);
+  assert(metricsResponse.status === 200, "Metrics performance smoke sonrası metrics okunamadı.");
+  const metricsText = await metricsResponse.text();
+  const activeGauge = metricsText.match(/^iso50001_http_requests_active(?:\{[^}]*\})? ([0-9.]+)$/m);
+  assert(activeGauge, "Active request gauge bulunamadı.");
+  const activeRequests = Number(activeGauge[1]);
+  assert(Number.isFinite(activeRequests) && activeRequests >= 0 && activeRequests <= 1, "Active request gauge leak gösteriyor.");
+  assertNoMetricsLeak(metricsText);
 }
 
 async function fetchPdf(baseUrl: string, token: string, origin?: string): Promise<Response> {
@@ -414,11 +541,18 @@ async function main(): Promise<void> {
   let missingBrowserDirectory: string | null = null;
   try {
     running = await startProduction(process.env.PLAYWRIGHT_BROWSERS_PATH!);
+    await assertMetricsDisabled(running.baseUrl);
+    await stopProduction(running, "SIGTERM");
+    running = null;
+
+    running = await startProduction(process.env.PLAYWRIGHT_BROWSERS_PATH!, METRICS_ENV);
     await assertStaticAndApi(running.baseUrl);
     await assertCorsPolicy(running.baseUrl);
     await waitForLog(running, /MGM scheduler disabled/);
     await assertDatabaseOutageRecovery(running);
     const token = await login(running.baseUrl, ALLOWED_ORIGIN);
+    await assertMetricsAuth(running.baseUrl, token);
+    await assertMetricsPerformanceSmoke(running.baseUrl);
     const pdf = await fetchPdf(running.baseUrl, token, ALLOWED_ORIGIN);
     assertSecurityHeaders(pdf);
     assert(pdf.headers.get("access-control-expose-headers")?.includes("Content-Disposition"), "PDF disposition expose edilmedi.");
@@ -428,10 +562,13 @@ async function main(): Promise<void> {
     const concurrentPdfs = Promise.all([1, 2, 3].map(async () => assertPdf(await fetchPdf(running!.baseUrl, token))));
     if (process.platform === "win32") {
       await concurrentPdfs;
+      await assertMetricsOutput(running.baseUrl);
       await stopProduction(running, "SIGTERM");
     } else {
       await delay(25);
-      await Promise.all([concurrentPdfs, stopProduction(running, "SIGTERM")]);
+      await concurrentPdfs;
+      await assertMetricsOutput(running.baseUrl);
+      await stopProduction(running, "SIGTERM");
     }
     running = null;
 
@@ -511,7 +648,7 @@ async function main(): Promise<void> {
     await stopProduction(running).catch(() => undefined);
     if (missingBrowserDirectory) await rm(missingBrowserDirectory, { recursive: true, force: true });
   }
-  console.log(JSON.stringify({ productionReadinessScenarios: 11, corsSecurityScenarios: 22 }));
+  console.log(JSON.stringify({ productionReadinessScenarios: 20, corsSecurityScenarios: 22, metricsScenarios: 9 }));
 }
 
 main().catch((error: unknown) => {

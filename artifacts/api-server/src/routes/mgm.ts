@@ -8,6 +8,7 @@ import { syncOfficialDegreeDays } from "../services/mgm-official-sync.js";
 import { importStationMapping, importDegreeDays, DEFAULT_MAPPING_FILE, DEFAULT_DEGREE_DAYS_FILE } from "../services/mgm-excel-import.js";
 import { getMgmBootstrapStatus } from "../services/mgm-bootstrap.js";
 import { writeAuditEvent, writeBestEffortAudit } from "../lib/audit.js";
+import { observeImport, observeMgmSync } from "../lib/metrics.js";
 
 const router = Router();
 
@@ -435,6 +436,7 @@ router.get("/mgm/sync-log", requireAuth, requireSuperAdmin, async (req, res) => 
 router.post("/mgm/sync", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const result = await syncCurrentMonthData();
+    observeMgmSync("manual", result.errors > 0 ? (result.synced > 0 ? "partial" : "failure") : "success");
     await writeAuditEvent(db, {
       request: req,
       companyId: null,
@@ -450,6 +452,7 @@ router.post("/mgm/sync", requireAuth, requireSuperAdmin, async (req, res) => {
       errors: result.errors,
     });
   } catch (err) {
+    observeMgmSync("manual", "failure");
     req.log.error(err);
     await writeBestEffortAudit(db, {
       request: req,
@@ -492,6 +495,7 @@ router.post("/admin/weather-degree-days/sync", requireAuth, requireSuperAdmin, a
     };
 
     const results = await syncOfficialDegreeDays(years, onProgress);
+    observeMgmSync("manual", results.some(r => r.errors > 0) ? (results.some(r => r.inserted > 0 || r.updated > 0) ? "partial" : "failure") : "success");
     await writeAuditEvent(db, {
       request: req,
       companyId: null,
@@ -516,6 +520,7 @@ router.post("/admin/weather-degree-days/sync", requireAuth, requireSuperAdmin, a
     });
   } catch (err) {
     if (handleInvalidMgmParameter(res, err)) return;
+    observeMgmSync("manual", "failure");
     req.log.error(err);
     await writeBestEffortAudit(db, {
       request: req,
@@ -566,6 +571,12 @@ router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireSuper
     };
 
     const result = await importStationMapping(filePath, onProgress);
+    observeImport("mgm_station_mapping", result.failed > 0 ? (result.inserted > 0 || result.updated > 0 ? "partial" : "failure") : "success", {
+      total: result.totalRows,
+      inserted: result.inserted,
+      updated: result.updated,
+      failed: result.failed,
+    });
     await writeAuditEvent(db, {
       request: req,
       companyId: null,
@@ -583,6 +594,7 @@ router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireSuper
       logs,
     });
   } catch (err) {
+    observeImport("mgm_station_mapping", "failure", { total: 0, failed: 1 });
     req.log.error(err);
     await writeBestEffortAudit(db, {
       request: req,
@@ -610,6 +622,12 @@ router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuper
     };
 
     const result = await importDegreeDays(filePath, onProgress);
+    observeImport("mgm_degree_days", result.failed > 0 ? (result.inserted > 0 || result.updated > 0 ? "partial" : "failure") : "success", {
+      total: result.totalRows,
+      inserted: result.inserted,
+      updated: result.updated,
+      failed: result.failed,
+    });
     await writeAuditEvent(db, {
       request: req,
       companyId: null,
@@ -636,6 +654,7 @@ router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuper
       logs,
     });
   } catch (err) {
+    observeImport("mgm_degree_days", "failure", { total: 0, failed: 1 });
     req.log.error(err);
     await writeBestEffortAudit(db, {
       request: req,

@@ -18,6 +18,7 @@ import {
 } from "../lib/login-rate-limit.js";
 import { hashPassword, needsPasswordRehash, verifyPassword } from "../security/passwords.js";
 import { changedAuditFields, hashAuditValue, writeAuditEvent, writeBestEffortAudit } from "../lib/audit.js";
+import { observeAuthEvent } from "../lib/metrics.js";
 
 const router = Router();
 
@@ -167,6 +168,7 @@ router.post("/auth/login", async (req, res) => {
       checkLoginRateLimits(rateLimitKeys),
     );
     if (currentRetryAfter !== null) {
+      observeAuthEvent("login_rate_limited", "rate_limited");
       await writeBestEffortAudit(db, {
         request: req,
         action: "auth.login.rate_limited",
@@ -183,6 +185,7 @@ router.post("/auth/login", async (req, res) => {
       const result = await runAuthStoreOperation(
         registerFailedLogin(rateLimitKeys, LOGIN_RATE_LIMIT_WINDOW_MS),
       );
+      observeAuthEvent(result.blocked ? "login_rate_limited" : "login_failure", result.blocked ? "rate_limited" : "invalid_credentials");
       await writeBestEffortAudit(db, {
         request: req,
         action: result.blocked ? "auth.login.rate_limited" : "auth.login.failure",
@@ -236,6 +239,7 @@ router.post("/auth/login", async (req, res) => {
 
     await runAuthStoreOperation(resetUsernameRateLimit(usernameKey));
     const { token } = await runAuthStoreOperation(createAuthSession(user.id));
+    observeAuthEvent("login_success", "none");
     await writeBestEffortAudit(db, {
       request: req,
       actorUserId: user.id,
@@ -260,6 +264,7 @@ router.post("/auth/login", async (req, res) => {
       },
     });
   } catch (err) {
+    observeAuthEvent("login_failure", "store_unavailable");
     req.log.error(err);
     res.status(503).json({ error: "Giriş hizmeti geçici olarak kullanılamıyor" });
   }
@@ -275,6 +280,7 @@ router.post("/auth/logout", async (req, res) => {
   try {
     const token = getBearerToken(req);
     if (token) await runAuthStoreOperation(revokeAuthSession(token));
+    observeAuthEvent("logout", "none");
     await writeBestEffortAudit(db, {
       request: req,
       action: "auth.logout",

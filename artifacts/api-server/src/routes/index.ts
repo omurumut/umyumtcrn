@@ -30,6 +30,7 @@ import energyReviewRouter from "./energy-review";
 import energyReviewRecordsRouter from "./energy-review-records";
 import pendingWorkItemsRouter from "./pending-work-items";
 import auditEventsRouter from "./audit-events";
+import metricsRouter from "./metrics";
 
 const router: IRouter = Router();
 
@@ -64,5 +65,6 @@ router.use(energyReviewRouter);
 router.use(energyReviewRecordsRouter);
 router.use(pendingWorkItemsRouter);
 router.use(auditEventsRouter);
+router.use(metricsRouter);
 
 export default router;

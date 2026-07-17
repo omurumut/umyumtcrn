@@ -1,6 +1,7 @@
 import { chromium, type Browser, type BrowserContext } from "playwright";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
+import { decActivePdfRender, incActivePdfRender, observePdfRender } from "./metrics.js";
 
 const PDF_RENDER_TIMEOUT_MS = 30_000;
 
@@ -16,6 +17,16 @@ type RenderHtmlToPdfOptions = {
   title: string;
   landscape?: boolean;
 };
+
+function reportTypeFromTitle(title: string): string {
+  const normalized = title.toLowerCase();
+  if (normalized.includes("hedef")) return "energy_targets";
+  if (normalized.includes("tüketim") || normalized.includes("tuketim")) return "consumption";
+  if (normalized.includes("swot")) return "swot";
+  if (normalized.includes("risk")) return "risk";
+  if (normalized.includes("öek") || normalized.includes("seu")) return "seu";
+  return "report";
+}
 
 function launchArgs(): string[] {
   const args = ["--disable-dev-shm-usage"];
@@ -56,6 +67,9 @@ export async function renderHtmlToPdf({
 
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
+  const reportType = reportTypeFromTitle(title);
+  const started = process.hrtime.bigint();
+  incActivePdfRender(reportType);
   try {
     browser = await chromium.launch({
       headless: true,
@@ -108,12 +122,15 @@ export async function renderHtmlToPdf({
     if (pdf.length < 1_024 || pdf.subarray(0, 5).toString("ascii") !== "%PDF-") {
       throw new PdfRenderError();
     }
+    observePdfRender(reportType, "success", Number(process.hrtime.bigint() - started) / 1_000_000_000);
     return pdf;
   } catch {
+    observePdfRender(reportType, "failure", Number(process.hrtime.bigint() - started) / 1_000_000_000);
     throw new PdfRenderError();
   } finally {
     await context?.close().catch(() => undefined);
     await browser?.close().catch(() => undefined);
+    decActivePdfRender(reportType);
   }
 }
 

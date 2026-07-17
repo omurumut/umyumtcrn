@@ -4,6 +4,7 @@ import { eq, and, or, ne, isNull, inArray, sql, SQL } from "drizzle-orm";
 import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 import { parseIlIlce, findStationByIlIlce } from "../services/mgm-stations-data.js";
 import { lookupStationKeyByLocation, lookupOfficialByStationKey } from "../services/mgm-sync.js";
+import { observeImport } from "../lib/metrics.js";
 
 const router = Router();
 const VARIABLE_NAME_MAX_LENGTH = 255;
@@ -832,6 +833,11 @@ router.post("/variable-values/batch", requireAuth, async (req, res) => {
       }
     }
 
+    observeImport("variable_values", errors.length > 0 ? (imported > 0 ? "partial" : "failure") : "success", {
+      total: rows.length,
+      inserted: imported,
+      failed: errors.length,
+    });
     res.json({ imported, total: rows.length, errors });
   } catch (err) {
     if (handleInvalidId(res, err)) return;

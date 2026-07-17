@@ -3,6 +3,7 @@ import { HealthCheckResponse } from "@workspace/api-zod";
 import { pool } from "@workspace/db";
 import { applicationLifecycleState } from "../lib/lifecycle-state.js";
 import { logger } from "../lib/logger.js";
+import { observeDbEvent } from "../lib/metrics.js";
 
 const router: IRouter = Router();
 const READINESS_TIMEOUT_MS = 2_000;
@@ -21,6 +22,7 @@ router.get("/healthz", (_req, res) => {
     res.status(503).json({ status: "draining" });
     return;
   }
+  observeDbEvent("health_check", "success");
   const data = HealthCheckResponse.parse({ status: "ok" });
   res.json(data);
 });
@@ -34,8 +36,10 @@ router.get("/readyz", async (_req, res) => {
 
   try {
     await checkDatabaseReadiness();
+    observeDbEvent("readiness_check", "success");
     res.json({ status: "ready" });
   } catch {
+    observeDbEvent("readiness_check", "failure");
     logger.warn("Readiness database check failed");
     res.status(503).json({ status: "not_ready" });
   }

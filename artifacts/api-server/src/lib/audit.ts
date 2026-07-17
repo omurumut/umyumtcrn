@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Request } from "express";
 import { auditEventsTable } from "@workspace/db";
+import { observeAuditFailure, observeAuditWritten } from "./metrics.js";
 
 type DbLike = {
   insert: (table: typeof auditEventsTable) => {
@@ -138,29 +139,43 @@ function actorFromRequest(req?: Request) {
 }
 
 export async function writeAuditEvent(db: DbLike, input: AuditEventInput) {
-  if (!AUDIT_ACTION_SET.has(input.action)) throw new Error("Invalid audit action");
+  if (!AUDIT_ACTION_SET.has(input.action)) {
+    observeAuditFailure("invalid");
+    throw new Error("Invalid audit action");
+  }
   const outcome = input.outcome ?? "success";
-  if (!AUDIT_OUTCOME_SET.has(outcome)) throw new Error("Invalid audit outcome");
-  if (!/^[a-z][a-z0-9._-]{0,63}$/.test(input.entityType)) throw new Error("Invalid audit entity type");
+  if (!AUDIT_OUTCOME_SET.has(outcome)) {
+    observeAuditFailure(input.action);
+    throw new Error("Invalid audit outcome");
+  }
+  if (!/^[a-z][a-z0-9._-]{0,63}$/.test(input.entityType)) {
+    observeAuditFailure(input.action);
+    throw new Error("Invalid audit entity type");
+  }
 
   const actor = actorFromRequest(input.request);
   const metadata = sanitizeAuditJson({ ...actor.metadata, ...((input.metadata ?? {}) as object) });
 
-  const [event] = await db.insert(auditEventsTable).values({
-    requestId: input.requestId ?? actor.requestId,
-    actorUserId: input.actorUserId ?? actor.actorUserId,
-    actorRole: input.actorRole ?? actor.actorRole,
-    companyId: input.companyId ?? actor.companyId,
-    unitId: input.unitId ?? actor.unitId,
-    action: input.action,
-    entityType: input.entityType,
-    entityId: input.entityId === undefined || input.entityId === null ? null : String(input.entityId),
-    outcome,
-    changes: sanitizeAuditJson(input.changes ?? null),
-    metadata,
-  }).returning({ id: auditEventsTable.id });
-
-  return event.id;
+  try {
+    const [event] = await db.insert(auditEventsTable).values({
+      requestId: input.requestId ?? actor.requestId,
+      actorUserId: input.actorUserId ?? actor.actorUserId,
+      actorRole: input.actorRole ?? actor.actorRole,
+      companyId: input.companyId ?? actor.companyId,
+      unitId: input.unitId ?? actor.unitId,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId === undefined || input.entityId === null ? null : String(input.entityId),
+      outcome,
+      changes: sanitizeAuditJson(input.changes ?? null),
+      metadata,
+    }).returning({ id: auditEventsTable.id });
+    observeAuditWritten(input.action, outcome);
+    return event.id;
+  } catch (error) {
+    observeAuditFailure(input.action);
+    throw error;
+  }
 }
 
 export async function writeBestEffortAudit(db: DbLike, input: AuditEventInput) {

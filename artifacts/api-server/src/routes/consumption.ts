@@ -5,6 +5,7 @@ import { requireAuth } from "../middlewares/auth.js";
 import { parseIlIlce } from "../services/mgm-stations-data.js";
 import { toStationKey, lookupOfficialByStationKey, lookupOfficialWeatherDegreeDay, lookupStationKeyByLocation } from "../services/mgm-sync.js";
 import { changedAuditFields, writeAuditEvent } from "../lib/audit.js";
+import { observeImport } from "../lib/metrics.js";
 
 const router = Router();
 
@@ -898,6 +899,11 @@ router.post("/consumption/batch", requireAuth, async (req, res) => {
       });
     });
 
+    observeImport("consumption", errors.length > 0 ? (imported > 0 ? "partial" : "failure") : "success", {
+      total: rows.length,
+      inserted: imported,
+      failed: errors.length,
+    });
     res.json({ imported, total: rows.length, errors });
   } catch (err) {
     if (isBadRequestError(err)) {

@@ -17,6 +17,7 @@ import {
   beginApplicationShutdown,
   markApplicationReady,
 } from "./lib/lifecycle-state.js";
+import { observeDbEvent, observeMgmSync } from "./lib/metrics.js";
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -74,8 +75,10 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
 
   try {
     await closeDatabasePool();
+    observeDbEvent("pool_close", "success");
   } catch (error) {
     failed = true;
+    observeDbEvent("pool_close", "failure");
     logger.error({ err: error }, "Database pool shutdown failed");
   } finally {
     clearTimeout(timeout);
@@ -140,6 +143,7 @@ async function start(): Promise<void> {
     const port = applicationPort();
     logger.info("Running database migrations...");
     await runMigrations(migrationsFolder);
+    observeDbEvent("migration_startup", "success");
     logger.info("Migrations complete");
     await bootstrapSuperAdminIfEnabled();
     if (applicationLifecycleState().isShuttingDown) return;
@@ -148,9 +152,11 @@ async function start(): Promise<void> {
     markApplicationReady();
     logger.info({ port }, "Server listening and ready");
     void startOptionalMgmServices().catch(error => {
+      observeMgmSync("bootstrap", "failure");
       logger.error({ err: error }, "MGM optional service startup failed");
     });
   } catch {
+    observeDbEvent("migration_startup", "failure");
     logger.error("Application startup failed");
     if (!applicationLifecycleState().isShuttingDown) {
       beginApplicationShutdown();

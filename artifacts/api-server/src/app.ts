@@ -3,16 +3,23 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pinoHttp from "pino-http";
+import { pool } from "@workspace/db";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { authMiddleware } from "./middlewares/auth.js";
+import { httpMetricsMiddleware } from "./middlewares/metrics.js";
 import { requestIdMiddleware } from "./lib/request-id.js";
 import {
   createCorsMiddleware,
   securityHeaders,
 } from "./lib/http-security.js";
+import { observeDbEvent } from "./lib/metrics.js";
 
 const app: Express = express();
+
+pool.on("error", () => {
+  observeDbEvent("pool_error", "failure");
+});
 
 app.use(requestIdMiddleware);
 app.use(
@@ -38,6 +45,7 @@ app.use(securityHeaders);
 app.use(createCorsMiddleware());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(httpMetricsMiddleware);
 app.use(authMiddleware);
 
 app.use("/api", router);
