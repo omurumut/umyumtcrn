@@ -535,6 +535,20 @@ async function assertMissingDatabaseStartup(browserPath: string): Promise<void> 
   await assertListenerClosed(running.baseUrl);
 }
 
+async function assertInvalidStartupConfig(browserPath: string, overrides: NodeJS.ProcessEnv, expectedLog: RegExp): Promise<void> {
+  const running = await spawnProduction(browserPath, overrides);
+  const result = await Promise.race([
+    new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveClose) => {
+      running.child.once("close", (code, signal) => resolveClose({ code, signal }));
+    }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Invalid startup config process zamanında sonlanmadı.")), STARTUP_TIMEOUT_MS)),
+  ]);
+  assert(result.code !== 0 || result.signal !== null, "Invalid startup config process başarılı exit verdi.");
+  assert(expectedLog.test(running.logs()), `Invalid startup config beklenen güvenli logu üretmedi: ${expectedLog.source}`);
+  assert(!/postgres(?:ql)?:\/\//i.test(running.logs()), "Invalid startup config logunda connection URL sızdı.");
+  await assertListenerClosed(running.baseUrl);
+}
+
 async function main(): Promise<void> {
   assertDisposableEnvironment();
   let running: RunningProduction | null = null;
@@ -598,6 +612,11 @@ async function main(): Promise<void> {
       assert(!invalidCors.logs().includes(invalidValue), "CORS allowlist değeri loglandı.");
     }
 
+    await assertInvalidStartupConfig(process.env.PLAYWRIGHT_BROWSERS_PATH!, { TRUST_PROXY_MODE: "true" }, /TRUST_PROXY_MODE must be one of/i);
+    await assertInvalidStartupConfig(process.env.PLAYWRIGHT_BROWSERS_PATH!, { TRUST_PROXY_MODE: "hops", TRUST_PROXY_HOPS: "0" }, /TRUST_PROXY_HOPS must be/i);
+    await assertInvalidStartupConfig(process.env.PLAYWRIGHT_BROWSERS_PATH!, { DB_POOL_MAX: "0" }, /DB_POOL_MAX must be/i);
+    await assertInvalidStartupConfig(process.env.PLAYWRIGHT_BROWSERS_PATH!, { DB_POOL_CONNECTION_TIMEOUT_MS: "0" }, /DB_POOL_CONNECTION_TIMEOUT_MS must be/i);
+
     running = await startProduction(process.env.PLAYWRIGHT_BROWSERS_PATH!, {
       NODE_ENV: "development",
       CORS_ALLOWED_ORIGINS: undefined,
@@ -648,7 +667,7 @@ async function main(): Promise<void> {
     await stopProduction(running).catch(() => undefined);
     if (missingBrowserDirectory) await rm(missingBrowserDirectory, { recursive: true, force: true });
   }
-  console.log(JSON.stringify({ productionReadinessScenarios: 20, corsSecurityScenarios: 22, metricsScenarios: 9 }));
+  console.log(JSON.stringify({ productionReadinessScenarios: 24, corsSecurityScenarios: 22, metricsScenarios: 9, proxyPoolStartupScenarios: 4 }));
 }
 
 main().catch((error: unknown) => {

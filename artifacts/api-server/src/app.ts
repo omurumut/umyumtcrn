@@ -9,6 +9,7 @@ import { logger } from "./lib/logger";
 import { authMiddleware } from "./middlewares/auth.js";
 import { httpMetricsMiddleware } from "./middlewares/metrics.js";
 import { requestIdMiddleware } from "./lib/request-id.js";
+import { applyTrustProxy } from "./lib/proxy-config.js";
 import {
   createCorsMiddleware,
   securityHeaders,
@@ -16,6 +17,7 @@ import {
 import { observeDbEvent } from "./lib/metrics.js";
 
 const app: Express = express();
+applyTrustProxy(app);
 
 pool.on("error", () => {
   observeDbEvent("pool_error", "failure");

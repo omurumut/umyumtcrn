@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { Request } from "express";
 import { auditEventsTable } from "@workspace/db";
 import { observeAuditFailure, observeAuditWritten } from "./metrics.js";
+import { resolveClientIp, UNKNOWN_CLIENT_IP } from "./client-ip.js";
+import { resolveTrustProxyConfig } from "./proxy-config.js";
 
 type DbLike = {
   insert: (table: typeof auditEventsTable) => {
@@ -125,6 +127,7 @@ export function changedAuditFields(before: Record<string, unknown>, after: Recor
 
 function actorFromRequest(req?: Request) {
   const user = req?.user;
+  const clientIp = req ? resolveClientIp(req) : UNKNOWN_CLIENT_IP;
   return {
     requestId: req?.id === undefined ? "system" : String(req.id),
     actorUserId: user?.userId ?? null,
@@ -132,7 +135,8 @@ function actorFromRequest(req?: Request) {
     companyId: user?.companyId ?? null,
     unitId: user?.unitId ?? null,
     metadata: {
-      ipHash: req?.ip ? stableHash(req.ip) : null,
+      ipHash: clientIp === UNKNOWN_CLIENT_IP ? null : stableHash(clientIp),
+      proxyMode: resolveTrustProxyConfig().mode,
       userAgentHash: typeof req?.headers["user-agent"] === "string" ? stableHash(req.headers["user-agent"]) : null,
     },
   };

@@ -19,6 +19,7 @@ import {
 import { hashPassword, needsPasswordRehash, verifyPassword } from "../security/passwords.js";
 import { changedAuditFields, hashAuditValue, writeAuditEvent, writeBestEffortAudit } from "../lib/audit.js";
 import { observeAuthEvent } from "../lib/metrics.js";
+import { resolveClientIp } from "../lib/client-ip.js";
 
 const router = Router();
 
@@ -161,7 +162,7 @@ export async function bootstrapSuperAdminIfEnabled() {
 router.post("/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body ?? {};
-    const ipKey = createIpRateLimitKey(req.ip || "unknown", LOGIN_RATE_LIMIT_MAX_PER_IP);
+    const ipKey = createIpRateLimitKey(resolveClientIp(req), LOGIN_RATE_LIMIT_MAX_PER_IP);
     const usernameKey = createUsernameRateLimitKey(username, LOGIN_RATE_LIMIT_MAX_PER_USERNAME);
     const rateLimitKeys: RateLimitKey[] = usernameKey ? [ipKey, usernameKey] : [ipKey];
     const currentRetryAfter = await runAuthStoreOperation(

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { Server } from "node:http";
 import app from "./app";
 import { logger } from "./lib/logger";
-import { closeDatabasePool, runMigrations } from "@workspace/db";
+import { closeDatabasePool, databasePoolConfig, runMigrations } from "@workspace/db";
 import { bootstrapSuperAdminIfEnabled } from "./routes/auth.js";
 import {
   type MgmSchedulerHandle,
@@ -141,6 +141,12 @@ async function start(): Promise<void> {
   registerSignalHandlers();
   try {
     const port = applicationPort();
+    logger.info({
+      poolMax: databasePoolConfig.max,
+      idleTimeoutMs: databasePoolConfig.idleTimeoutMillis,
+      connectionTimeoutMs: databasePoolConfig.connectionTimeoutMillis,
+      maxUses: databasePoolConfig.maxUses ?? null,
+    }, "Database pool configured");
     logger.info("Running database migrations...");
     await runMigrations(migrationsFolder);
     observeDbEvent("migration_startup", "success");
