@@ -191,6 +191,7 @@ test.afterAll(async () => {
     await pool.query("DELETE FROM reports WHERE id > $1", [initialReportMaxId]);
     await pool.query("DELETE FROM report_generation_snapshots WHERE id > $1", [initialSnapshotMaxId]);
     await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_targets_report.%'");
+    await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_performance_report.%'");
     await pool.query("DELETE FROM energy_performance_results WHERE baseline_id = ANY($1::int[])", [[ids.reportBaselineA1, ids.reportBaselineA2, ids.reportBaselineB1]]);
     await pool.query("DELETE FROM energy_baselines WHERE id = ANY($1::int[])", [[ids.reportBaselineA1, ids.reportBaselineA2, ids.reportBaselineB1]]);
   }
@@ -759,6 +760,128 @@ test("PERFORMANCE report empty year is controlled", async ({ request }) => {
   const html = await reportHtml(await request.get(`/api/reports/energy-performance/pdf?baselineId=${ids.reportBaselineA1}&year=2090`, { headers: auth(sessions.adminA.token) }));
   expect(html).toContain("Bu yıl için hesaplanmış EnPG sonucu bulunamadı.");
   expect(html).not.toMatch(/NaN|Infinity|undefined|\[object Object\]/);
+});
+
+test("PERFORMANCE report creates an immutable settings snapshot with default registry settings", async ({ request }) => {
+  await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_performance_report.%'");
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
+
+  const response = await request.get(
+    `/api/reports/energy-performance/pdf?baselineId=${ids.reportBaselineA1}&year=2026`,
+    { headers: auth(sessions.adminA.token) },
+  );
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-disposition"]).toMatch(/attachment;.*\.pdf/i);
+
+  const snapshots = await pool.query<{ status: string; filename: string; settings_snapshot_json: {
+    reportType: string;
+    locale: string;
+    confidentiality: string;
+    profileVersion: number;
+    typeSettingsVersion: number;
+    year: number;
+    baselineId: number;
+    seuAssessmentItemId: number;
+    sections: Array<{ code: string; visibilityResult: boolean; conditionalEvaluator: { applies: boolean; dataAvailable: boolean | null } }>;
+  } }>(`
+    SELECT status, filename, settings_snapshot_json
+    FROM report_generation_snapshots
+    WHERE company_id=$1 AND report_type='energy_performance_monitoring'
+    ORDER BY id DESC LIMIT 1
+  `, [ids.companyA]);
+  const snapshot = snapshots.rows[0]!;
+  expect(snapshot.status).toBe("completed");
+  expect(snapshot.filename.endsWith(".pdf")).toBe(true);
+  expect(snapshot.settings_snapshot_json).toMatchObject({
+    reportType: "energy_performance_monitoring",
+    locale: "tr-TR",
+    confidentiality: "internal",
+    profileVersion: 0,
+    typeSettingsVersion: 0,
+    year: 2026,
+    baselineId: ids.reportBaselineA1,
+    seuAssessmentItemId: ids.acceptedA1,
+  });
+  expect(snapshot.settings_snapshot_json.sections.find((section) => section.code === "cover")?.visibilityResult).toBe(true);
+  const modelVariables = snapshot.settings_snapshot_json.sections.find((section) => section.code === "model_variables");
+  expect(modelVariables?.visibilityResult).toBe(true);
+  expect(modelVariables?.conditionalEvaluator).toMatchObject({ applies: true, dataAvailable: true });
+
+  const audit = await pool.query<{ action: string; metadata_json: { outputName?: string; sectionCodes?: string[]; requestOverrideUsed?: boolean } }>(`
+    SELECT action, metadata_json
+    FROM audit_events
+    WHERE action LIKE 'energy_performance_report.%' AND company_id=$1
+    ORDER BY id
+  `, [ids.companyA]);
+  expect(audit.rows.map((row) => row.action)).toEqual([
+    "energy_performance_report.generation_started",
+    "energy_performance_report.generation_completed",
+  ]);
+  expect(audit.rows[0]?.metadata_json.outputName).toBe(snapshot.filename);
+  expect(audit.rows[0]?.metadata_json.sectionCodes).toContain("performance_summary");
+  expect(audit.rows[0]?.metadata_json.requestOverrideUsed).toBe(false);
+});
+
+test("PERFORMANCE report applies profile, type and section settings without mutating them", async ({ request }) => {
+  await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_performance_report.%'");
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_profiles(company_id, default_title, default_subtitle, confidentiality_level, cover_style, file_name_pattern, revision_number, footer_text, profile_version)
+    VALUES($1, 'Performance Profile Default', 'Performance Profile Subtitle', 'confidential', 'compact', '{company}_{reportType}_{year}_{revision}', 'P1', 'Performance footer marker', 4)
+  `, [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_type_settings(company_id, report_type, title_override, type_settings_version)
+    VALUES($1, 'energy_performance_monitoring', 'Performance Type Title', 5)
+  `, [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_section_settings(company_id, report_type, section_code, is_visible, display_order, label_override)
+    VALUES($1, 'energy_performance_monitoring', 'performance_summary', true, 40, 'Performance Snapshot Label')
+  `, [ids.companyA]);
+
+  const pdf = await parsePdf(
+    await request.get(`/api/reports/energy-performance/pdf?baselineId=${ids.reportBaselineA1}&year=2026`, { headers: auth(sessions.adminA.token) }),
+    "performance-report-settings.pdf",
+  );
+  expect(pdf.text).toContain("Performance Type Title");
+  expect(pdf.text).toContain("Performance Snapshot Label");
+  expect(pdf.text).toContain("Gizli");
+  expect(pdf.text).toContain("Performance footer marker");
+
+  const rows = await pool.query<{ label_override: string | null }>("SELECT label_override FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_performance_monitoring' AND section_code='performance_summary'", [ids.companyA]);
+  expect(rows.rows[0]?.label_override).toBe("Performance Snapshot Label");
+  const snapshot = await pool.query<{ filename: string; settings_snapshot_json: {
+    coverStyle: string;
+    confidentiality: string;
+    profileVersion: number;
+    typeSettingsVersion: number;
+    sections: Array<{ code: string; finalTitle: string }>;
+  } }>("SELECT filename, settings_snapshot_json FROM report_generation_snapshots WHERE company_id=$1 AND report_type='energy_performance_monitoring' ORDER BY id DESC LIMIT 1", [ids.companyA]);
+  expect(snapshot.rows[0]?.filename).toMatch(/p1\.pdf$/);
+  expect(snapshot.rows[0]?.settings_snapshot_json).toMatchObject({ coverStyle: "compact", confidentiality: "confidential", profileVersion: 4, typeSettingsVersion: 5 });
+  expect(snapshot.rows[0]?.settings_snapshot_json.sections.find((section) => section.code === "performance_summary")?.finalTitle).toBe("Performance Snapshot Label");
+});
+
+test("PERFORMANCE report hides conditional model variables when regression variables are absent", async ({ request }) => {
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='energy_performance_monitoring'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
+
+  await reportHtml(await request.get(`/api/reports/energy-performance/pdf?baselineId=${ids.reportBaselineA2}&year=2026`, { headers: auth(sessions.adminA.token) }));
+  const snapshot = await pool.query<{ settings_snapshot_json: {
+    sections: Array<{ code: string; visibilityResult: boolean; conditionalEvaluator: { applies: boolean; dataAvailable: boolean | null; reason: string } }>;
+  } }>("SELECT settings_snapshot_json FROM report_generation_snapshots WHERE company_id=$1 AND report_type='energy_performance_monitoring' ORDER BY id DESC LIMIT 1", [ids.companyA]);
+  const section = snapshot.rows[0]?.settings_snapshot_json.sections.find((item) => item.code === "model_variables");
+  expect(section).toMatchObject({
+    visibilityResult: false,
+    conditionalEvaluator: { applies: true, dataAvailable: false, reason: "no_model_variables" },
+  });
 });
 
 test("PERFORMANCE report escapes formula and variable text", async ({ request }) => {

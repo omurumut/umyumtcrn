@@ -14,6 +14,13 @@ import {
   visibleEnergyTargetsSections,
   type EnergyTargetsReportSnapshot,
 } from "../lib/energy-targets-report-snapshot.js";
+import {
+  ENERGY_PERFORMANCE_REPORT_TYPE,
+  EnergyPerformanceReportSnapshotError,
+  buildEnergyPerformanceReportSnapshot,
+  visibleEnergyPerformanceSections,
+  type EnergyPerformanceReportSnapshot,
+} from "../lib/energy-performance-report-snapshot.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -937,6 +944,8 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
 });
 
 router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
+  let snapshotRecordId: number | null = null;
+  let snapshotForFailure: EnergyPerformanceReportSnapshot | null = null;
   try {
     const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
     const baselineId = parseRequiredId(req.query.baselineId, "baselineId");
@@ -1026,6 +1035,69 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       ))
       .orderBy(asc(energyPerformanceResultsTable.month));
 
+    const [company] = await db.select({ name: companiesTable.name })
+      .from(companiesTable)
+      .where(eq(companiesTable.id, effectiveCompanyId))
+      .limit(1);
+    if (!company) throw new ReportScopeError(400, "GeÃƒÂ§ersiz companyId");
+
+    const effectiveSettings = await resolveEffectiveCompanyReportSettings({
+      companyId: effectiveCompanyId,
+      reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
+    });
+    const generatedAt = new Date();
+    const snapshot = buildEnergyPerformanceReportSnapshot({
+      effective: effectiveSettings,
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      companyName: company.name,
+      unitLabel: unitName,
+      year,
+      baselineId,
+      seuAssessmentItemId: baseline.seuAssessmentItemId ?? null,
+      modelType: baseline.modelType ?? null,
+      generatedAt,
+      generatedBy: req.user?.userId ?? null,
+      hasModelVariables: bvars.length > 0,
+    });
+    snapshotForFailure = snapshot;
+    const [snapshotRecord] = await db.insert(reportGenerationSnapshotsTable).values({
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
+      year,
+      status: "generating",
+      storageStatus: "not_stored",
+      filename: snapshot.filename,
+      settingsSnapshot: snapshot,
+      generatedBy: req.user?.userId ?? null,
+    }).returning({ id: reportGenerationSnapshotsTable.id });
+    snapshotRecordId = snapshotRecord.id;
+
+    const auditMetadata = {
+      companyId: effectiveCompanyId,
+      reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
+      snapshotId: snapshotRecordId,
+      profileVersion: snapshot.profileVersion,
+      typeSettingsVersion: snapshot.typeSettingsVersion,
+      outputName: snapshot.filename,
+      year,
+      baselineId,
+      seuAssessmentItemId: snapshot.seuAssessmentItemId,
+      modelType: snapshot.modelType,
+      sectionCodes: snapshot.sections.filter((section) => section.visibilityResult).map((section) => section.code),
+      requestOverrideUsed: false,
+    };
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      action: "energy_performance_report.generation_started",
+      entityType: "report_generation_snapshot",
+      entityId: snapshotRecordId,
+      metadata: auditMetadata,
+    });
+
     // ── Ham birim etiketi ─────────────────────────────────────────────────
     // rawUnit: consumptionTable.kwh alanının gerçek birimi — TEP değil, m³/kWh/vb.
     const rawUnit = baseline.rawUnit ?? "ham tüketim";
@@ -1046,6 +1118,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
     const eeiRows = results.filter(r => r.eei != null && r.status !== "negative_expected");
     const avgEei = eeiRows.length > 0 ? eeiRows.reduce((s, r) => s + r.eei!, 0) / eeiRows.length : null;
 
+    const locale = snapshot.locale;
     const fmtRaw = (v: number | null | undefined, dec = 2) =>
       v != null ? v.toLocaleString("tr-TR", { minimumFractionDigits: dec, maximumFractionDigits: dec }) : "—";
     const fmtPct = (actual: number | null, expected: number | null) => {
@@ -1125,6 +1198,19 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
           Bu aylar EEI ve ortalama EEI hesabına dahil edilmemiştir. Durum sütununda "Beklenen ≤ 0" olarak işaretlenmiştir.
         </div>`
       : "";
+    const visibleSections = visibleEnergyPerformanceSections(snapshot);
+    const visibleSectionCodes = new Set(visibleSections.map((section) => section.code));
+    const sectionTitle = (code: string, fallback: string) =>
+      snapshot.sections.find((section) => section.code === code)?.finalTitle ?? fallback;
+    const generatedDate = new Date(snapshot.generatedAt);
+    const coverClass = snapshot.coverStyle === "compact" ? "cover cover-compact" : "cover";
+    const subtitleHtml = snapshot.subtitle ? `<p>${escapeHtml(snapshot.subtitle)}</p>` : "";
+    const documentNumberHtml = snapshot.documentNumber ? `<p><strong>Dokuman No:</strong> ${escapeHtml(snapshot.documentNumber)}</p>` : "";
+    const revisionHtml = snapshot.revisionNumber ? `<p><strong>Revizyon:</strong> ${escapeHtml(snapshot.revisionNumber)}</p>` : "";
+    const signatureHtml = snapshot.showSignatureFields
+      ? `<p><strong>Hazirlayan:</strong> ${escapeHtml(snapshot.preparedBy ?? "")} | <strong>Kontrol:</strong> ${escapeHtml(snapshot.checkedBy ?? "")} | <strong>Onay:</strong> ${escapeHtml(snapshot.approvedBy ?? "")}</p>`
+      : "";
+    const footerText = snapshot.footerText ?? "Bu rapor ISO 50001 Enerji Yonetim Sistemi kapsaminda otomatik olarak uretilmistir.";
 
     // ── Tam HTML ──────────────────────────────────────────────────────────
     const htmlContent = `<!DOCTYPE html>
@@ -1148,23 +1234,34 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
     .meta-item { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 12px; }
     .meta-label { color: #64748b; margin-bottom: 3px; }
     .meta-value { font-weight: 600; color: #1e3a5f; }
+    .cover { margin-bottom: 30px; }
+    .cover-compact { margin-bottom: 18px; }
+    .cover-compact h1 { font-size: 18px; padding-bottom: 6px; }
+    .cover p { color: #64748b; font-size: 13px; margin: 4px 0; }
     .footer { margin-top: 36px; border-top: 1px solid #e2e8f0; padding-top: 14px; color: #94a3b8; font-size: 11px; }
     @media print { body { padding: 20px; } }
   </style>
 </head>
 <body>
 
-  <h1>ISO 50001 — EnPG İzleme Raporu</h1>
+  <div class="${coverClass}">
+  <h1>${escapeHtml(snapshot.title)}</h1>
+  ${subtitleHtml}
+  <p><strong>Gizlilik:</strong> ${escapeHtml(snapshot.confidentialityLabel)}</p>
+  ${documentNumberHtml}
+  ${revisionHtml}
+  ${signatureHtml}
   <div class="meta-grid">
     <div class="meta-item"><div class="meta-label">ÖEK Kalemi</div><div class="meta-value">${seuItemNameHtml}</div></div>
     <div class="meta-item"><div class="meta-label">Enerji Kaynağı</div><div class="meta-value">${energySourceNameHtml}</div></div>
     <div class="meta-item"><div class="meta-label">Birim</div><div class="meta-value">${unitNameHtml}</div></div>
     <div class="meta-item"><div class="meta-label">İzleme Yılı</div><div class="meta-value">${year}</div></div>
     <div class="meta-item"><div class="meta-label">Referans Yılı (EnRÇ)</div><div class="meta-value">${baseline.baselineYear}</div></div>
-    <div class="meta-item"><div class="meta-label">Rapor Tarihi</div><div class="meta-value">${new Date().toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" })}</div></div>
+    <div class="meta-item"><div class="meta-label">Rapor Tarihi</div><div class="meta-value">${generatedDate.toLocaleDateString(locale, { day: "2-digit", month: "long", year: "numeric" })}</div></div>
+  </div>
   </div>
 
-  <h2>Regresyon Modeli (EnRÇ Formülü)</h2>
+  <h2>${sectionTitle("regression_model", "Regresyon Modeli")}</h2>
   <div class="formula-box">${formulaTextHtml}</div>
   <div class="meta-grid">
     <div class="meta-item"><div class="meta-label">Model Türü</div><div class="meta-value">${modelLabel}</div></div>
@@ -1175,9 +1272,9 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
     <div class="meta-item"><div class="meta-label">Bağımlı Değişken Birimi</div><div class="meta-value">${rawUnitHtml}</div></div>
   </div>
 
-  ${varsHtml ? `<h2>Model Değişkenleri</h2>${varsHtml}` : ""}
+  ${visibleSectionCodes.has("model_variables") && varsHtml ? `<h2>${sectionTitle("model_variables", "Model Değişkenleri")}</h2>${varsHtml}` : ""}
 
-  <h2>Performans Özeti (${year})</h2>
+  <h2>${sectionTitle("performance_summary", "Performans Özeti")} (${year})</h2>
   <div class="kpi-grid">
     <div class="kpi-box">
       <div class="kpi-value">${fmtRaw(totalActual, 0)}</div>
@@ -1203,7 +1300,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
 
   ${negativeNoteHtml}
 
-  <h2>Aylık EnPG Sonuçları (${year})</h2>
+  <h2>${sectionTitle("monthly_results", "Aylık EnPG Sonuçları")} (${year})</h2>
   ${results.length > 0 ? `
   <table>
     <tr>
@@ -1221,9 +1318,9 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   </table>` : "<p>Bu yıl için hesaplanmış EnPG sonucu bulunamadı. Önce EnPG İzleme ekranından hesaplama yapın.</p>"}
 
   <div class="footer">
-    Bu rapor ISO 50001 Enerji Yönetim Sistemi kapsamında otomatik olarak üretilmiştir.<br>
+    ${escapeHtml(footerText)}<br>
     Bağımlı değişken birimi: <strong>${rawUnitHtml}</strong> — TEP dönüşümü bu raporda ana metrik olarak kullanılmamıştır.<br>
-    Referans EnRÇ ID: ${baselineId} | İzleme Yılı: ${year} | Üretim: ${new Date().toLocaleString("tr-TR")}
+    Referans EnRÇ ID: ${baselineId} | İzleme Yılı: ${year} | Gizlilik: ${escapeHtml(snapshot.confidentialityLabel)} | Üretim: ${generatedDate.toLocaleString(locale)}
   </div>
 </body>
 </html>`;
@@ -1233,7 +1330,19 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       title: `Enerji Performansi ${year}`,
       landscape: true,
     });
-    const filename = safePdfFilename(["enerji-performansi", year]);
+    await db.update(reportGenerationSnapshotsTable)
+      .set({ status: "completed", completedAt: new Date(), filename: snapshot.filename })
+      .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      action: "energy_performance_report.generation_completed",
+      entityType: "report_generation_snapshot",
+      entityId: snapshotRecordId,
+      metadata: auditMetadata,
+    });
+    const filename = snapshot.filename;
     res.set({
       "Content-Type": "application/pdf",
       "Content-Disposition": `attachment; filename="${filename}"`,
@@ -1242,6 +1351,42 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
     });
     res.status(200).send(pdf);
   } catch (err) {
+    if (snapshotRecordId !== null) {
+      await db.update(reportGenerationSnapshotsTable)
+        .set({
+          status: "failed",
+          failedAt: new Date(),
+          failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
+        })
+        .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
+      await writeBestEffortAudit(db, {
+        request: req,
+        companyId: snapshotForFailure?.companyId ?? req.user?.companyId ?? null,
+        unitId: snapshotForFailure?.unitId ?? req.user?.unitId ?? null,
+        action: "energy_performance_report.generation_failed",
+        entityType: "report_generation_snapshot",
+        entityId: snapshotRecordId,
+        outcome: "failure",
+        metadata: {
+          reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
+          snapshotId: snapshotRecordId,
+          profileVersion: snapshotForFailure?.profileVersion ?? null,
+          typeSettingsVersion: snapshotForFailure?.typeSettingsVersion ?? null,
+          outputName: snapshotForFailure?.filename ?? null,
+          year: snapshotForFailure?.year ?? null,
+          baselineId: snapshotForFailure?.baselineId ?? null,
+          seuAssessmentItemId: snapshotForFailure?.seuAssessmentItemId ?? null,
+          modelType: snapshotForFailure?.modelType ?? null,
+          sectionCodes: snapshotForFailure?.sections.filter((section) => section.visibilityResult).map((section) => section.code) ?? [],
+          requestOverrideUsed: false,
+          failureCategory: err instanceof EnergyPerformanceReportSnapshotError ? "settings_snapshot" : "render_or_update",
+        },
+      });
+    }
+    if (err instanceof EnergyPerformanceReportSnapshotError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
     if (handleReportScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "EnPG PDF raporu üretme hatası" });

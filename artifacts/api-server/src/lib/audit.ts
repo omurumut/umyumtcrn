@@ -60,6 +60,9 @@ export const AUDIT_ACTIONS = [
   "energy_targets_report.generation_started",
   "energy_targets_report.generation_completed",
   "energy_targets_report.generation_failed",
+  "energy_performance_report.generation_started",
+  "energy_performance_report.generation_completed",
+  "energy_performance_report.generation_failed",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;
