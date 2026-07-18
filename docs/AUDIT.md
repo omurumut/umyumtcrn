@@ -42,6 +42,17 @@ No audit deletion API exists. Audit retention is a product and compliance policy
 
 Use `GET /api/audit-events` with company/platform context, action, entity type, entity ID, actor, outcome, and date filters. Use the returned `requestId` to correlate application logs with audit events.
 
+## Management UI
+
+Faz 3B.8 adds the read-only **İşlem Geçmişi** management screen at `/audit`.
+
+- `admin` and `kontrol_admin` can view only their own company audit records.
+- `superadmin` must explicitly choose either a company context or platform scope before records are loaded.
+- `user` role does not see the menu item and is redirected away from the route.
+- The screen uses server-side pagination and sends the same scope/filter parameters as the API: date range, action, outcome, entity type/id, actor, unit, request ID, and page size.
+- Detail view renders changes and metadata as escaped text/JSON, with defensive redaction for secret-like keys. The UI does not use `dangerouslySetInnerHTML`.
+- No audit export, mutation, or dashboard widget is included in this phase.
+
 ## Limitations
 
 The application DB role can technically update or delete rows with direct database access. API routes expose no audit create/update/delete mutation endpoint. Database-level immutability triggers or separate audit write roles are future hardening options.

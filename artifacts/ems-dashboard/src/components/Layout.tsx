@@ -70,6 +70,15 @@ const COMMON_NAV = [
   },
 ];
 
+const AUDIT_NAV = [
+  {
+    title: "Yönetim",
+    items: [
+      { title: "İşlem Geçmişi", url: "/audit", icon: ClipboardList },
+    ],
+  },
+];
+
 interface PendingWorkItemCountRecord {
   severity?: string;
 }
@@ -96,7 +105,7 @@ export function Layout({ children }: { children: ReactNode }) {
   );
   const years = Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - i);
   const topNavItems = isAdmin ? ADMIN_NAV : USER_NAV;
-  const navItems = [...topNavItems, ...COMMON_NAV];
+  const navItems = [...topNavItems, ...COMMON_NAV, ...(isAdmin ? AUDIT_NAV : [])];
 
   useEffect(() => {
     if (!token || !isStandardUser) {

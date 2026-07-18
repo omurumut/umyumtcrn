@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, isNull, lte, SQL } from "drizzle-orm";
+import { and, count, desc, eq, gte, isNull, lte, SQL } from "drizzle-orm";
 import { db, auditEventsTable, unitsTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth.js";
 import { AUDIT_ACTION_SET, AUDIT_OUTCOME_SET } from "../lib/audit.js";
@@ -94,15 +94,23 @@ router.get("/audit-events", requireAuth, async (req, res) => {
     }
     if (typeof req.query.entityType === "string") conditions.push(eq(auditEventsTable.entityType, req.query.entityType));
     if (typeof req.query.entityId === "string") conditions.push(eq(auditEventsTable.entityId, req.query.entityId));
+    if (typeof req.query.requestId === "string") {
+      const requestId = req.query.requestId.trim();
+      if (requestId.length === 0 || requestId.length > 128) { res.status(400).json({ error: "Geçersiz requestId" }); return; }
+      conditions.push(eq(auditEventsTable.requestId, requestId));
+    }
     if (dateFrom) conditions.push(gte(auditEventsTable.occurredAt, dateFrom));
     if (dateTo) conditions.push(lte(auditEventsTable.occurredAt, dateTo));
 
+    const where = and(...conditions);
+    const [{ total }] = await db.select({ total: count() }).from(auditEventsTable).where(where);
     const items = await db.select().from(auditEventsTable)
-      .where(and(...conditions))
+      .where(where)
       .orderBy(desc(auditEventsTable.occurredAt), desc(auditEventsTable.id))
       .limit(pageSize)
       .offset((page - 1) * pageSize);
-    res.json({ items, page, pageSize });
+    const totalCount = Number(total);
+    res.json({ items, page, pageSize, total: totalCount, hasNext: page * pageSize < totalCount });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Geçersiz")) {
       res.status(400).json({ error: error.message }); return;
