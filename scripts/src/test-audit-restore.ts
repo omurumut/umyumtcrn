@@ -46,11 +46,12 @@ async function tableCount(): Promise<number> {
 
 async function prepareOldMigrations(sourceFolder: string, targetFolder: string): Promise<void> {
   await cp(sourceFolder, targetFolder, { recursive: true });
+  await unlink(join(targetFolder, "0026_company_settings.sql"));
   await unlink(join(targetFolder, "0025_company_profile_fields.sql"));
   await unlink(join(targetFolder, "0024_audit_events.sql"));
   const journalPath = join(targetFolder, "meta", "_journal.json");
   const journal = JSON.parse(await readFile(journalPath, "utf8")) as Journal;
-  journal.entries = journal.entries.filter((entry) => !["0024_audit_events", "0025_company_profile_fields"].includes(entry.tag));
+  journal.entries = journal.entries.filter((entry) => !["0024_audit_events", "0025_company_profile_fields", "0026_company_settings"].includes(entry.tag));
   await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
 }
 
@@ -73,8 +74,8 @@ async function insertLegacyData(): Promise<{ companyId: number; userId: number }
 }
 
 async function assertAuditSchema(): Promise<void> {
-  assert(await migrationCount() === 25, "Upgrade sonrası migration sayısı 25 değil.");
-  assert(await tableCount() === 35, "Upgrade sonrası tablo sayısı 35 değil.");
+  assert(await migrationCount() === 26, "Upgrade sonrası migration sayısı 26 değil.");
+  assert(await tableCount() === 36, "Upgrade sonrası tablo sayısı 36 değil.");
   const auditTable = await pool.query<{ count: string }>(
     "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema='public' AND table_name='audit_events'",
   );
@@ -164,7 +165,7 @@ async function main(): Promise<void> {
     await runMigrations(resolve(migrationsFolder));
     await assertAuditSchema();
     await runMigrations(resolve(migrationsFolder));
-    assert(await migrationCount() === 25, "İkinci migrator no-op değil.");
+    assert(await migrationCount() === 26, "İkinci migrator no-op değil.");
 
     const preservedCompany = await pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM companies WHERE id=$1 AND subdomain='audit-restore-tenant'",
@@ -203,13 +204,13 @@ async function main(): Promise<void> {
       ["exec", "-i", containerId, "psql", "-v", "ON_ERROR_STOP=1", "-U", databaseUser, "-d", databaseName],
       auditDump,
     );
-    assert(await migrationCount() === 25, "Audit restore sonrası migration sayısı 25 değil.");
+    assert(await migrationCount() === 26, "Audit restore sonrası migration sayısı 26 değil.");
     assert(await scalarNumber("SELECT count(*)::text AS value FROM audit_events") === auditCountBefore, "Audit event sayısı restore sonrası eşleşmedi.");
     await assertRedaction();
 
     console.log(JSON.stringify({
       backupMigrationCount: 23,
-      upgradedMigrationCount: 25,
+      upgradedMigrationCount: 26,
       auditEventCount: auditCountBefore,
       legacyDataPreserved: true,
       auditBackupRestore: true,

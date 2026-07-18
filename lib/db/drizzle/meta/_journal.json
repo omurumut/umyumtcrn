@@ -176,6 +176,13 @@
       "when": 1784200000000,
       "tag": "0025_company_profile_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784300000000,
+      "tag": "0026_company_settings",
+      "breakpoints": true
     }
   ]
 }

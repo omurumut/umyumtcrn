@@ -46,6 +46,29 @@ export const insertUserSchema = createInsertSchema(usersTable).omit({ id: true, 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type UserRecord = typeof usersTable.$inferSelect;
 
+export const companySettingsTable = pgTable("company_settings", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  defaultLocale: text("default_locale").notNull().default("tr-TR"),
+  defaultCurrency: text("default_currency").notNull().default("TRY"),
+  fiscalYearStartMonth: integer("fiscal_year_start_month").notNull().default(1),
+  dateFormat: text("date_format").notNull().default("DD.MM.YYYY"),
+  decimalSeparator: text("decimal_separator").notNull().default("comma"),
+  energyDisplayUnit: text("energy_display_unit").notNull().default("auto"),
+  tepDisplayMode: text("tep_display_mode").notNull().default("auto"),
+  co2DisplayMode: text("co2_display_mode").notNull().default("tonne"),
+  settingsVersion: integer("settings_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyUnique: uniqueIndex("company_settings_company_id_unique").on(table.companyId),
+}));
+
+export const insertCompanySettingsSchema = createInsertSchema(companySettingsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompanySettings = z.infer<typeof insertCompanySettingsSchema>;
+export type CompanySettings = typeof companySettingsTable.$inferSelect;
+
 // Shared authentication state.
 export const authSessionsTable = pgTable("auth_sessions", {
   id: serial("id").primaryKey(),
