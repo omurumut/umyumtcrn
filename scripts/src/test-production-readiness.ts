@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
+import { Pool } from "pg";
 
 const ALLOWED_ORIGIN = "https://allowed.example";
 const UNKNOWN_ORIGIN = "https://unknown.example";
@@ -19,6 +21,7 @@ const METRICS_ENV: NodeJS.ProcessEnv = {
   ENABLE_METRICS_ENDPOINT: "true",
   METRICS_ACCESS_TOKEN: METRICS_TOKEN,
 };
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -37,6 +40,15 @@ function assertDisposableEnvironment(): void {
   assert(process.env.TEST_DB_RUN_ID && /^[a-f0-9]{24}$/i.test(process.env.TEST_DB_RUN_ID), "Disposable DB run ID eksik.");
   assert(process.env.E2E_ADMIN_USERNAME && process.env.E2E_TEST_PASSWORD, "Fixture credential env değerleri eksik.");
   assert(process.env.PLAYWRIGHT_BROWSERS_PATH, "İzole PLAYWRIGHT_BROWSERS_PATH zorunlu.");
+}
+
+async function assertBrowserExecutableAvailable(): Promise<void> {
+  const executablePath = chromium.executablePath();
+  try {
+    await access(executablePath, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+  } catch {
+    throw new Error("İzole Playwright Chromium executable bulunamadı; önce aynı PLAYWRIGHT_BROWSERS_PATH ile pnpm run install:browser çalıştırılmalı.");
+  }
 }
 
 async function reservePort(): Promise<number> {
@@ -332,6 +344,94 @@ async function fetchPdf(baseUrl: string, token: string, origin?: string): Promis
   });
 }
 
+async function fetchEnergyPerformancePdf(baseUrl: string, token: string, baselineId: number, origin?: string): Promise<Response> {
+  return fetch(`${baseUrl}/api/reports/energy-performance/pdf?baselineId=${baselineId}&year=2026`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(origin ? { Origin: origin } : {}),
+    },
+  });
+}
+
+async function generateAnnualHtml(baseUrl: string, token: string, origin?: string): Promise<Response> {
+  return fetch(`${baseUrl}/api/reports/generate`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...(origin ? { Origin: origin } : {}),
+    },
+    body: JSON.stringify({ year: 2025 }),
+  });
+}
+
+async function resolveProductionSmokeBaseline(baseUrl: string, token: string): Promise<number> {
+  const itemsResponse = await fetch(`${baseUrl}/api/energy-performance/seu-items`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  assert(itemsResponse.status === 200, "Production smoke ÖEK listesi okunamadı.");
+  const items = await itemsResponse.json() as Array<{ id?: unknown }>;
+  const seuItemId = items.find((item) => Number.isSafeInteger(item.id))?.id;
+  assert(typeof seuItemId === "number", "Production smoke için uygun ÖEK kalemi bulunamadı.");
+
+  const baselinesResponse = await fetch(`${baseUrl}/api/energy-performance/baselines?seuItemId=${seuItemId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  assert(baselinesResponse.status === 200, "Production smoke EnRÇ listesi okunamadı.");
+  const baselines = await baselinesResponse.json() as Array<{ id?: unknown }>;
+  const baselineId = baselines.find((baseline) => Number.isSafeInteger(baseline.id))?.id;
+  assert(typeof baselineId === "number", "Production smoke için uygun EnRÇ bulunamadı.");
+  return baselineId;
+}
+
+async function snapshotCount(reportType: string, status: string, afterId: number): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM report_generation_snapshots WHERE id > $1 AND report_type=$2 AND status=$3",
+    [afterId, reportType, status],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+async function auditCount(action: string, afterId: number): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM audit_events WHERE id > $1 AND action=$2",
+    [afterId, action],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+async function maxId(tableName: "audit_events" | "report_generation_snapshots"): Promise<number> {
+  const result = await pool.query<{ max_id: string | null }>(`SELECT max(id)::text AS max_id FROM ${tableName}`);
+  return Number(result.rows[0]?.max_id ?? 0);
+}
+
+async function assertProductionReportSmokes(baseUrl: string, token: string): Promise<void> {
+  const snapshotBoundary = await maxId("report_generation_snapshots");
+  const auditBoundary = await maxId("audit_events");
+
+  const energyTargetsPdf = await fetchPdf(baseUrl, token, ALLOWED_ORIGIN);
+  assertSecurityHeaders(energyTargetsPdf);
+  await assertPdf(energyTargetsPdf);
+
+  const baselineId = await resolveProductionSmokeBaseline(baseUrl, token);
+  const energyPerformancePdf = await fetchEnergyPerformancePdf(baseUrl, token, baselineId, ALLOWED_ORIGIN);
+  assertSecurityHeaders(energyPerformancePdf);
+  await assertPdf(energyPerformancePdf);
+
+  const annualHtml = await generateAnnualHtml(baseUrl, token, ALLOWED_ORIGIN);
+  assert(annualHtml.status === 200, `Annual HTML beklenen 200 yerine ${annualHtml.status} döndü.`);
+  assertSecurityHeaders(annualHtml);
+  const annualBody = await annualHtml.json() as { downloadUrl?: unknown };
+  assert(typeof annualBody.downloadUrl === "string" && annualBody.downloadUrl.startsWith("data:text/html;base64,"), "Annual HTML downloadUrl oluşmadı.");
+
+  assert(await snapshotCount("energy_targets_management", "completed", snapshotBoundary) >= 1, "Energy targets completed snapshot oluşmadı.");
+  assert(await snapshotCount("energy_performance_monitoring", "completed", snapshotBoundary) >= 1, "Energy performance completed snapshot oluşmadı.");
+  assert(await snapshotCount("annual_energy_performance", "completed", snapshotBoundary) >= 1, "Annual completed snapshot oluşmadı.");
+  assert(await auditCount("energy_targets_report.generation_completed", auditBoundary) >= 1, "Energy targets completed audit oluşmadı.");
+  assert(await auditCount("energy_performance_report.generation_completed", auditBoundary) >= 1, "Energy performance completed audit oluşmadı.");
+  assert(await auditCount("annual_energy_performance_report.generation_completed", auditBoundary) >= 1, "Annual completed audit oluşmadı.");
+}
+
 function assertSecurityHeaders(response: Response, production = true): void {
   assert(response.headers.get("x-content-type-options") === "nosniff", "Nosniff header eksik.");
   assert(response.headers.get("x-frame-options") === "DENY", "Frame protection eksik.");
@@ -551,6 +651,7 @@ async function assertInvalidStartupConfig(browserPath: string, overrides: NodeJS
 
 async function main(): Promise<void> {
   assertDisposableEnvironment();
+  await assertBrowserExecutableAvailable();
   let running: RunningProduction | null = null;
   let missingBrowserDirectory: string | null = null;
   try {
@@ -567,10 +668,7 @@ async function main(): Promise<void> {
     const token = await login(running.baseUrl, ALLOWED_ORIGIN);
     await assertMetricsAuth(running.baseUrl, token);
     await assertMetricsPerformanceSmoke(running.baseUrl);
-    const pdf = await fetchPdf(running.baseUrl, token, ALLOWED_ORIGIN);
-    assertSecurityHeaders(pdf);
-    assert(pdf.headers.get("access-control-expose-headers")?.includes("Content-Disposition"), "PDF disposition expose edilmedi.");
-    await assertPdf(pdf);
+    await assertProductionReportSmokes(running.baseUrl, token);
     await assertExports(running.baseUrl, token);
     await assertBrowserCsp(running.baseUrl);
     const concurrentPdfs = Promise.all([1, 2, 3].map(async () => assertPdf(await fetchPdf(running!.baseUrl, token))));
@@ -666,8 +764,9 @@ async function main(): Promise<void> {
   } finally {
     await stopProduction(running).catch(() => undefined);
     if (missingBrowserDirectory) await rm(missingBrowserDirectory, { recursive: true, force: true });
+    await pool.end().catch(() => undefined);
   }
-  console.log(JSON.stringify({ productionReadinessScenarios: 24, corsSecurityScenarios: 22, metricsScenarios: 9, proxyPoolStartupScenarios: 4 }));
+  console.log(JSON.stringify({ productionReadinessScenarios: 27, reportSmokeScenarios: 3, corsSecurityScenarios: 22, metricsScenarios: 9, proxyPoolStartupScenarios: 4 }));
 }
 
 main().catch((error: unknown) => {

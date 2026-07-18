@@ -1,11 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pool, runMigrations } from "@workspace/db";
 
 type Journal = { entries: Array<{ tag: string }> };
+
+const BACKUP_BASELINE_MIGRATION = 22;
+const BACKUP_BASELINE_TABLE_COUNT = 32;
+const CURRENT_MIGRATION_COUNT = 29;
+const CURRENT_TABLE_COUNT = 42;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -43,6 +48,11 @@ function dockerResult(args: string[], input?: Buffer): Buffer {
   return result.stdout;
 }
 
+function migrationNumber(tagOrFileName: string): number | null {
+  const match = /^(\d{4})/.exec(tagOrFileName);
+  return match ? Number(match[1]) : null;
+}
+
 async function main(): Promise<void> {
   assert(process.env.TEST_DB_DISPOSABLE === "true", "Disposable DB zorunlu.");
   const containerId = process.env.TEST_DB_CONTAINER_ID;
@@ -56,17 +66,25 @@ async function main(): Promise<void> {
   const dumpPath = join(temporaryRoot, "schema-0022.dump.sql");
   try {
     await cp(migrationsFolder, oldMigrationsFolder, { recursive: true });
-    await unlink(join(oldMigrationsFolder, "0023_shared_auth_state.sql"));
+    for (const migrationFile of await readdir(oldMigrationsFolder)) {
+      const number = migrationNumber(migrationFile);
+      if (number !== null && number > BACKUP_BASELINE_MIGRATION && migrationFile.endsWith(".sql")) {
+        await unlink(join(oldMigrationsFolder, migrationFile));
+      }
+    }
     const journalPath = join(oldMigrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(await readFile(journalPath, "utf8")) as Journal;
-    journal.entries = journal.entries.filter((entry) => entry.tag !== "0023_shared_auth_state");
+    journal.entries = journal.entries.filter((entry) => {
+      const number = migrationNumber(entry.tag);
+      return number !== null && number <= BACKUP_BASELINE_MIGRATION;
+    });
     await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
 
     await resetDatabase();
     await runMigrations(oldMigrationsFolder);
-    assert(await migrationCount() === 22, "Backup öncesi migration sayısı 22 değil.");
+    assert(await migrationCount() === BACKUP_BASELINE_MIGRATION, "Backup öncesi migration sayısı 22 değil.");
     const oldTableCount = await tableCount();
-    assert(oldTableCount === 32, `0022 şema tablo sayısı 32 değil: ${oldTableCount}`);
+    assert(oldTableCount === BACKUP_BASELINE_TABLE_COUNT, `0022 şema tablo sayısı 32 değil: ${oldTableCount}`);
 
     const dump = dockerResult([
       "exec",
@@ -86,18 +104,24 @@ async function main(): Promise<void> {
       ["exec", "-i", containerId, "psql", "-v", "ON_ERROR_STOP=1", "-U", databaseUser, "-d", databaseName],
       await readFile(dumpPath),
     );
-    assert(await migrationCount() === 22, "Restore sonrası migration sayısı 22 değil.");
+    assert(await migrationCount() === BACKUP_BASELINE_MIGRATION, "Restore sonrası migration sayısı 22 değil.");
 
     await runMigrations(resolve(migrationsFolder));
-    assert(await migrationCount() === 23, "Restore üzerine 0023 uygulanmadı.");
+    assert(await migrationCount() === CURRENT_MIGRATION_COUNT, "Restore üzerine güncel migration seti uygulanmadı.");
     const newTableCount = await tableCount();
-    assert(newTableCount === 34, `Upgrade şema tablo sayısı 34 değil: ${newTableCount}`);
+    assert(newTableCount === CURRENT_TABLE_COUNT, `Upgrade şema tablo sayısı 42 değil: ${newTableCount}`);
     const authTables = await pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('auth_sessions','auth_rate_limits')",
     );
     assert(Number(authTables.rows[0]?.count ?? 0) === 2, "Shared auth tabloları restore upgrade sonrası yok.");
 
-    console.log(JSON.stringify({ backupMigrationCount: 22, restoredMigrationCount: 22, upgradedMigrationCount: 23, oldTableCount, newTableCount }));
+    console.log(JSON.stringify({
+      backupMigrationCount: BACKUP_BASELINE_MIGRATION,
+      restoredMigrationCount: BACKUP_BASELINE_MIGRATION,
+      upgradedMigrationCount: CURRENT_MIGRATION_COUNT,
+      oldTableCount,
+      newTableCount,
+    }));
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
     await pool.end();

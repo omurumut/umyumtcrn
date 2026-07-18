@@ -504,7 +504,7 @@ router.post("/consumption", requireAuth, async (req, res) => {
     const parsedHdd = parseDegreeDayValue(hdd, "HDD");
     const parsedCdd = parseDegreeDayValue(cdd, "CDD");
     if (!yr || !mo || mo < 1 || mo > 12) {
-      res.status(400).json({ error: "GeÃ§ersiz yÄ±l/ay deÄŸeri" }); return;
+      res.status(400).json({ error: "Geçersiz yıl/ay değeri" }); return;
     }
 
     const requestedUnitId = parseOptionalId(unitId, "unitId");
@@ -732,7 +732,7 @@ router.patch("/consumption/:id", requireAuth, async (req, res) => {
       });
       return updated;
     });
-    if (!record) { res.status(404).json({ error: "KayÄ±t bulunamadÄ±" }); return; }
+    if (!record) { res.status(404).json({ error: "Kayıt bulunamadı" }); return; }
     res.json(responseWeatherDataMethod === undefined ? record : { ...record, weatherDataMethod: responseWeatherDataMethod });
   } catch (err) {
     if (isBadRequestError(err)) {
