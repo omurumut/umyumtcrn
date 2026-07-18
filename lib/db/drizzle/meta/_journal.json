@@ -190,6 +190,20 @@
       "when": 1784400000000,
       "tag": "0027_company_brand_assets",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1784500000000,
+      "tag": "0028_company_report_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1784600000000,
+      "tag": "0029_report_generation_snapshots",
+      "breakpoints": true
     }
   ]
 }

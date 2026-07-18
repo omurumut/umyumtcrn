@@ -33,6 +33,10 @@ import {
   companySettingsTable,
   companyAssetsTable,
   companyBrandSettingsTable,
+  companyReportProfilesTable,
+  companyReportTypeSettingsTable,
+  companyReportSectionSettingsTable,
+  reportGenerationSnapshotsTable,
 } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireAuth, requireSuperAdmin } from "../middlewares/auth.js";
@@ -199,6 +203,10 @@ router.delete("/companies/:id", requireAuth, requireSuperAdmin, async (req, res)
         async () => tx.select({ id: companySettingsTable.id }).from(companySettingsTable).where(eq(companySettingsTable.companyId, id)).limit(1),
         async () => tx.select({ id: companyAssetsTable.id }).from(companyAssetsTable).where(eq(companyAssetsTable.companyId, id)).limit(1),
         async () => tx.select({ id: companyBrandSettingsTable.id }).from(companyBrandSettingsTable).where(eq(companyBrandSettingsTable.companyId, id)).limit(1),
+        async () => tx.select({ id: companyReportProfilesTable.id }).from(companyReportProfilesTable).where(eq(companyReportProfilesTable.companyId, id)).limit(1),
+        async () => tx.select({ id: companyReportTypeSettingsTable.id }).from(companyReportTypeSettingsTable).where(eq(companyReportTypeSettingsTable.companyId, id)).limit(1),
+        async () => tx.select({ id: companyReportSectionSettingsTable.id }).from(companyReportSectionSettingsTable).where(eq(companyReportSectionSettingsTable.companyId, id)).limit(1),
+        async () => tx.select({ id: reportGenerationSnapshotsTable.id }).from(reportGenerationSnapshotsTable).where(eq(reportGenerationSnapshotsTable.companyId, id)).limit(1),
       ];
       for (const check of directChecks) {
         if ((await check()).length > 0) return "dependent" as const;

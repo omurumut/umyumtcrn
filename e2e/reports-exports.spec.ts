@@ -51,6 +51,7 @@ const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 let ids: Ids;
 let sessions: Record<string, Login>;
 let initialReportMaxId = 0;
+let initialSnapshotMaxId = 0;
 
 async function login(request: APIRequestContext, username: string): Promise<Login> {
   const response = await request.post("/api/auth/login", { data: { username, password: credentials.password } });
@@ -120,6 +121,8 @@ async function createReport(request: APIRequestContext, token: string, data: Rec
 test.beforeAll(async ({ request }) => {
   const reportBoundary = await pool.query<{ max_id: number | null }>("SELECT max(id) max_id FROM reports");
   initialReportMaxId = reportBoundary.rows[0]?.max_id ?? 0;
+  const snapshotBoundary = await pool.query<{ max_id: number | null }>("SELECT max(id) max_id FROM report_generation_snapshots");
+  initialSnapshotMaxId = snapshotBoundary.rows[0]?.max_id ?? 0;
   const fixture = await pool.query<Record<string, number>>(`
     SELECT
       (SELECT id FROM companies WHERE subdomain='e2e-tenant-a') company_a,
@@ -186,6 +189,8 @@ test.beforeAll(async ({ request }) => {
 test.afterAll(async () => {
   if (ids) {
     await pool.query("DELETE FROM reports WHERE id > $1", [initialReportMaxId]);
+    await pool.query("DELETE FROM report_generation_snapshots WHERE id > $1", [initialSnapshotMaxId]);
+    await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_targets_report.%'");
     await pool.query("DELETE FROM energy_performance_results WHERE baseline_id = ANY($1::int[])", [[ids.reportBaselineA1, ids.reportBaselineA2, ids.reportBaselineB1]]);
     await pool.query("DELETE FROM energy_baselines WHERE id = ANY($1::int[])", [[ids.reportBaselineA1, ids.reportBaselineA2, ids.reportBaselineB1]]);
   }
@@ -525,6 +530,124 @@ test("TARGET report include flags remove optional sections", async ({ request })
   const html = await reportHtml(await request.get(`/api/reports/energy-targets/pdf?year=2026&unitId=${ids.unitA1}&includeVap=false&includeProgress=false`, { headers: auth(sessions.adminA.token) }));
   expect(html).not.toContain("VAP Portföyü");
   expect(html).not.toContain("Gerçekleşme Kronolojisi");
+});
+
+test("TARGET report creates an immutable settings snapshot with default registry settings", async ({ request }) => {
+  await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_targets_report.%'");
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_targets_management'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='energy_targets_management'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
+
+  const response = await request.get(
+    `/api/reports/energy-targets/pdf?year=2026&unitId=${ids.unitA1}`,
+    { headers: auth(sessions.adminA.token) },
+  );
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-disposition"]).toMatch(/attachment;.*\.pdf/i);
+
+  const snapshots = await pool.query<{ status: string; filename: string; settings_snapshot_json: {
+    reportType: string;
+    locale: string;
+    confidentiality: string;
+    profileVersion: number;
+    typeSettingsVersion: number;
+    sections: Array<{ code: string; visibilityResult: boolean; conditionalEvaluator: { applies: boolean; dataAvailable: boolean | null } }>;
+  } }>(`
+    SELECT status, filename, settings_snapshot_json
+    FROM report_generation_snapshots
+    WHERE company_id=$1 AND report_type='energy_targets_management'
+    ORDER BY id DESC LIMIT 1
+  `, [ids.companyA]);
+  const snapshot = snapshots.rows[0]!;
+  expect(snapshot.status).toBe("completed");
+  expect(snapshot.filename.endsWith(".pdf")).toBe(true);
+  expect(snapshot.settings_snapshot_json).toMatchObject({
+    reportType: "energy_targets_management",
+    locale: "tr-TR",
+    confidentiality: "internal",
+    profileVersion: 0,
+    typeSettingsVersion: 0,
+  });
+  expect(snapshot.settings_snapshot_json.sections.find((section) => section.code === "cover")?.visibilityResult).toBe(true);
+  expect(snapshot.settings_snapshot_json.sections.find((section) => section.code === "vap_portfolio")?.conditionalEvaluator.applies).toBe(true);
+
+  const audit = await pool.query<{ action: string; metadata_json: { outputName?: string; sectionCodes?: string[] } }>(`
+    SELECT action, metadata_json
+    FROM audit_events
+    WHERE action LIKE 'energy_targets_report.%' AND company_id=$1
+    ORDER BY id
+  `, [ids.companyA]);
+  expect(audit.rows.map((row) => row.action)).toEqual([
+    "energy_targets_report.generation_started",
+    "energy_targets_report.generation_completed",
+  ]);
+  expect(audit.rows[0]?.metadata_json.outputName).toBe(snapshot.filename);
+  expect(audit.rows[0]?.metadata_json.sectionCodes).toContain("energy_targets");
+});
+
+test("TARGET report applies profile, type, section settings and request-scope legacy overrides", async ({ request }) => {
+  await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_targets_report.%'");
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_targets_management'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='energy_targets_management'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_profiles(company_id, default_title, default_subtitle, confidentiality_level, cover_style, file_name_pattern, revision_number, footer_text, profile_version)
+    VALUES($1, 'Profile Default Title', 'Profile Subtitle', 'confidential', 'compact', '{company}_{year}_{revision}', 'R1', 'Short footer marker', 3)
+  `, [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_type_settings(company_id, report_type, title_override, type_settings_version)
+    VALUES($1, 'energy_targets_management', 'Target Type Title', 2)
+  `, [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_section_settings(company_id, report_type, section_code, is_visible, display_order, label_override)
+    VALUES
+      ($1, 'energy_targets_management', 'executive_summary', true, 20, 'Executive Snapshot Label'),
+      ($1, 'energy_targets_management', 'vap_portfolio', false, 50, NULL)
+  `, [ids.companyA]);
+
+  const pdf = await parsePdf(
+    await request.get(`/api/reports/energy-targets/pdf?year=2026&unitId=${ids.unitA1}&includeVap=true`, { headers: auth(sessions.adminA.token) }),
+    "target-report-settings.pdf",
+  );
+  expect(pdf.text).toContain("Target Type Title");
+  expect(pdf.text).toContain("Executive Snapshot Label");
+  expect(pdf.text).toContain("Gizli");
+  expect(pdf.text).toContain("Short footer marker");
+
+  const rows = await pool.query<{ is_visible: boolean }>("SELECT is_visible FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_targets_management' AND section_code='vap_portfolio'", [ids.companyA]);
+  expect(rows.rows[0]?.is_visible).toBe(false);
+  const snapshot = await pool.query<{ filename: string; settings_snapshot_json: {
+    coverStyle: string;
+    confidentiality: string;
+    sections: Array<{ code: string; visibilityResult: boolean; finalTitle: string; legacyOverride: { param: string; value: boolean } | null }>;
+  } }>("SELECT filename, settings_snapshot_json FROM report_generation_snapshots WHERE company_id=$1 ORDER BY id DESC LIMIT 1", [ids.companyA]);
+  expect(snapshot.rows[0]?.filename).toMatch(/r1\.pdf$/);
+  expect(snapshot.rows[0]?.settings_snapshot_json).toMatchObject({ coverStyle: "compact", confidentiality: "confidential" });
+  const vapSection = snapshot.rows[0]?.settings_snapshot_json.sections.find((section) => section.code === "vap_portfolio");
+  expect(vapSection).toMatchObject({ visibilityResult: true, legacyOverride: { param: "includeVap", value: true } });
+});
+
+test("TARGET report conditional sections disappear without data and legacy booleans are strict", async ({ request }) => {
+  await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_targets_report.%'");
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_targets_management'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='energy_targets_management'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
+  const empty = await reportHtml(await request.get(`/api/reports/energy-targets/pdf?year=2999&unitId=${ids.unitA1}`, { headers: auth(sessions.adminA.token) }));
+  expect(empty).toContain("Bu kapsam ve yıl için kayıtlı enerji hedefi bulunamadı.");
+  expect(empty).not.toContain("VAP PortfÃ¶yÃ¼");
+  expect(empty).not.toContain("GerÃ§ekleÅŸme Kronolojisi");
+
+  const invalid = await request.get(`/api/reports/energy-targets/pdf?year=2026&unitId=${ids.unitA1}&includeVap=maybe`, { headers: auth(sessions.adminA.token) });
+  expect(invalid.status()).toBe(400);
+  expect(invalid.headers()["content-disposition"]).toBeUndefined();
+  const audit = await pool.query<{ count: string }>("SELECT count(*)::text count FROM audit_events WHERE action='energy_targets_report.generation_completed' AND company_id=$1", [ids.companyA]);
+  expect(audit.rows[0]?.count).toBe("1");
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='energy_targets_management'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='energy_targets_management'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
 });
 
 test("TARGET report safely escapes user-controlled fields", async ({ request }) => {

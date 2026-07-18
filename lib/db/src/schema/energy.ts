@@ -115,6 +115,101 @@ export const insertCompanyBrandSettingsSchema = createInsertSchema(companyBrandS
 export type InsertCompanyBrandSettings = z.infer<typeof insertCompanyBrandSettingsSchema>;
 export type CompanyBrandSettings = typeof companyBrandSettingsTable.$inferSelect;
 
+export const companyReportProfilesTable = pgTable("company_report_profiles", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  showLogo: boolean("show_logo").notNull().default(true),
+  defaultLocale: text("default_locale").notNull().default("tr-TR"),
+  defaultTitle: text("default_title"),
+  defaultSubtitle: text("default_subtitle"),
+  documentNumber: text("document_number"),
+  revisionNumber: text("revision_number"),
+  revisionDate: text("revision_date"),
+  preparedBy: text("prepared_by"),
+  checkedBy: text("checked_by"),
+  approvedBy: text("approved_by"),
+  confidentialityLevel: text("confidentiality_level").notNull().default("internal"),
+  footerText: text("footer_text"),
+  showSignatureFields: boolean("show_signature_fields").notNull().default(true),
+  showPageNumbers: boolean("show_page_numbers").notNull().default(true),
+  coverStyle: text("cover_style").notNull().default("standard"),
+  fileNamePattern: text("file_name_pattern").notNull().default("{company}_{reportType}_{year}"),
+  profileVersion: integer("profile_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyUnique: uniqueIndex("company_report_profiles_company_id_unique").on(table.companyId),
+}));
+
+export const insertCompanyReportProfileSchema = createInsertSchema(companyReportProfilesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompanyReportProfile = z.infer<typeof insertCompanyReportProfileSchema>;
+export type CompanyReportProfile = typeof companyReportProfilesTable.$inferSelect;
+
+export const companyReportTypeSettingsTable = pgTable("company_report_type_settings", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  reportType: text("report_type").notNull(),
+  titleOverride: text("title_override"),
+  subtitleOverride: text("subtitle_override"),
+  localeOverride: text("locale_override"),
+  coverStyleOverride: text("cover_style_override"),
+  typeSettingsVersion: integer("type_settings_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyReportTypeUnique: uniqueIndex("company_report_type_settings_company_report_type_unique").on(table.companyId, table.reportType),
+}));
+
+export const insertCompanyReportTypeSettingsSchema = createInsertSchema(companyReportTypeSettingsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompanyReportTypeSettings = z.infer<typeof insertCompanyReportTypeSettingsSchema>;
+export type CompanyReportTypeSettings = typeof companyReportTypeSettingsTable.$inferSelect;
+
+export const companyReportSectionSettingsTable = pgTable("company_report_section_settings", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  reportType: text("report_type").notNull(),
+  sectionCode: text("section_code").notNull(),
+  isVisible: boolean("is_visible").notNull().default(true),
+  displayOrder: integer("display_order").notNull(),
+  labelOverride: text("label_override"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyReportSectionUnique: uniqueIndex("company_report_section_settings_company_report_section_unique").on(table.companyId, table.reportType, table.sectionCode),
+  companyReportTypeIndex: index("company_report_section_settings_company_report_type_idx").on(table.companyId, table.reportType),
+}));
+
+export const insertCompanyReportSectionSettingsSchema = createInsertSchema(companyReportSectionSettingsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompanyReportSectionSettings = z.infer<typeof insertCompanyReportSectionSettingsSchema>;
+export type CompanyReportSectionSettings = typeof companyReportSectionSettingsTable.$inferSelect;
+
+export const reportGenerationSnapshotsTable = pgTable("report_generation_snapshots", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "set null" }),
+  reportType: text("report_type").notNull(),
+  year: integer("year"),
+  status: text("status").notNull().default("generating"),
+  storageStatus: text("storage_status").notNull().default("not_stored"),
+  filename: text("filename"),
+  settingsSnapshot: jsonb("settings_snapshot_json").notNull(),
+  generatedBy: integer("generated_by").references(() => usersTable.id, { onDelete: "set null" }),
+  generatedAt: timestamp("generated_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+  failedAt: timestamp("failed_at"),
+  failureReason: text("failure_reason"),
+}, (table) => ({
+  companyReportGeneratedIndex: index("report_generation_snapshots_company_report_generated_idx").on(table.companyId, table.reportType, table.generatedAt),
+  statusIndex: index("report_generation_snapshots_status_idx").on(table.status),
+}));
+
+export const insertReportGenerationSnapshotSchema = createInsertSchema(reportGenerationSnapshotsTable).omit({ id: true, generatedAt: true });
+export type InsertReportGenerationSnapshot = z.infer<typeof insertReportGenerationSnapshotSchema>;
+export type ReportGenerationSnapshot = typeof reportGenerationSnapshotsTable.$inferSelect;
+
 // Shared authentication state.
 export const authSessionsTable = pgTable("auth_sessions", {
   id: serial("id").primaryKey(),

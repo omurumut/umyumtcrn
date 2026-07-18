@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+﻿import { spawnSync } from "node:child_process";
 import { cp, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -30,7 +30,7 @@ function dockerResult(args: string[], input?: Buffer): Buffer {
     shell: false,
     windowsHide: true,
   });
-  assert(result.status === 0, `Docker backup/restore komutu başarısız: ${args[1] ?? args[0]}`);
+  assert(result.status === 0, `Docker backup/restore komutu baÅŸarÄ±sÄ±z: ${args[1] ?? args[0]}`);
   return result.stdout;
 }
 
@@ -46,13 +46,15 @@ async function tableCount(): Promise<number> {
 
 async function prepareOldMigrations(sourceFolder: string, targetFolder: string): Promise<void> {
   await cp(sourceFolder, targetFolder, { recursive: true });
+  await unlink(join(targetFolder, "0029_report_generation_snapshots.sql"));
+  await unlink(join(targetFolder, "0028_company_report_settings.sql"));
   await unlink(join(targetFolder, "0027_company_brand_assets.sql"));
   await unlink(join(targetFolder, "0026_company_settings.sql"));
   await unlink(join(targetFolder, "0025_company_profile_fields.sql"));
   await unlink(join(targetFolder, "0024_audit_events.sql"));
   const journalPath = join(targetFolder, "meta", "_journal.json");
   const journal = JSON.parse(await readFile(journalPath, "utf8")) as Journal;
-  journal.entries = journal.entries.filter((entry) => !["0024_audit_events", "0025_company_profile_fields", "0026_company_settings", "0027_company_brand_assets"].includes(entry.tag));
+  journal.entries = journal.entries.filter((entry) => !["0024_audit_events", "0025_company_profile_fields", "0026_company_settings", "0027_company_brand_assets", "0028_company_report_settings", "0029_report_generation_snapshots"].includes(entry.tag));
   await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
 }
 
@@ -75,12 +77,12 @@ async function insertLegacyData(): Promise<{ companyId: number; userId: number }
 }
 
 async function assertAuditSchema(): Promise<void> {
-  assert(await migrationCount() === 27, "Upgrade sonrası migration sayısı 27 değil.");
-  assert(await tableCount() === 38, "Upgrade sonrası tablo sayısı 38 değil.");
+  assert(await migrationCount() === 29, "Upgrade sonrasÄ± migration sayÄ±sÄ± 29 deÄŸil.");
+  assert(await tableCount() === 42, "Upgrade sonrasÄ± tablo sayÄ±sÄ± 42 deÄŸil.");
   const auditTable = await pool.query<{ count: string }>(
     "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema='public' AND table_name='audit_events'",
   );
-  assert(auditTable.rows[0]?.count === "1", "audit_events tablosu oluşmadı.");
+  assert(auditTable.rows[0]?.count === "1", "audit_events tablosu oluÅŸmadÄ±.");
 
   const indexes = await pool.query<{ indexname: string }>(
     "SELECT indexname FROM pg_indexes WHERE schemaname='public' AND tablename='audit_events'",
@@ -122,7 +124,7 @@ async function assertRedaction(): Promise<void> {
   );
   const payload = rows.rows.map((row) => row.payload).join("\n");
   for (const term of forbidden) {
-    assert(!payload.includes(term), `Audit payload yasaklı terim içeriyor: ${term}`);
+    assert(!payload.includes(term), `Audit payload yasaklÄ± terim iÃ§eriyor: ${term}`);
   }
 }
 
@@ -141,8 +143,8 @@ async function main(): Promise<void> {
     await prepareOldMigrations(migrationsFolder, oldMigrationsFolder);
     await resetDatabase();
     await runMigrations(oldMigrationsFolder);
-    assert(await migrationCount() === 23, "Backup öncesi migration sayısı 23 değil.");
-    assert(await tableCount() === 34, "0023 şema tablo sayısı 34 değil.");
+    assert(await migrationCount() === 23, "Backup Ã¶ncesi migration sayÄ±sÄ± 23 deÄŸil.");
+    assert(await tableCount() === 34, "0023 ÅŸema tablo sayÄ±sÄ± 34 deÄŸil.");
     const legacy = await insertLegacyData();
 
     const legacyDump = dockerResult([
@@ -162,11 +164,11 @@ async function main(): Promise<void> {
       ["exec", "-i", containerId, "psql", "-v", "ON_ERROR_STOP=1", "-U", databaseUser, "-d", databaseName],
       legacyDump,
     );
-    assert(await migrationCount() === 23, "Restore sonrası migration sayısı 23 değil.");
+    assert(await migrationCount() === 23, "Restore sonrasÄ± migration sayÄ±sÄ± 23 deÄŸil.");
     await runMigrations(resolve(migrationsFolder));
     await assertAuditSchema();
     await runMigrations(resolve(migrationsFolder));
-    assert(await migrationCount() === 27, "İkinci migrator no-op değil.");
+    assert(await migrationCount() === 29, "Ä°kinci migrator no-op deÄŸil.");
 
     const preservedCompany = await pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM companies WHERE id=$1 AND subdomain='audit-restore-tenant'",
@@ -176,8 +178,8 @@ async function main(): Promise<void> {
       "SELECT count(*)::text AS count FROM users WHERE id=$1 AND company_id=$2 AND username='audit_restore_user'",
       [legacy.userId, legacy.companyId],
     );
-    assert(preservedCompany.rows[0]?.count === "1", "Legacy company restore/upgrade sonrası korunmadı.");
-    assert(preservedUser.rows[0]?.count === "1", "Legacy user restore/upgrade sonrası korunmadı.");
+    assert(preservedCompany.rows[0]?.count === "1", "Legacy company restore/upgrade sonrasÄ± korunmadÄ±.");
+    assert(preservedUser.rows[0]?.count === "1", "Legacy user restore/upgrade sonrasÄ± korunmadÄ±.");
 
     await pool.query(
       `INSERT INTO audit_events (request_id, actor_user_id, actor_role, company_id, action, entity_type, entity_id, outcome, changes_json, metadata_json)
@@ -205,13 +207,13 @@ async function main(): Promise<void> {
       ["exec", "-i", containerId, "psql", "-v", "ON_ERROR_STOP=1", "-U", databaseUser, "-d", databaseName],
       auditDump,
     );
-    assert(await migrationCount() === 27, "Audit restore sonrası migration sayısı 27 değil.");
-    assert(await scalarNumber("SELECT count(*)::text AS value FROM audit_events") === auditCountBefore, "Audit event sayısı restore sonrası eşleşmedi.");
+    assert(await migrationCount() === 29, "Audit restore sonrasÄ± migration sayÄ±sÄ± 29 deÄŸil.");
+    assert(await scalarNumber("SELECT count(*)::text AS value FROM audit_events") === auditCountBefore, "Audit event sayÄ±sÄ± restore sonrasÄ± eÅŸleÅŸmedi.");
     await assertRedaction();
 
     console.log(JSON.stringify({
       backupMigrationCount: 23,
-      upgradedMigrationCount: 27,
+      upgradedMigrationCount: 29,
       auditEventCount: auditCountBefore,
       legacyDataPreserved: true,
       auditBackupRestore: true,

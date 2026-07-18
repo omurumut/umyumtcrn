@@ -1,9 +1,19 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { db, companiesTable, reportsTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
+import { db, companiesTable, reportsTable, reportGenerationSnapshotsTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
 import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { renderHtmlToPdf, safePdfFilename } from "../lib/pdf-render.js";
+import { resolveEffectiveCompanyReportSettings } from "../lib/company-report-settings-resolver.js";
+import { writeBestEffortAudit } from "../lib/audit.js";
+import {
+  ENERGY_TARGETS_REPORT_TYPE,
+  ReportSettingsSnapshotError,
+  buildEnergyTargetsReportSnapshot,
+  parseEnergyTargetsLegacyOverrides,
+  visibleEnergyTargetsSections,
+  type EnergyTargetsReportSnapshot,
+} from "../lib/energy-targets-report-snapshot.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -444,14 +454,20 @@ const FEASIBILITY_STATUS_LABELS: Record<string, string> = {
 
 // GET /api/reports/energy-targets/pdf
 router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
+  let snapshotRecordId: number | null = null;
+  let snapshotForFailure: EnergyTargetsReportSnapshot | null = null;
   try {
     const statusParam = parseTargetReportStatus(req.query.status);
+    const legacyOverrides = parseEnergyTargetsLegacyOverrides({
+      includeVap: req.query.includeVap,
+      includeProgress: req.query.includeProgress,
+    });
     const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    const effectiveCompanyId = scope.companyId;
 
     // ── Auth / scope ─────────────────────────────────────────────────────────
     const yearParam = parseReportYear(req.query.year ?? new Date().getFullYear());
-    const includeVap = req.query.includeVap !== "false";
-    const includeProgress = req.query.includeProgress !== "false";
 
     // ── Fetch targets (baselineYear <= year <= targetYear) ────────────────────
     // Auth scope mirrors targets.ts: admin → companyId filter; superadmin → no companyId filter; user → own unitId
@@ -461,7 +477,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     ];
 
     const resolvedUnitId = scope.unitId;
-    if (scope.companyId !== undefined) targetConditions.push(eq(energyTargetsTable.companyId, scope.companyId));
+    targetConditions.push(eq(energyTargetsTable.companyId, effectiveCompanyId));
     if (resolvedUnitId !== null) targetConditions.push(eq(energyTargetsTable.unitId, resolvedUnitId));
 
     if (statusParam) targetConditions.push(eq(energyTargetsTable.status, statusParam));
@@ -498,7 +514,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
             .from(energyActionPlansTable)
             .where(and(
               inArray(energyActionPlansTable.targetId, targetIds),
-              ...(scope.companyId !== undefined ? [eq(energyActionPlansTable.companyId, scope.companyId)] : []),
+              eq(energyActionPlansTable.companyId, effectiveCompanyId),
             ))
             .orderBy(energyActionPlansTable.createdAt)
         : [];
@@ -518,7 +534,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
         .where(and(
           inArray(energyTargetProgressTable.targetId, targetIds),
           eq(energyTargetProgressTable.periodYear, yearParam),
-          ...(scope.companyId !== undefined ? [eq(energyTargetProgressTable.companyId, scope.companyId)] : []),
+          eq(energyTargetProgressTable.companyId, effectiveCompanyId),
         ))
         .orderBy(desc(energyTargetProgressTable.recordedAt));
 
@@ -537,14 +553,14 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
 
     // ── Fetch chronology progress rows (yearParam only) ───────────────────────
     const allProgressRows =
-      includeProgress && targetIds.length > 0
+      targetIds.length > 0
         ? await db
             .select()
             .from(energyTargetProgressTable)
             .where(and(
               inArray(energyTargetProgressTable.targetId, targetIds),
               eq(energyTargetProgressTable.periodYear, yearParam),
-              ...(scope.companyId !== undefined ? [eq(energyTargetProgressTable.companyId, scope.companyId)] : []),
+              eq(energyTargetProgressTable.companyId, effectiveCompanyId),
             ))
             .orderBy(energyTargetProgressTable.targetId, energyTargetProgressTable.periodYear, energyTargetProgressTable.periodMonth)
         : [];
@@ -552,13 +568,13 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     // ── Fetch VAP projects via action plan join ───────────────────────────────
     const vapActionIds = actions.filter((a) => a.isVap).map((a) => a.id);
     const vapProjects =
-      includeVap && vapActionIds.length > 0
+      vapActionIds.length > 0
         ? await db
             .select()
             .from(vapProjectsTable)
             .where(and(
               inArray(vapProjectsTable.actionPlanId, vapActionIds),
-              ...(scope.companyId !== undefined ? [eq(vapProjectsTable.companyId, scope.companyId)] : []),
+              eq(vapProjectsTable.companyId, effectiveCompanyId),
             ))
             .orderBy(vapProjectsTable.createdAt)
         : [];
@@ -568,8 +584,73 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     if (resolvedUnitId !== null) {
       const unitRow = targets.find((t) => t.unitId === resolvedUnitId);
       if (unitRow?.unitName) unitLabel = unitRow.unitName;
+      else {
+        const [fallbackUnit] = await db.select({ name: unitsTable.name })
+          .from(unitsTable)
+          .where(and(eq(unitsTable.id, resolvedUnitId), eq(unitsTable.companyId, effectiveCompanyId)))
+          .limit(1);
+        if (fallbackUnit?.name) unitLabel = fallbackUnit.name;
+      }
     }
     const unitLabelHtml = escapeHtml(unitLabel);
+
+    const [company] = await db.select({ name: companiesTable.name })
+      .from(companiesTable)
+      .where(eq(companiesTable.id, effectiveCompanyId))
+      .limit(1);
+    if (!company) throw new ReportScopeError(400, "GeÃ§ersiz companyId");
+
+    const effectiveSettings = await resolveEffectiveCompanyReportSettings({
+      companyId: effectiveCompanyId,
+      reportType: ENERGY_TARGETS_REPORT_TYPE,
+    });
+    const snapshot = buildEnergyTargetsReportSnapshot({
+      effective: effectiveSettings,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      companyName: company.name,
+      unitLabel,
+      year: yearParam,
+      generatedAt: new Date(),
+      generatedBy: req.user?.userId ?? null,
+      hasVapProjects: vapProjects.length > 0,
+      hasProgressRows: allProgressRows.length > 0,
+      legacyOverrides,
+    });
+    snapshotForFailure = snapshot;
+    const [snapshotRecord] = await db.insert(reportGenerationSnapshotsTable).values({
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      reportType: ENERGY_TARGETS_REPORT_TYPE,
+      year: yearParam,
+      status: "generating",
+      storageStatus: "not_stored",
+      filename: snapshot.filename,
+      settingsSnapshot: snapshot,
+      generatedBy: req.user?.userId ?? null,
+    }).returning({ id: reportGenerationSnapshotsTable.id });
+    snapshotRecordId = snapshotRecord.id;
+
+    const auditMetadata = {
+      companyId: effectiveCompanyId,
+      reportType: ENERGY_TARGETS_REPORT_TYPE,
+      snapshotId: snapshotRecordId,
+      profileVersion: snapshot.profileVersion,
+      typeSettingsVersion: snapshot.typeSettingsVersion,
+      filename: snapshot.filename,
+      outputName: snapshot.filename,
+      sectionCodes: snapshot.sections.filter((section) => section.visibilityResult).map((section) => section.code),
+      legacyOverrideUsed: Object.keys(legacyOverrides).length > 0,
+    };
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      action: "energy_targets_report.generation_started",
+      entityType: "report_generation_snapshot",
+      entityId: snapshotRecordId,
+      metadata: auditMetadata,
+    });
 
     // ── Summary stats ─────────────────────────────────────────────────────────
     const totalTargets = targets.length;
@@ -583,10 +664,12 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     const vapCount = vapProjects.length;
     const totalCostSaving = vapProjects.reduce((s, v) => s + (v.annualCostSaving ?? 0), 0);
     const totalInvestment = vapProjects.reduce((s, v) => s + (v.investmentCost ?? 0), 0);
+    const locale = snapshot.locale;
+    const generatedDate = new Date(snapshot.generatedAt);
 
     // ── HTML helpers ──────────────────────────────────────────────────────────
     const fmtNum = (n: number | null | undefined, dec = 0) =>
-      n != null ? n.toLocaleString("tr-TR", { minimumFractionDigits: dec, maximumFractionDigits: dec }) : "—";
+      n != null ? n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec }) : "—";
     const fmtDate = (d: string | null | undefined) => escapeHtml(d ?? "—");
     const statusBadge = (s: string | null | undefined) => {
       const statusClass = escapeHtml(s ?? "active");
@@ -657,57 +740,81 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       : "<p>Bu hedeflere bağlı eylem planı bulunamadı.</p>";
 
     // ── Section: VAP portfolio ────────────────────────────────────────────────
-    const vapHtml = includeVap
-      ? vapProjects.length > 0
-        ? `<h2>4. VAP Portföyü</h2>
-          <table>
+    const vapHtml = vapProjects.length > 0
+      ? `<table>
             <tr>
-              <th>Proje Kodu</th><th>Proje Adı</th><th>Bağlı Eylem</th>
-              <th>Yatırım (₺)</th><th>Yıllık Mali Tasarruf (₺)</th>
-              <th>Yıllık Enerji Tasarrufu</th><th>Geri Ödeme (ay)</th><th>Fizibilite</th>
+              <th>Proje Kodu</th><th>Proje Adi</th><th>Bagli Eylem</th>
+              <th>Yatirim (TRY)</th><th>Yillik Mali Tasarruf (TRY)</th>
+              <th>Yillik Enerji Tasarrufu</th><th>Geri Odeme (ay)</th><th>Fizibilite</th>
             </tr>
             ${vapProjects.map((v) => {
               const linkedAction = actions.find((a) => a.id === v.actionPlanId);
               const energySaving = v.annualEnergySavingValue != null
                 ? `${fmtNum(v.annualEnergySavingValue, 2)} ${escapeHtml(v.annualEnergySavingUnit ?? "")}`.trim()
-                : "Henüz girilmedi";
+                : "Henuz girilmedi";
               return `<tr>
-                <td>${escapeHtml(v.projectCode ?? "—")}</td>
+                <td>${escapeHtml(v.projectCode ?? "-")}</td>
                 <td>${escapeHtml(v.projectTitle)}</td>
-                <td>${escapeHtml(linkedAction?.title ?? "—")}</td>
+                <td>${escapeHtml(linkedAction?.title ?? "-")}</td>
                 <td>${fmtNum(v.investmentCost, 0)}</td>
                 <td>${fmtNum(v.annualCostSaving, 0)}</td>
                 <td>${energySaving}</td>
                 <td>${fmtNum(v.paybackMonths, 1)}</td>
-                <td>${escapeHtml(FEASIBILITY_STATUS_LABELS[v.feasibilityStatus ?? ""] ?? v.feasibilityStatus ?? "—")}</td>
+                <td>${escapeHtml(FEASIBILITY_STATUS_LABELS[v.feasibilityStatus ?? ""] ?? v.feasibilityStatus ?? "-")}</td>
               </tr>`;
             }).join("")}
           </table>`
-        : `<h2>4. VAP Portföyü</h2><p>Bu kapsamda kayıtlı VAP projesi bulunamadı.</p>`
       : "";
 
-    // ── Section: progress chronology ──────────────────────────────────────────
-    const progressHtml = includeProgress
-      ? allProgressRows.length > 0
-        ? `<h2>5. Gerçekleşme Kronolojisi</h2>
-          <table>
+    const progressHtml = allProgressRows.length > 0
+      ? `<table>
             <tr>
-              <th>Hedef Adı</th><th>Dönem</th><th>Gerçekleşen Değer</th><th>Tasarruf</th><th>Açıklama</th>
+              <th>Hedef Adi</th><th>Donem</th><th>Gerceklesen Deger</th><th>Tasarruf</th><th>Aciklama</th>
             </tr>
             ${allProgressRows.map((p) => {
-              const targetName = targets.find((t) => t.id === p.targetId)?.name ?? "—";
+              const targetName = targets.find((t) => t.id === p.targetId)?.name ?? "-";
               const period = p.periodMonth ? `${MONTH_NAMES[p.periodMonth]} ${p.periodYear}` : String(p.periodYear);
               return `<tr>
                 <td>${escapeHtml(targetName)}</td>
                 <td>${period}</td>
                 <td>${fmtNum(p.actualValue, 2)}</td>
-                <td>${p.actualSavingValue != null ? fmtNum(p.actualSavingValue, 2) : "—"}</td>
-                <td>${escapeHtml(p.comment ?? "—")}</td>
+                <td>${p.actualSavingValue != null ? fmtNum(p.actualSavingValue, 2) : "-"}</td>
+                <td>${escapeHtml(p.comment ?? "-")}</td>
               </tr>`;
             }).join("")}
           </table>`
-        : `<h2>5. Gerçekleşme Kronolojisi</h2><p>${yearParam} yılı için gerçekleşme kaydı bulunamadı.</p>`
       : "";
+
+    const executiveSummaryHtml = `<div class="kpi-grid">
+    <div class="kpi-box"><div class="kpi-value">${totalTargets}</div><div class="kpi-label">Toplam Hedef</div></div>
+    <div class="kpi-box"><div class="kpi-value">${activeTargets}</div><div class="kpi-label">Aktif Hedef</div></div>
+    <div class="kpi-box"><div class="kpi-value">${completedTargets}</div><div class="kpi-label">Tamamlanan Hedef</div></div>
+    <div class="kpi-box"><div class="kpi-value">${openActions}</div><div class="kpi-label">Acik Eylem</div></div>
+    <div class="kpi-box"><div class="kpi-value">${overdueActions}</div><div class="kpi-label">Gecikmis Eylem</div></div>
+    <div class="kpi-box"><div class="kpi-value">${vapCount}</div><div class="kpi-label">VAP Sayisi</div></div>
+    <div class="kpi-box"><div class="kpi-value">${fmtNum(totalCostSaving, 0)} TRY</div><div class="kpi-label">Toplam Yillik Mali Tasarruf</div></div>
+    <div class="kpi-box"><div class="kpi-value">${fmtNum(totalInvestment, 0)} TRY</div><div class="kpi-label">Toplam Yatirim</div></div>
+  </div>`;
+
+    const sectionFragments: Record<string, string> = {
+      executive_summary: executiveSummaryHtml,
+      energy_targets: targetsHtml,
+      action_plans: actionsHtml,
+      vap_portfolio: vapHtml,
+      progress_chronology: progressHtml,
+    };
+    const renderedSectionsHtml = visibleEnergyTargetsSections(snapshot)
+      .filter((section) => section.code !== "cover")
+      .map((section, index) => `<h2>${index + 1}. ${escapeHtml(section.finalTitle)}</h2>\n${sectionFragments[section.code] ?? ""}`)
+      .join("\n\n");
+    const coverClass = snapshot.coverStyle === "compact" ? "cover cover-compact" : "cover";
+    const subtitleHtml = snapshot.subtitle ? `<p>${escapeHtml(snapshot.subtitle)}</p>` : "";
+    const documentNumberHtml = snapshot.documentNumber ? `<p><strong>Dokuman No:</strong> ${escapeHtml(snapshot.documentNumber)}</p>` : "";
+    const revisionHtml = snapshot.revisionNumber ? `<p><strong>Revizyon:</strong> ${escapeHtml(snapshot.revisionNumber)}</p>` : "";
+    const signatureHtml = snapshot.showSignatureFields
+      ? `<p><strong>Hazirlayan:</strong> ${escapeHtml(snapshot.preparedBy ?? "")} | <strong>Kontrol:</strong> ${escapeHtml(snapshot.checkedBy ?? "")} | <strong>Onay:</strong> ${escapeHtml(snapshot.approvedBy ?? "")}</p>`
+      : "";
+    const footerText = snapshot.footerText ?? "Bu rapor ISO 50001 Enerji Yonetim Sistemi kapsaminda otomatik olarak uretilmistir.";
 
     // ── Full HTML ─────────────────────────────────────────────────────────────
     const htmlContent = `<!DOCTYPE html>
@@ -735,47 +842,33 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     .badge-planned { background: #e0f2fe; color: #0369a1; }
     .badge-in_progress { background: #fef9c3; color: #713f12; }
     .cover { margin-bottom: 32px; }
+    .cover-compact { margin-bottom: 18px; }
+    .cover-compact h1 { font-size: 18px; padding-bottom: 6px; }
     .cover p { color: #64748b; font-size: 14px; margin: 4px 0; }
     .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 14px; color: #94a3b8; font-size: 11px; }
   </style>
 </head>
 <body>
 
-  <div class="cover">
-    <h1>ISO 50001 Hedef, Eylem Planı ve VAP Yönetim Raporu</h1>
-    <p><strong>Yıl:</strong> ${yearParam}</p>
+  <div class="${coverClass}">
+    <h1>${escapeHtml(snapshot.title)}</h1>
+    ${subtitleHtml}
+    <p><strong>Gizlilik:</strong> ${escapeHtml(snapshot.confidentialityLabel)}</p>
+    <p><strong>Yil:</strong> ${yearParam}</p>
     <p><strong>Birim:</strong> ${unitLabelHtml}</p>
-    <p><strong>Oluşturma Tarihi:</strong> ${new Date().toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" })}</p>
+    ${documentNumberHtml}
+    ${revisionHtml}
+    <p><strong>Olusturma Tarihi:</strong> ${generatedDate.toLocaleDateString(locale, { day: "2-digit", month: "long", year: "numeric" })}</p>
+    ${signatureHtml}
     <p style="margin-top:10px; padding:8px 12px; background:#f0fdf4; border-left:3px solid #0f766e; font-size:13px; color:#065f46;">
-      Bu rapor, seçili yılda aktif olan hedefleri ve seçili yıla ait gerçekleşme kayıtlarını içerir.
+      Bu rapor, secili yilda aktif olan hedefleri ve secili yila ait gerceklesme kayitlarini icerir.
     </p>
   </div>
-
-  <h2>1. Yönetici Özeti</h2>
-  <div class="kpi-grid">
-    <div class="kpi-box"><div class="kpi-value">${totalTargets}</div><div class="kpi-label">Toplam Hedef</div></div>
-    <div class="kpi-box"><div class="kpi-value">${activeTargets}</div><div class="kpi-label">Aktif Hedef</div></div>
-    <div class="kpi-box"><div class="kpi-value">${completedTargets}</div><div class="kpi-label">Tamamlanan Hedef</div></div>
-    <div class="kpi-box"><div class="kpi-value">${openActions}</div><div class="kpi-label">Açık Eylem</div></div>
-    <div class="kpi-box"><div class="kpi-value">${overdueActions}</div><div class="kpi-label">Gecikmiş Eylem</div></div>
-    <div class="kpi-box"><div class="kpi-value">${vapCount}</div><div class="kpi-label">VAP Sayısı</div></div>
-    <div class="kpi-box"><div class="kpi-value">${fmtNum(totalCostSaving, 0)} ₺</div><div class="kpi-label">Toplam Yıllık Mali Tasarruf</div></div>
-    <div class="kpi-box"><div class="kpi-value">${fmtNum(totalInvestment, 0)} ₺</div><div class="kpi-label">Toplam Yatırım</div></div>
-  </div>
-
-  <h2>2. Enerji Hedefleri Tablosu</h2>
-  ${targetsHtml}
-
-  <h2>3. Eylem Planları Tablosu</h2>
-  ${actionsHtml}
-
-  ${vapHtml}
-
-  ${progressHtml}
+  ${renderedSectionsHtml}
 
   <div class="footer">
-    Bu rapor ISO 50001 Enerji Yönetim Sistemi kapsamında otomatik olarak üretilmiştir.
-    Referans Yıl: ${yearParam} | Birim: ${unitLabelHtml} | Üretim: ${new Date().toLocaleString("tr-TR")}
+    ${escapeHtml(footerText)}
+    Referans Yil: ${yearParam} | Birim: ${unitLabelHtml} | Gizlilik: ${escapeHtml(snapshot.confidentialityLabel)} | Uretim: ${generatedDate.toLocaleString(locale)}
   </div>
 </body>
 </html>`;
@@ -785,7 +878,19 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       title: `Enerji Hedefleri ${yearParam}`,
       landscape: true,
     });
-    const filename = safePdfFilename(["enerji-hedefleri", yearParam]);
+    await db.update(reportGenerationSnapshotsTable)
+      .set({ status: "completed", completedAt: new Date(), filename: snapshot.filename })
+      .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      action: "energy_targets_report.generation_completed",
+      entityType: "report_generation_snapshot",
+      entityId: snapshotRecordId,
+      metadata: auditMetadata,
+    });
+    const filename = snapshot.filename;
     res.set({
       "Content-Type": "application/pdf",
       "Content-Disposition": `attachment; filename="${filename}"`,
@@ -794,17 +899,43 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     });
     res.status(200).send(pdf);
   } catch (err) {
+    if (snapshotRecordId !== null) {
+      await db.update(reportGenerationSnapshotsTable)
+        .set({
+          status: "failed",
+          failedAt: new Date(),
+          failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
+        })
+        .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
+      await writeBestEffortAudit(db, {
+        request: req,
+        companyId: snapshotForFailure?.companyId ?? req.user?.companyId ?? null,
+        unitId: snapshotForFailure?.unitId ?? req.user?.unitId ?? null,
+        action: "energy_targets_report.generation_failed",
+        entityType: "report_generation_snapshot",
+        entityId: snapshotRecordId,
+        outcome: "failure",
+        metadata: {
+          reportType: ENERGY_TARGETS_REPORT_TYPE,
+          snapshotId: snapshotRecordId,
+          profileVersion: snapshotForFailure?.profileVersion ?? null,
+          typeSettingsVersion: snapshotForFailure?.typeSettingsVersion ?? null,
+          filename: snapshotForFailure?.filename ?? null,
+          sectionCodes: snapshotForFailure?.sections.filter((section) => section.visibilityResult).map((section) => section.code) ?? [],
+          legacyOverrideUsed: snapshotForFailure?.sections.some((section) => section.legacyOverride !== null) ?? false,
+        },
+      });
+    }
+    if (err instanceof ReportSettingsSnapshotError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
     if (handleReportScopeError(res, err)) return;
     req.log.error(err);
-    res.status(500).json({ error: "Rapor üretme hatası" });
+    res.status(500).json({ error: "Rapor uretme hatasi" });
   }
 });
 
-// ── GET /api/reports/energy-performance/pdf ───────────────────────────────
-// EnPG İzleme PDF raporu — ham birimli (m³, kWh vb.), TEP değil
-// Not: consumptionTable.kwh kolonu teknik ad olmakla birlikte gerçekte
-// ham tüketim değerini (rawConsumption) temsil eder. Yeni kodlarda
-// rawConsumption alias'ı tercih edilmelidir.
 router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   try {
     const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);

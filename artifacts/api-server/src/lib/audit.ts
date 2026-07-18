@@ -53,6 +53,13 @@ export const AUDIT_ACTIONS = [
   "company_logo.deleted",
   "company_brand_settings.created",
   "company_brand_settings.updated",
+  "company_report_profile.created",
+  "company_report_profile.updated",
+  "company_report_type_settings.created",
+  "company_report_type_settings.updated",
+  "energy_targets_report.generation_started",
+  "energy_targets_report.generation_completed",
+  "energy_targets_report.generation_failed",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;
