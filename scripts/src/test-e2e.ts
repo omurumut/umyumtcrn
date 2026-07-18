@@ -95,13 +95,14 @@ function reserveLocalPort(): Promise<number> {
 function runPlaywright(
   repoRoot: string,
   env: NodeJS.ProcessEnv,
+  extraArgs: string[],
 ): Promise<number> {
   const rootRequire = createRequire(resolve(repoRoot, "package.json"));
   const cli = rootRequire.resolve("@playwright/test/cli");
   return new Promise((resolveExit, reject) => {
     const child = spawn(
       process.execPath,
-      [cli, "test", "--config", resolve(repoRoot, "playwright.config.ts")],
+      [cli, "test", "--config", resolve(repoRoot, "playwright.config.ts"), ...extraArgs],
       {
         cwd: repoRoot,
         env,
@@ -173,7 +174,7 @@ async function main(): Promise<number> {
     return await runPlaywright(repoRoot, {
       ...process.env,
       E2E_BASE_URL: baseUrl,
-    });
+    }, process.argv.slice(2));
   } finally {
     delete process.env.TEST_CORS_ALLOWED_ORIGIN;
     if (viteServer) await viteServer.close().catch(() => undefined);

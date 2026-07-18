@@ -69,6 +69,52 @@ export const insertCompanySettingsSchema = createInsertSchema(companySettingsTab
 export type InsertCompanySettings = z.infer<typeof insertCompanySettingsSchema>;
 export type CompanySettings = typeof companySettingsTable.$inferSelect;
 
+export const companyAssetsTable = pgTable("company_assets", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  assetType: text("asset_type").notNull(),
+  storageProvider: text("storage_provider").notNull(),
+  storageKey: text("storage_key").notNull(),
+  originalFileName: text("original_file_name"),
+  mimeType: text("mime_type").notNull(),
+  fileSize: integer("file_size").notNull(),
+  width: integer("width").notNull(),
+  height: integer("height").notNull(),
+  contentHash: text("content_hash").notNull(),
+  status: text("status").notNull().default("active"),
+  version: integer("version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  createdBy: integer("created_by").references(() => usersTable.id, { onDelete: "set null" }),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyTypeStatusIdx: index("company_assets_company_type_status_idx").on(table.companyId, table.assetType, table.status),
+  storageKeyUnique: uniqueIndex("company_assets_storage_key_unique").on(table.storageKey),
+}));
+
+export const insertCompanyAssetSchema = createInsertSchema(companyAssetsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompanyAsset = z.infer<typeof insertCompanyAssetSchema>;
+export type CompanyAsset = typeof companyAssetsTable.$inferSelect;
+
+export const companyBrandSettingsTable = pgTable("company_brand_settings", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  showLogoInReports: boolean("show_logo_in_reports").notNull().default(true),
+  logoAltText: text("logo_alt_text").notNull().default("Firma logosu"),
+  logoPosition: text("logo_position").notNull().default("left"),
+  logoSize: text("logo_size").notNull().default("medium"),
+  brandSettingsVersion: integer("brand_settings_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyUnique: uniqueIndex("company_brand_settings_company_id_unique").on(table.companyId),
+}));
+
+export const insertCompanyBrandSettingsSchema = createInsertSchema(companyBrandSettingsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompanyBrandSettings = z.infer<typeof insertCompanyBrandSettingsSchema>;
+export type CompanyBrandSettings = typeof companyBrandSettingsTable.$inferSelect;
+
 // Shared authentication state.
 export const authSessionsTable = pgTable("auth_sessions", {
   id: serial("id").primaryKey(),

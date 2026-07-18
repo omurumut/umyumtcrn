@@ -48,6 +48,11 @@ export const AUDIT_ACTIONS = [
   "company_profile.updated",
   "company_settings.created",
   "company_settings.updated",
+  "company_logo.uploaded",
+  "company_logo.replaced",
+  "company_logo.deleted",
+  "company_brand_settings.created",
+  "company_brand_settings.updated",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;

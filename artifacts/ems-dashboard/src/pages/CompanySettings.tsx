@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useListCompanies, getListCompaniesQueryKey } from "@workspace/api-client-react";
 import {
@@ -9,14 +9,23 @@ import {
   COMPANY_ENERGY_DISPLAY_UNITS,
   COMPANY_LOCALES,
   COMPANY_TEP_DISPLAY_MODES,
+  COMPANY_LOGO_MAX_BYTES,
+  COMPANY_LOGO_MAX_HEIGHT,
+  COMPANY_LOGO_MAX_PIXELS,
+  COMPANY_LOGO_MAX_WIDTH,
+  COMPANY_LOGO_POSITIONS,
+  COMPANY_LOGO_SIZES,
+  DEFAULT_COMPANY_BRAND_SETTINGS,
   DEFAULT_COMPANY_SETTINGS,
+  type CompanyBrandSettingsValues,
   type CompanySettingsValues,
 } from "@workspace/api-zod";
-import { AlertCircle, Building2, Info, RefreshCw, Save } from "lucide-react";
+import { AlertCircle, Building2, ImageIcon, Info, RefreshCw, Save, Trash2, Upload } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/hooks/use-toast";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -76,6 +86,30 @@ type CompanySettingsResponse = {
   settings: CompanySettings;
   permissions: { canEdit: boolean };
   isDefault: boolean;
+};
+
+type CompanyBrandSettings = CompanyBrandSettingsValues & {
+  companyId: number;
+  brandSettingsVersion: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+  hasLogo: boolean;
+  logoAssetId: number | null;
+  logoVersion: number | null;
+};
+
+type CompanyBrandResponse = {
+  brand: CompanyBrandSettings;
+  permissions: { canEdit: boolean; canManageLogo: boolean };
+  isDefault: boolean;
+};
+
+type PendingLogo = {
+  file: File;
+  previewUrl: string;
+  width: number;
+  height: number;
+  mimeType: string;
 };
 
 const emptyProfileForm: CompanyProfileForm = {
@@ -131,11 +165,12 @@ class ApiError extends Error {
 }
 
 async function apiFetch<T>(url: string, token: string | null, init?: RequestInit): Promise<T> {
+  const isFormData = init?.body instanceof FormData;
   const res = await fetch(url, {
     ...init,
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...init?.headers,
     },
   });
@@ -150,7 +185,16 @@ async function apiFetch<T>(url: string, token: string | null, init?: RequestInit
     }
     throw new ApiError(res.status, message, body);
   }
+  if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+async function blobFetch(url: string, token: string | null): Promise<Blob> {
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`);
+  return res.blob();
 }
 
 function formatDate(value: string | null, format = "long"): string {
@@ -187,6 +231,40 @@ function settingsFormFromResponse(settings: CompanySettings): CompanySettingsVal
     tepDisplayMode: settings.tepDisplayMode,
     co2DisplayMode: settings.co2DisplayMode,
   };
+}
+
+function brandFormFromResponse(brand: CompanyBrandSettings): CompanyBrandSettingsValues {
+  return {
+    showLogoInReports: brand.showLogoInReports,
+    logoAltText: brand.logoAltText,
+    logoPosition: brand.logoPosition,
+    logoSize: brand.logoSize,
+  };
+}
+
+function validateBrandForm(form: CompanyBrandSettingsValues): string | null {
+  if (form.logoAltText.trim().length > 250) return "Logo alternatif metni 250 karakteri aşamaz.";
+  return null;
+}
+
+function formatBytes(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toLocaleString("tr-TR", { maximumFractionDigits: 1 })} MB`;
+}
+
+async function inspectImageFile(file: File): Promise<{ width: number; height: number }> {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    const loaded = new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("invalid-image"));
+    });
+    image.src = url;
+    await loaded;
+    return { width: image.naturalWidth, height: image.naturalHeight };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function validateProfileForm(form: CompanyProfileForm): string | null {
@@ -342,6 +420,8 @@ export default function CompanySettings() {
   const effectiveCompanyId = isSuperAdmin ? companyId : user?.companyId ?? null;
   const profileQueryKey = ["company-profile", user?.role, effectiveCompanyId];
   const settingsQueryKey = ["company-settings", user?.role, effectiveCompanyId];
+  const brandQueryKey = ["company-brand", user?.role, effectiveCompanyId];
+  const logoQueryKey = ["company-brand-logo", user?.role, effectiveCompanyId];
   const [profileForm, setProfileForm] = useState<CompanyProfileForm>(emptyProfileForm);
   const [profileDirty, setProfileDirty] = useState(false);
   const [loadedProfileKey, setLoadedProfileKey] = useState<string | null>(null);
@@ -351,6 +431,15 @@ export default function CompanySettings() {
   const [loadedSettingsKey, setLoadedSettingsKey] = useState<string | null>(null);
   const [settingsConflict, setSettingsConflict] = useState(false);
   const [settingsErrors, setSettingsErrors] = useState<Partial<Record<keyof CompanySettingsValues, string>>>({});
+  const [brandForm, setBrandForm] = useState<CompanyBrandSettingsValues>(DEFAULT_COMPANY_BRAND_SETTINGS);
+  const [brandDirty, setBrandDirty] = useState(false);
+  const [loadedBrandKey, setLoadedBrandKey] = useState<string | null>(null);
+  const [brandConflict, setBrandConflict] = useState(false);
+  const [pendingLogo, setPendingLogo] = useState<PendingLogo | null>(null);
+  const [fetchedLogoUrl, setFetchedLogoUrl] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const pendingLogoUrlRef = useRef<string | null>(null);
+  const fetchedLogoUrlRef = useRef<string | null>(null);
 
   const { data: companies = [], isLoading: companiesLoading } = useListCompanies({
     query: {
@@ -374,6 +463,16 @@ export default function CompanySettings() {
     : isSuperAdmin
       ? `/api/company-settings?companyId=${effectiveCompanyId}`
       : "/api/company-settings";
+  const brandUrl = effectiveCompanyId === null
+    ? null
+    : isSuperAdmin
+      ? `/api/company-brand?companyId=${effectiveCompanyId}`
+      : "/api/company-brand";
+  const logoUrl = effectiveCompanyId === null
+    ? null
+    : isSuperAdmin
+      ? `/api/company-brand/logo?companyId=${effectiveCompanyId}`
+      : "/api/company-brand/logo";
 
   const profileQuery = useQuery<CompanyProfileResponse, ApiError>({
     queryKey: profileQueryKey,
@@ -385,6 +484,19 @@ export default function CompanySettings() {
     queryKey: settingsQueryKey,
     queryFn: () => apiFetch<CompanySettingsResponse>(settingsUrl!, token),
     enabled: !!token && settingsUrl !== null && selectedCompanyExists,
+  });
+
+  const brandQuery = useQuery<CompanyBrandResponse, ApiError>({
+    queryKey: brandQueryKey,
+    queryFn: () => apiFetch<CompanyBrandResponse>(brandUrl!, token),
+    enabled: !!token && brandUrl !== null && selectedCompanyExists,
+  });
+
+  const logoQuery = useQuery<Blob, ApiError>({
+    queryKey: logoQueryKey,
+    queryFn: () => blobFetch(logoUrl!, token),
+    enabled: !!token && logoUrl !== null && selectedCompanyExists && brandQuery.data?.brand.hasLogo === true,
+    retry: false,
   });
 
   const profileMutation = useMutation<CompanyProfileResponse, ApiError, CompanyProfileForm>({
@@ -432,6 +544,77 @@ export default function CompanySettings() {
     },
   });
 
+  const brandMutation = useMutation<CompanyBrandResponse, ApiError, CompanyBrandSettingsValues>({
+    mutationFn: (nextForm) => apiFetch<CompanyBrandResponse>(brandUrl!, token, {
+      method: "PATCH",
+      body: JSON.stringify({
+        expectedBrandSettingsVersion: brandQuery.data?.brand.brandSettingsVersion,
+        ...nextForm,
+        logoAltText: nextForm.logoAltText.trim(),
+      }),
+    }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(brandQueryKey, data);
+      setBrandForm(brandFormFromResponse(data.brand));
+      setBrandDirty(false);
+      setBrandConflict(false);
+      setLoadedBrandKey(`${data.brand.companyId}:${data.brand.brandSettingsVersion}:${data.brand.logoVersion ?? 0}`);
+      toast({ title: "Kurumsal kimlik ayarları güncellendi." });
+    },
+    onError: (error) => {
+      if (error.status === 409) setBrandConflict(true);
+      toast({ title: "Kurumsal kimlik kaydedilemedi", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const logoUploadMutation = useMutation<unknown, ApiError, File>({
+    mutationFn: (file) => {
+      const data = new FormData();
+      data.append("logo", file);
+      return apiFetch<unknown>(logoUrl!, token, { method: "POST", body: data });
+    },
+    onSuccess: async () => {
+      clearPendingLogo();
+      await queryClient.invalidateQueries({ queryKey: brandQueryKey });
+      await queryClient.invalidateQueries({ queryKey: logoQueryKey });
+      toast({ title: "Firma logosu güncellendi." });
+    },
+    onError: (error) => {
+      toast({ title: "Logo yüklenemedi", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const logoDeleteMutation = useMutation<unknown, ApiError>({
+    mutationFn: () => apiFetch<unknown>(logoUrl!, token, { method: "DELETE" }),
+    onSuccess: async () => {
+      setDeleteDialogOpen(false);
+      clearPendingLogo();
+      revokeFetchedLogoUrl();
+      await queryClient.invalidateQueries({ queryKey: brandQueryKey });
+      await queryClient.invalidateQueries({ queryKey: logoQueryKey });
+      toast({ title: "Firma logosu silindi." });
+    },
+    onError: (error) => {
+      toast({ title: "Logo silinemedi", description: error.message, variant: "destructive" });
+    },
+  });
+
+  function revokeFetchedLogoUrl() {
+    if (fetchedLogoUrlRef.current) {
+      URL.revokeObjectURL(fetchedLogoUrlRef.current);
+      fetchedLogoUrlRef.current = null;
+    }
+    setFetchedLogoUrl(null);
+  }
+
+  function clearPendingLogo() {
+    if (pendingLogoUrlRef.current) {
+      URL.revokeObjectURL(pendingLogoUrlRef.current);
+      pendingLogoUrlRef.current = null;
+    }
+    setPendingLogo(null);
+  }
+
   useEffect(() => {
     if (!profileQuery.data) return;
     const key = `${profileQuery.data.company.id}:${profileQuery.data.company.profileVersion}`;
@@ -460,23 +643,57 @@ export default function CompanySettings() {
   }, [loadedSettingsKey, settingsDirty, settingsQuery.data, toast]);
 
   useEffect(() => {
-    if (!profileDirty && !settingsDirty) return;
+    if (!brandQuery.data) return;
+    const key = `${brandQuery.data.brand.companyId}:${brandQuery.data.brand.brandSettingsVersion}:${brandQuery.data.brand.logoVersion ?? 0}`;
+    if (key === loadedBrandKey) return;
+    if (brandDirty && loadedBrandKey !== null && brandQuery.data.brand.companyId !== Number(loadedBrandKey.split(":")[0])) {
+      toast({ title: "Kaydedilmemiş kurumsal kimlik değişiklikleri sıfırlandı", description: "Seçili firma değiştiği için kurumsal kimlik formu güncel ayarlarla yenilendi." });
+    }
+    setBrandForm(brandFormFromResponse(brandQuery.data.brand));
+    setBrandDirty(false);
+    setBrandConflict(false);
+    clearPendingLogo();
+    setLoadedBrandKey(key);
+  }, [brandDirty, brandQuery.data, loadedBrandKey, toast]);
+
+  useEffect(() => {
+    revokeFetchedLogoUrl();
+    if (!logoQuery.data) return;
+    const nextUrl = URL.createObjectURL(logoQuery.data);
+    fetchedLogoUrlRef.current = nextUrl;
+    setFetchedLogoUrl(nextUrl);
+  }, [logoQuery.data]);
+
+  useEffect(() => () => {
+    if (pendingLogoUrlRef.current) URL.revokeObjectURL(pendingLogoUrlRef.current);
+    if (fetchedLogoUrlRef.current) URL.revokeObjectURL(fetchedLogoUrlRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!profileDirty && !settingsDirty && !brandDirty && !pendingLogo) return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [profileDirty, settingsDirty]);
+  }, [brandDirty, pendingLogo, profileDirty, settingsDirty]);
 
   const company = profileQuery.data?.company;
   const canEditProfile = profileQuery.data?.permissions.canEditGeneral === true;
   const canEditSettings = settingsQuery.data?.permissions.canEdit === true;
+  const canEditBrand = brandQuery.data?.permissions.canEdit === true;
+  const canManageLogo = brandQuery.data?.permissions.canManageLogo === true;
   const profileSaving = profileMutation.isPending;
   const settingsSaving = settingsMutation.isPending;
+  const brandSaving = brandMutation.isPending;
+  const logoUploading = logoUploadMutation.isPending;
+  const logoDeleting = logoDeleteMutation.isPending;
   const profileDisabled = !canEditProfile || profileSaving;
   const settingsDisabled = !canEditSettings || settingsSaving;
+  const brandDisabled = !canEditBrand || brandSaving;
   const displayName = company?.legalName?.trim() || company?.name || "-";
+  const activeLogoUrl = pendingLogo?.previewUrl ?? fetchedLogoUrl;
 
   function patchProfileField(field: keyof CompanyProfileForm, value: string) {
     setProfileForm((current) => ({ ...current, [field]: value }));
@@ -487,6 +704,12 @@ export default function CompanySettings() {
     setSettingsForm((current) => ({ ...current, [field]: value }));
     setSettingsDirty(true);
     setSettingsErrors((current) => ({ ...current, [field]: undefined }));
+  }
+
+  function patchBrandField<K extends keyof CompanyBrandSettingsValues>(field: K, value: CompanyBrandSettingsValues[K]) {
+    setBrandForm((current) => ({ ...current, [field]: value }));
+    setBrandDirty(true);
+    setBrandConflict(false);
   }
 
   function handleProfileSubmit(event: FormEvent) {
@@ -510,6 +733,47 @@ export default function CompanySettings() {
     settingsMutation.mutate(settingsForm);
   }
 
+  function handleBrandSubmit(event: FormEvent) {
+    event.preventDefault();
+    const validationError = validateBrandForm(brandForm);
+    if (validationError) {
+      toast({ title: "Kurumsal kimlik kaydedilemedi", description: validationError, variant: "destructive" });
+      return;
+    }
+    brandMutation.mutate(brandForm);
+  }
+
+  async function handleLogoInputChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = "";
+    if (!file) return;
+    if (file.type !== "image/png" && file.type !== "image/jpeg") {
+      toast({ title: "Geçersiz format", description: "Yalnız PNG veya JPEG logo yükleyebilirsiniz.", variant: "destructive" });
+      return;
+    }
+    if (file.size > COMPANY_LOGO_MAX_BYTES) {
+      toast({ title: "Logo dosyası izin verilen boyutu aşıyor.", description: `Maksimum ${formatBytes(COMPANY_LOGO_MAX_BYTES)}.`, variant: "destructive" });
+      return;
+    }
+    try {
+      const dimensions = await inspectImageFile(file);
+      if (
+        dimensions.width > COMPANY_LOGO_MAX_WIDTH ||
+        dimensions.height > COMPANY_LOGO_MAX_HEIGHT ||
+        dimensions.width * dimensions.height > COMPANY_LOGO_MAX_PIXELS
+      ) {
+        toast({ title: "Logo ölçüleri çok büyük", description: "En fazla 4000 x 4000 px ve 16 milyon piksel desteklenir.", variant: "destructive" });
+        return;
+      }
+      clearPendingLogo();
+      const previewUrl = URL.createObjectURL(file);
+      pendingLogoUrlRef.current = previewUrl;
+      setPendingLogo({ file, previewUrl, width: dimensions.width, height: dimensions.height, mimeType: file.type });
+    } catch {
+      toast({ title: "Logo okunamadı", description: "Yalnız PNG veya JPEG logo yükleyebilirsiniz.", variant: "destructive" });
+    }
+  }
+
   async function reloadProfile() {
     setProfileConflict(false);
     await profileQuery.refetch();
@@ -518,6 +782,12 @@ export default function CompanySettings() {
   async function reloadSettings() {
     setSettingsConflict(false);
     await settingsQuery.refetch();
+  }
+
+  async function reloadBrand() {
+    setBrandConflict(false);
+    await brandQuery.refetch();
+    await logoQuery.refetch();
   }
 
   return (
@@ -550,7 +820,7 @@ export default function CompanySettings() {
         </Alert>
       )}
 
-      {(profileQuery.data || settingsQuery.data) && !canEditProfile && !canEditSettings && (
+      {(profileQuery.data || settingsQuery.data || brandQuery.data) && !canEditProfile && !canEditSettings && !canEditBrand && (
         <Alert className="border-teal-600/30 bg-teal-600/10">
           <Info className="h-4 w-4" />
           <AlertTitle>Salt okunur bilgi</AlertTitle>
@@ -558,11 +828,11 @@ export default function CompanySettings() {
         </Alert>
       )}
 
-      {(profileQuery.isError || settingsQuery.isError) && (
+      {(profileQuery.isError || settingsQuery.isError || brandQuery.isError) && (
         <Alert data-testid="company-settings-error" variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Ayarlar yüklenemedi</AlertTitle>
-          <AlertDescription>{profileQuery.error?.message ?? settingsQuery.error?.message}</AlertDescription>
+          <AlertDescription>{profileQuery.error?.message ?? settingsQuery.error?.message ?? brandQuery.error?.message}</AlertDescription>
         </Alert>
       )}
 
@@ -570,6 +840,7 @@ export default function CompanySettings() {
         <TabsList>
           <TabsTrigger data-testid="company-general-tab" value="general">Genel Bilgiler</TabsTrigger>
           <TabsTrigger data-testid="company-localization-tab" value="localization">Yerelleştirme ve Gösterim</TabsTrigger>
+          <TabsTrigger data-testid="company-brand-tab" value="brand">Kurumsal Kimlik</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="space-y-6">
@@ -780,6 +1051,179 @@ export default function CompanySettings() {
                   <ReadOnlyRow label="Mali yıl başlangıcı" value={<span data-testid="settings-preview-fiscal-month">{monthNames[settingsForm.fiscalYearStartMonth - 1] ?? "-"}</span>} />
                   {settingsQuery.data?.settings.createdAt && <ReadOnlyRow label="Oluşturulma" value={formatDate(settingsQuery.data.settings.createdAt, "short")} />}
                   {settingsQuery.data?.settings.updatedAt && <ReadOnlyRow label="Güncellenme" value={formatDate(settingsQuery.data.settings.updatedAt, "short")} />}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="brand" className="space-y-6">
+          {brandConflict && (
+            <Alert data-testid="company-brand-conflict" variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Kurumsal kimlik güncel değil</AlertTitle>
+              <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <span>Kurumsal kimlik ayarları başka bir oturum tarafından güncellendi. Güncel bilgileri yeniden yükleyin.</span>
+                <Button data-testid="company-brand-reload-button" type="button" variant="secondary" size="sm" onClick={reloadBrand}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Güncel bilgileri yükle
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {brandQuery.data && !canEditBrand && (
+            <Alert className="border-teal-600/30 bg-teal-600/10">
+              <Info className="h-4 w-4" />
+              <AlertTitle>Salt okunur kurumsal kimlik</AlertTitle>
+              <AlertDescription>Logo ve kurumsal kimlik ayarlarını yalnız firma yöneticileri düzenleyebilir.</AlertDescription>
+            </Alert>
+          )}
+
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
+            <Card className="overflow-hidden rounded-lg">
+              <CardHeader>
+                <CardTitle>Kurumsal Kimlik</CardTitle>
+                <CardDescription>Firma logosu ve rapor başlığında kullanılacak sınırlı kurumsal görünüm tercihleri.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {brandQuery.isLoading || (isSuperAdmin && companiesLoading && effectiveCompanyId !== null) ? (
+                  <div data-testid="company-brand-loading" className="space-y-4">
+                    <Skeleton className="h-32 w-full" />
+                    <Skeleton className="h-10 w-full" />
+                    <Skeleton className="h-10 w-full" />
+                  </div>
+                ) : brandQuery.data ? (
+                  <div data-testid="company-brand-form" className="space-y-6">
+                    <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
+                      <div className="space-y-3">
+                        <div className="flex aspect-[2/1] items-center justify-center overflow-hidden rounded-lg border border-border bg-muted/30 p-4" data-testid="company-logo-preview">
+                          {activeLogoUrl ? (
+                            <img src={activeLogoUrl} alt={brandForm.logoAltText || "Firma logosu"} className="max-h-full max-w-full object-contain" />
+                          ) : (
+                            <div className="flex flex-col items-center gap-2 text-center text-sm text-muted-foreground">
+                              <ImageIcon className="h-8 w-8" />
+                              Logo yok
+                            </div>
+                          )}
+                        </div>
+                        {pendingLogo && (
+                          <div data-testid="company-logo-pending" className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                            Seçili dosya: {pendingLogo.file.name} ({pendingLogo.width} x {pendingLogo.height}, {formatBytes(pendingLogo.file.size)}). Sunucuya göndermek için Yükle düğmesine basın.
+                          </div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          PNG veya JPEG, en fazla {formatBytes(COMPANY_LOGO_MAX_BYTES)}. Önerilen oran 2:1, normalize çıktı en fazla 1200 x 600 px olur.
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        {canManageLogo && (
+                          <div className="flex flex-wrap gap-2">
+                            <Input id="company-logo-file" data-testid="company-logo-file-input" type="file" accept="image/png,image/jpeg" className="hidden" onChange={handleLogoInputChange} disabled={logoUploading || logoDeleting} />
+                            <Button type="button" variant="secondary" onClick={() => document.getElementById("company-logo-file")?.click()} disabled={logoUploading || logoDeleting}>
+                              <ImageIcon className="mr-2 h-4 w-4" />
+                              {brandQuery.data.brand.hasLogo ? "Değiştir" : "Logo seç"}
+                            </Button>
+                            <Button data-testid="company-logo-upload-button" type="button" onClick={() => pendingLogo && logoUploadMutation.mutate(pendingLogo.file)} disabled={!pendingLogo || logoUploading || logoDeleting}>
+                              <Upload className="mr-2 h-4 w-4" />
+                              {logoUploading ? "Yükleniyor" : "Yükle"}
+                            </Button>
+                            <Button type="button" variant="ghost" onClick={clearPendingLogo} disabled={!pendingLogo || logoUploading || logoDeleting}>
+                              Seçimi temizle
+                            </Button>
+                            {brandQuery.data.brand.hasLogo && (
+                              <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                                <AlertDialogTrigger asChild>
+                                  <Button data-testid="company-logo-delete-button" type="button" variant="destructive" disabled={logoUploading || logoDeleting}>
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    Sil
+                                  </Button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>Logo silinsin mi?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      Aktif logo rapor ön izlemelerinde artık görünmez. Eski asset fiziksel olarak hemen silinmez.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel>Vazgeç</AlertDialogCancel>
+                                    <AlertDialogAction data-testid="company-logo-delete-confirm" onClick={() => logoDeleteMutation.mutate()} disabled={logoDeleting}>
+                                      Sil
+                                    </AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            )}
+                          </div>
+                        )}
+
+                        <form className="space-y-4" onSubmit={handleBrandSubmit}>
+                          <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                            <div>
+                              <Label htmlFor="brand-show-logo">Raporlarda logo göster</Label>
+                              <div className="text-xs text-muted-foreground">Bu tercih yalnız rapor sunum varsayımıdır.</div>
+                            </div>
+                            <Switch id="brand-show-logo" data-testid="brand-show-logo-switch" checked={brandForm.showLogoInReports} disabled={brandDisabled} onCheckedChange={(checked) => patchBrandField("showLogoInReports", checked)} />
+                          </div>
+                          <Field id="brand-logo-alt-text" label="Logo alternatif metni">
+                            <Input id="brand-logo-alt-text" data-testid="brand-logo-alt-text-input" value={brandForm.logoAltText} maxLength={250} disabled={brandDisabled} onChange={(event) => patchBrandField("logoAltText", event.target.value)} />
+                          </Field>
+                          <div className="grid gap-4 sm:grid-cols-2">
+                            <SelectField id="brand-logo-position" label="Logo konumu" value={brandForm.logoPosition} options={COMPANY_LOGO_POSITIONS} disabled={brandDisabled} testId="brand-logo-position-select" onChange={(value) => patchBrandField("logoPosition", value)} />
+                            <SelectField id="brand-logo-size" label="Logo boyutu" value={brandForm.logoSize} options={COMPANY_LOGO_SIZES} disabled={brandDisabled} testId="brand-logo-size-select" onChange={(value) => patchBrandField("logoSize", value)} />
+                          </div>
+                          <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="text-sm text-muted-foreground">
+                              <span data-testid="company-brand-version">Kurumsal kimlik sürümü: {brandQuery.data.brand.brandSettingsVersion}</span>
+                              {brandQuery.data.isDefault && <span className="ml-2 text-teal-300">Varsayılan değerler gösteriliyor.</span>}
+                              {brandDirty && <span className="ml-2 text-amber-400">Kaydedilmemiş kurumsal kimlik tercihi var.</span>}
+                            </div>
+                            {canEditBrand && (
+                              <Button data-testid="company-brand-save-button" type="submit" disabled={!brandDirty || brandSaving || brandConflict}>
+                                <Save className="mr-2 h-4 w-4" />
+                                {brandSaving ? "Kaydediliyor" : "Kaydet"}
+                              </Button>
+                            )}
+                          </div>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div data-testid="company-brand-empty" className="py-8 text-sm text-muted-foreground">
+                    Görüntülenecek kurumsal kimlik ayarı yok.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card data-testid="company-brand-preview" className="overflow-hidden rounded-lg">
+              <CardHeader>
+                <CardTitle>Rapor Başlığı Ön İzlemesi</CardTitle>
+                <CardDescription>Seçili logo ve sunum tercihlerinin basit gösterimi.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-lg border border-border bg-background p-4">
+                  <div className={`flex items-center gap-4 ${brandForm.logoPosition === "center" ? "justify-center text-center" : brandForm.logoPosition === "right" ? "flex-row-reverse justify-between text-right" : "justify-between"}`}>
+                    {brandForm.showLogoInReports && activeLogoUrl ? (
+                      <img
+                        src={activeLogoUrl}
+                        alt={brandForm.logoAltText || "Firma logosu"}
+                        className={`object-contain ${brandForm.logoSize === "small" ? "h-10 max-w-28" : brandForm.logoSize === "large" ? "h-20 max-w-48" : "h-14 max-w-36"}`}
+                      />
+                    ) : (
+                      <div className="flex h-14 w-28 items-center justify-center rounded border border-dashed border-border text-xs text-muted-foreground">Logo yok</div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-base font-semibold" data-testid="brand-preview-company">{displayName}</div>
+                      <div className="text-xs text-muted-foreground">ISO 50001 Enerji Yönetim Raporu</div>
+                    </div>
+                  </div>
+                  <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">
+                    Logo konumu: {brandForm.logoPosition} · Boyut: {brandForm.logoSize}
+                  </div>
                 </div>
               </CardContent>
             </Card>

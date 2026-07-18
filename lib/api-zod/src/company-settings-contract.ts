@@ -37,3 +37,37 @@ export const DEFAULT_COMPANY_SETTINGS: CompanySettingsValues = {
 };
 
 export const VIRTUAL_DEFAULT_SETTINGS_VERSION = 0;
+
+export const COMPANY_LOGO_POSITIONS = ["left", "center", "right"] as const;
+export const COMPANY_LOGO_SIZES = ["small", "medium", "large"] as const;
+export const COMPANY_ASSET_TYPES = ["company_logo"] as const;
+export const COMPANY_ASSET_STATUSES = ["active", "replaced", "deleted"] as const;
+export const COMPANY_LOGO_MIME_TYPES = ["image/png", "image/jpeg"] as const;
+
+export type CompanyLogoPosition = typeof COMPANY_LOGO_POSITIONS[number];
+export type CompanyLogoSize = typeof COMPANY_LOGO_SIZES[number];
+export type CompanyAssetType = typeof COMPANY_ASSET_TYPES[number];
+export type CompanyAssetStatus = typeof COMPANY_ASSET_STATUSES[number];
+export type CompanyLogoMimeType = typeof COMPANY_LOGO_MIME_TYPES[number];
+
+export type CompanyBrandSettingsValues = {
+  showLogoInReports: boolean;
+  logoAltText: string;
+  logoPosition: CompanyLogoPosition;
+  logoSize: CompanyLogoSize;
+};
+
+export const DEFAULT_COMPANY_BRAND_SETTINGS: CompanyBrandSettingsValues = {
+  showLogoInReports: true,
+  logoAltText: "Firma logosu",
+  logoPosition: "left",
+  logoSize: "medium",
+};
+
+export const VIRTUAL_DEFAULT_BRAND_SETTINGS_VERSION = 0;
+export const COMPANY_LOGO_MAX_BYTES = 2 * 1024 * 1024;
+export const COMPANY_LOGO_MAX_WIDTH = 4000;
+export const COMPANY_LOGO_MAX_HEIGHT = 4000;
+export const COMPANY_LOGO_MAX_PIXELS = 16_000_000;
+export const COMPANY_LOGO_NORMALIZED_MAX_WIDTH = 1200;
+export const COMPANY_LOGO_NORMALIZED_MAX_HEIGHT = 600;
