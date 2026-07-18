@@ -63,6 +63,9 @@ export const AUDIT_ACTIONS = [
   "energy_performance_report.generation_started",
   "energy_performance_report.generation_completed",
   "energy_performance_report.generation_failed",
+  "annual_energy_performance_report.generation_started",
+  "annual_energy_performance_report.generation_completed",
+  "annual_energy_performance_report.generation_failed",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;

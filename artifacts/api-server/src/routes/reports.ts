@@ -21,6 +21,14 @@ import {
   visibleEnergyPerformanceSections,
   type EnergyPerformanceReportSnapshot,
 } from "../lib/energy-performance-report-snapshot.js";
+import {
+  ANNUAL_ENERGY_REPORT_TYPE,
+  AnnualEnergyReportSnapshotError,
+  buildAnnualEnergyReportSnapshot,
+  parseAnnualEnergyLegacyOverrides,
+  visibleAnnualEnergySections,
+  type AnnualEnergyReportSnapshot,
+} from "../lib/annual-energy-report-snapshot.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -267,24 +275,21 @@ router.get("/reports", requireAuth, async (req, res) => {
 
 // POST /api/reports/generate
 router.post("/reports/generate", requireAuth, async (req, res) => {
+  let reportId: number | null = null;
+  let snapshotRecordId: number | null = null;
+  let snapshotForFailure: AnnualEnergyReportSnapshot | null = null;
   try {
     const { year, unitId: bodyUnitId, includeSwot, includeRisks, includeSeu, includeRegression } = req.body;
+    const allowedBodyKeys = new Set(["year", "unitId", "companyId", "includeSwot", "includeRisks", "includeSeu", "includeRegression"]);
+    for (const key of Object.keys(req.body ?? {})) {
+      if (!allowedBodyKeys.has(key)) throw new ReportScopeError(400, `Geçersiz alan: ${key}`);
+    }
+    const legacyOverrides = parseAnnualEnergyLegacyOverrides(req.body as Record<string, unknown>);
     const yr = parseReportYear(year ?? new Date().getFullYear());
     const scope = await resolveReportScope(req, { ...req.body, unitId: bodyUnitId }, true);
     if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
     const effectiveCompanyId = scope.companyId;
     const resolvedUnitId = scope.unitId;
-
-    const [report] = await db.insert(reportsTable).values({
-      companyId: effectiveCompanyId,
-      year: yr,
-      unitId: resolvedUnitId,
-      status: "pending",
-      includeSwot: includeSwot !== false,
-      includeRisks: includeRisks !== false,
-      includeSeu: includeSeu !== false,
-      includeRegression: includeRegression !== false,
-    }).returning();
 
     // consumptionTable has no unitId directly — filter via meters join
     const consumptionConditions: SQL[] = [
@@ -317,6 +322,94 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
     });
     const acceptedSeuCount = officialSeu.items.filter((item) => item.userDecision === "accepted_as_seu").length;
 
+    const [company] = await db.select({ name: companiesTable.name })
+      .from(companiesTable)
+      .where(eq(companiesTable.id, effectiveCompanyId))
+      .limit(1);
+    if (!company) throw new ReportScopeError(400, "Geçersiz companyId");
+
+    let unitLabel = "Tüm Birimler";
+    if (resolvedUnitId !== null) {
+      const [unit] = await db.select({ name: unitsTable.name })
+        .from(unitsTable)
+        .where(and(eq(unitsTable.id, resolvedUnitId), eq(unitsTable.companyId, effectiveCompanyId)))
+        .limit(1);
+      unitLabel = unit?.name ?? `Birim #${resolvedUnitId}`;
+    }
+
+    const effectiveSettings = await resolveEffectiveCompanyReportSettings({
+      companyId: effectiveCompanyId,
+      reportType: ANNUAL_ENERGY_REPORT_TYPE,
+    });
+    const [report] = await db.insert(reportsTable).values({
+      companyId: effectiveCompanyId,
+      year: yr,
+      unitId: resolvedUnitId,
+      status: "pending",
+      includeSwot: legacyOverrides.swot?.value ?? true,
+      includeRisks: legacyOverrides.risks?.value ?? true,
+      includeSeu: legacyOverrides.seu?.value ?? true,
+      includeRegression: legacyOverrides.regression?.value ?? true,
+    }).returning();
+    reportId = report.id;
+
+    const snapshot = buildAnnualEnergyReportSnapshot({
+      effective: effectiveSettings,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      companyName: company.name,
+      unitLabel,
+      year: yr,
+      legacyReportId: report.id,
+      generatedAt: new Date(),
+      generatedBy: req.user?.userId ?? null,
+      data: {
+        consumptionRows: consumptionRows.length,
+        meterCount: meters.length,
+        swotCount: swotItems.length,
+        riskCount: riskItems.length,
+        seuAssessmentCount: officialSeu.assessmentCount,
+        seuItemCount: officialSeu.items.length,
+        hasRegressionRenderer: false,
+      },
+      legacyOverrides,
+    });
+    snapshotForFailure = snapshot;
+    const [snapshotRecord] = await db.insert(reportGenerationSnapshotsTable).values({
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      reportType: ANNUAL_ENERGY_REPORT_TYPE,
+      year: yr,
+      status: "generating",
+      storageStatus: "not_stored",
+      filename: snapshot.outputName,
+      settingsSnapshot: snapshot,
+      generatedBy: req.user?.userId ?? null,
+    }).returning({ id: reportGenerationSnapshotsTable.id });
+    snapshotRecordId = snapshotRecord.id;
+
+    const auditMetadata = {
+      companyId: effectiveCompanyId,
+      reportType: ANNUAL_ENERGY_REPORT_TYPE,
+      reportId: report.id,
+      snapshotId: snapshotRecordId,
+      year: yr,
+      profileVersion: snapshot.profileVersion,
+      typeSettingsVersion: snapshot.typeSettingsVersion,
+      outputName: snapshot.outputName,
+      sectionCodes: snapshot.sections.filter((section) => section.finalVisibility).map((section) => section.code),
+      legacyOverrides: Object.values(legacyOverrides).map((override) => override.param),
+    };
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      action: "annual_energy_performance_report.generation_started",
+      entityType: "report",
+      entityId: report.id,
+      metadata: auditMetadata,
+    });
+
     const totalKwh = consumptionRows.reduce((a, r) => a + r.kwh, 0);
     const totalTep = consumptionRows.reduce((a, r) => a + r.tep, 0);
     const totalCo2 = consumptionRows.reduce((a, r) => a + r.co2, 0);
@@ -329,48 +422,80 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       byMonth[r.month].co2 += r.co2;
     }
 
-    const tableRows = Array.from({ length: 12 }, (_, i) => i + 1)
-      .map(m => `<tr><td>${MONTH_NAMES[m]}</td><td>${Math.round(byMonth[m].kwh).toLocaleString("tr-TR")}</td><td>${Math.round(byMonth[m].tep * 1000) / 1000}</td><td>${Math.round(byMonth[m].co2 * 10) / 10}</td></tr>`)
+    const locale = snapshot.locale;
+    const generatedDate = new Date(snapshot.generatedAt);
+    const fmtAnnualNumber = (value: number | null | undefined, digits = 0) =>
+      typeof value === "number" && Number.isFinite(value)
+        ? value.toLocaleString(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits })
+        : "—";
+    const annualTableRows = Array.from({ length: 12 }, (_, i) => i + 1)
+      .map(m => `<tr><td>${MONTH_NAMES[m]}</td><td>${fmtAnnualNumber(Math.round(byMonth[m].kwh))}</td><td>${fmtAnnualNumber(Math.round(byMonth[m].tep * 1000) / 1000, 3)}</td><td>${fmtAnnualNumber(Math.round(byMonth[m].co2 * 10) / 10, 1)}</td></tr>`)
       .join("\n");
-
-    const swotHtml = includeSwot !== false && swotItems.length > 0
-      ? `<h2>SWOT Analizi</h2>
-         <table><tr><th>Kategori</th><th>Madde</th><th>Puan</th><th>Etki</th></tr>
+    const annualSwotHtml = swotItems.length > 0
+      ? `<table><tr><th>Kategori</th><th>Madde</th><th>Puan</th><th>Etki</th></tr>
          ${swotItems.map(s => `<tr><td>${escapeHtml(s.category)}</td><td>${escapeHtml(s.title)}</td><td>${s.score}/5</td><td>${escapeHtml(s.impact)}</td></tr>`).join("")}
          </table>` : "";
-
-    const riskHtml = includeRisks !== false && riskItems.length > 0
-      ? `<h2>Risk & Fırsat Analizi</h2>
-         <table><tr><th>Tür</th><th>Başlık</th><th>Olasılık</th><th>Etki</th><th>Skor</th><th>Durum</th></tr>
+    const annualRiskHtml = riskItems.length > 0
+      ? `<table><tr><th>Tür</th><th>Başlık</th><th>Olasılık</th><th>Etki</th><th>Skor</th><th>Durum</th></tr>
          ${riskItems.map(r => `<tr><td>${escapeHtml(r.type)}</td><td>${escapeHtml(r.title)}</td><td>${r.probability}/5</td><td>${r.severity}/5</td><td>${r.score}</td><td>${escapeHtml(r.status)}</td></tr>`).join("")}
          </table>` : "";
-
-    const formatSeuNumber = (value: number | null | undefined, digits: number) =>
-      typeof value === "number" && Number.isFinite(value)
-        ? value.toLocaleString("tr-TR", { minimumFractionDigits: digits, maximumFractionDigits: digits })
-        : "—";
-    const seuHtml = includeSeu === false
-      ? ""
-      : officialSeu.assessmentCount === 0
-        ? "<h2>Önemli Enerji Kullanımları (ÖEK)</h2><p>Bu yıl için resmî ÖEK değerlendirmesi bulunamadı.</p>"
-        : officialSeu.items.length === 0
-          ? "<h2>Önemli Enerji Kullanımları (ÖEK)</h2><p>Resmî ÖEK değerlendirmesinde kayıtlı kalem bulunamadı.</p>"
-          : `<h2>Önemli Enerji Kullanımları (ÖEK)</h2>
-         <table><tr><th>Sıra</th><th>Birim</th><th>Ad</th><th>Enerji Kaynağı</th><th>TEP</th><th>Pay (%)</th><th>Öncelik</th><th>Karar</th><th>Karar Gerekçesi</th><th>Değerlendirme Yılı</th></tr>
-         ${officialSeu.items.map((item, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(item.unitName)}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.energySourceName ?? "—")}</td><td>${formatSeuNumber(item.energyTep, 4)}</td><td>${formatSeuNumber(item.consumptionSharePercent, 1)}</td><td>${item.priorityResult ?? "—"}</td><td>${escapeHtml(SEU_DECISION_LABELS[item.userDecision ?? ""] ?? "—")}</td><td>${escapeHtml(item.decisionReason ?? "—")}</td><td>${item.assessmentYear}</td></tr>`).join("")}
-         </table>`;
-
-    const unitLabel = resolvedUnitId !== null ? ` — Birim #${resolvedUnitId}` : "";
+    const annualSeuHtml = officialSeu.items.length > 0
+      ? `<table><tr><th>Sıra</th><th>Birim</th><th>Ad</th><th>Enerji Kaynağı</th><th>TEP</th><th>Pay (%)</th><th>Öncelik</th><th>Karar</th><th>Karar Gerekçesi</th><th>Değerlendirme Yılı</th></tr>
+         ${officialSeu.items.map((item, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(item.unitName)}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.energySourceName ?? "—")}</td><td>${fmtAnnualNumber(item.energyTep, 4)}</td><td>${fmtAnnualNumber(item.consumptionSharePercent, 1)}</td><td>${item.priorityResult ?? "—"}</td><td>${escapeHtml(SEU_DECISION_LABELS[item.userDecision ?? ""] ?? "—")}</td><td>${escapeHtml(item.decisionReason ?? "—")}</td><td>${item.assessmentYear}</td></tr>`).join("")}
+         </table>` : "";
+    const coverClass = snapshot.coverStyle === "compact" ? "cover cover-compact" : "cover";
+    const subtitleHtml = snapshot.subtitle ? `<p>${escapeHtml(snapshot.subtitle)}</p>` : "";
+    const documentNumberHtml = snapshot.documentNumber ? `<p><strong>Dokuman No:</strong> ${escapeHtml(snapshot.documentNumber)}</p>` : "";
+    const revisionHtml = snapshot.revisionNumber ? `<p><strong>Revizyon:</strong> ${escapeHtml(snapshot.revisionNumber)}</p>` : "";
+    const signatureHtml = snapshot.showSignatureFields
+      ? `<p><strong>Hazirlayan:</strong> ${escapeHtml(snapshot.preparedBy ?? "")} | <strong>Kontrol:</strong> ${escapeHtml(snapshot.checkedBy ?? "")} | <strong>Onay:</strong> ${escapeHtml(snapshot.approvedBy ?? "")}</p>`
+      : "";
+    const footerText = snapshot.footerText ?? "Bu rapor ISO 50001 Enerji Yonetim Sistemi kapsaminda otomatik olarak uretilmistir.";
+    const annualSectionFragments: Record<string, string> = {
+      cover: `<div class="${coverClass}">
+        <h1>${escapeHtml(snapshot.title)} — ${yr}</h1>
+        ${subtitleHtml}
+        <p><strong>Firma:</strong> ${escapeHtml(snapshot.companyName)} | <strong>Birim:</strong> ${escapeHtml(snapshot.unitLabel)}</p>
+        <p><strong>Gizlilik:</strong> ${escapeHtml(snapshot.confidentialityLabel)} | <strong>Rapor tarihi:</strong> ${generatedDate.toLocaleDateString(locale)}</p>
+        ${documentNumberHtml}
+        ${revisionHtml}
+        ${signatureHtml}
+      </div>`,
+      summary_indicators: `<div class="kpi-grid">
+        <div class="kpi-box"><div class="kpi-value">${fmtAnnualNumber(Math.round(totalKwh))}</div><div class="kpi-label">Toplam Enerji (kWh)</div></div>
+        <div class="kpi-box"><div class="kpi-value">${fmtAnnualNumber(Math.round(totalTep * 1000) / 1000, 3)}</div><div class="kpi-label">Toplam TEP</div></div>
+        <div class="kpi-box"><div class="kpi-value">${fmtAnnualNumber(Math.round(totalCo2 * 10) / 10, 1)}</div><div class="kpi-label">CO₂ Emisyonu (ton)</div></div>
+      </div>
+      <p>Aktif Sayaç Sayısı: ${meters.length} | Toplam ÖEK: ${acceptedSeuCount}</p>`,
+      monthly_consumption: `<table>
+        <tr><th>Ay</th><th>kWh</th><th>TEP</th><th>CO₂ (ton)</th></tr>
+        ${annualTableRows}
+        <tr style="font-weight:600; background:#f1f5f9"><td>TOPLAM</td><td>${fmtAnnualNumber(Math.round(totalKwh))}</td><td>${fmtAnnualNumber(Math.round(totalTep * 1000) / 1000, 3)}</td><td>${fmtAnnualNumber(Math.round(totalCo2 * 10) / 10, 1)}</td></tr>
+      </table>`,
+      swot: annualSwotHtml,
+      risks: annualRiskHtml,
+      seu: annualSeuHtml,
+      regression: "",
+    };
+    const renderedAnnualSectionsHtml = visibleAnnualEnergySections(snapshot)
+      .map((section) => section.code === "cover"
+        ? annualSectionFragments.cover
+        : `<h2>${escapeHtml(section.finalTitle)}</h2>\n${annualSectionFragments[section.code] ?? ""}`)
+      .join("\n\n");
 
     const htmlContent = `<!DOCTYPE html>
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <title>Enerji Performans Raporu ${yr}${unitLabel}</title>
+  <title>${escapeHtml(snapshot.title)} ${yr}</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 40px; color: #1a202c; }
     h1 { color: #0f766e; border-bottom: 3px solid #0f766e; padding-bottom: 10px; }
     h2 { color: #1e3a5f; margin-top: 30px; }
+    .cover { margin-bottom: 28px; }
+    .cover-compact { margin-bottom: 18px; }
+    .cover-compact h1 { font-size: 22px; padding-bottom: 6px; }
+    .cover p { color: #64748b; font-size: 13px; margin: 4px 0; }
     table { width: 100%; border-collapse: collapse; margin: 15px 0; }
     th, td { border: 1px solid #e2e8f0; padding: 8px 12px; text-align: left; }
     th { background: #f1f5f9; font-weight: 600; }
@@ -382,44 +507,11 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
   </style>
 </head>
 <body>
-  <h1>Yıllık Enerji Performans Raporu — ${yr}${unitLabel}</h1>
-  <p>Rapor tarihi: ${new Date().toLocaleDateString("tr-TR")} | ISO 50001 Enerji Yönetim Sistemi</p>
-  
-  <h2>Özet Göstergeler</h2>
-  <div class="kpi-grid">
-    <div class="kpi-box">
-      <div class="kpi-value">${Math.round(totalKwh).toLocaleString("tr-TR")}</div>
-      <div class="kpi-label">Toplam Enerji (kWh)</div>
-    </div>
-    <div class="kpi-box">
-      <div class="kpi-value">${(Math.round(totalTep * 1000) / 1000).toLocaleString("tr-TR")}</div>
-      <div class="kpi-label">Toplam TEP</div>
-    </div>
-    <div class="kpi-box">
-      <div class="kpi-value">${(Math.round(totalCo2 * 10) / 10).toLocaleString("tr-TR")}</div>
-      <div class="kpi-label">CO₂ Emisyonu (ton)</div>
-    </div>
-  </div>
-  <p>Aktif Sayaç Sayısı: ${meters.length} | Toplam ÖEK: ${acceptedSeuCount}</p>
-
-  <h2>Aylık Enerji Tüketimi</h2>
-  <table>
-    <tr><th>Ay</th><th>kWh</th><th>TEP</th><th>CO₂ (ton)</th></tr>
-    ${tableRows}
-    <tr style="font-weight:600; background:#f1f5f9">
-      <td>TOPLAM</td>
-      <td>${Math.round(totalKwh).toLocaleString("tr-TR")}</td>
-      <td>${(Math.round(totalTep * 1000) / 1000).toLocaleString("tr-TR")}</td>
-      <td>${(Math.round(totalCo2 * 10) / 10).toLocaleString("tr-TR")}</td>
-    </tr>
-  </table>
-
-  ${swotHtml}
-  ${riskHtml}
-  ${seuHtml}
+  ${renderedAnnualSectionsHtml}
 
   <div class="footer">
-    Bu rapor ISO 50001 Enerji Yönetim Sistemi kapsamında otomatik olarak üretilmiştir.
+    ${escapeHtml(footerText)}<br>
+    Rapor ID: ${report.id} | Snapshot ID: ${snapshotRecordId} | Cikti adi: ${escapeHtml(snapshot.outputName)} | Gizlilik: ${escapeHtml(snapshot.confidentialityLabel)}
   </div>
 </body>
 </html>`;
@@ -432,6 +524,19 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       .where(and(eq(reportsTable.id, report.id), eq(reportsTable.companyId, effectiveCompanyId)))
       .returning();
 
+    await db.update(reportGenerationSnapshotsTable)
+      .set({ status: "completed", completedAt: new Date(), filename: snapshot.outputName })
+      .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      action: "annual_energy_performance_report.generation_completed",
+      entityType: "report",
+      entityId: report.id,
+      metadata: auditMetadata,
+    });
+
     res.json({
       id: updated.id,
       year: updated.year,
@@ -440,6 +545,45 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       createdAt: updated.createdAt,
     });
   } catch (err) {
+    if (snapshotRecordId !== null) {
+      await db.update(reportGenerationSnapshotsTable)
+        .set({
+          status: "failed",
+          failedAt: new Date(),
+          failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
+        })
+        .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
+      await writeBestEffortAudit(db, {
+        request: req,
+        companyId: snapshotForFailure?.companyId ?? req.user?.companyId ?? null,
+        unitId: snapshotForFailure?.unitId ?? req.user?.unitId ?? null,
+        action: "annual_energy_performance_report.generation_failed",
+        entityType: "report",
+        entityId: reportId,
+        outcome: "failure",
+        metadata: {
+          reportType: ANNUAL_ENERGY_REPORT_TYPE,
+          reportId,
+          snapshotId: snapshotRecordId,
+          year: snapshotForFailure?.year ?? null,
+          profileVersion: snapshotForFailure?.profileVersion ?? null,
+          typeSettingsVersion: snapshotForFailure?.typeSettingsVersion ?? null,
+          outputName: snapshotForFailure?.outputName ?? null,
+          sectionCodes: snapshotForFailure?.sections.filter((section) => section.finalVisibility).map((section) => section.code) ?? [],
+          legacyOverrides: snapshotForFailure ? Object.values(snapshotForFailure.legacyOverrides).map((override) => override.param) : [],
+          failureCategory: err instanceof AnnualEnergyReportSnapshotError ? "settings_snapshot" : "render_or_update",
+        },
+      });
+    }
+    if (reportId !== null) {
+      await db.update(reportsTable)
+        .set({ status: "failed" })
+        .where(eq(reportsTable.id, reportId));
+    }
+    if (err instanceof AnnualEnergyReportSnapshotError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
     if (handleReportScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatası" });
@@ -605,7 +749,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       .from(companiesTable)
       .where(eq(companiesTable.id, effectiveCompanyId))
       .limit(1);
-    if (!company) throw new ReportScopeError(400, "GeÃ§ersiz companyId");
+    if (!company) throw new ReportScopeError(400, "Gecersiz companyId");
 
     const effectiveSettings = await resolveEffectiveCompanyReportSettings({
       companyId: effectiveCompanyId,
@@ -1039,7 +1183,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       .from(companiesTable)
       .where(eq(companiesTable.id, effectiveCompanyId))
       .limit(1);
-    if (!company) throw new ReportScopeError(400, "GeÃƒÂ§ersiz companyId");
+    if (!company) throw new ReportScopeError(400, "Gecersiz companyId");
 
     const effectiveSettings = await resolveEffectiveCompanyReportSettings({
       companyId: effectiveCompanyId,

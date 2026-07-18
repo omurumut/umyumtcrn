@@ -190,6 +190,7 @@ test.afterAll(async () => {
   if (ids) {
     await pool.query("DELETE FROM reports WHERE id > $1", [initialReportMaxId]);
     await pool.query("DELETE FROM report_generation_snapshots WHERE id > $1", [initialSnapshotMaxId]);
+    await pool.query("DELETE FROM audit_events WHERE action LIKE 'annual_energy_performance_report.%'");
     await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_targets_report.%'");
     await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_performance_report.%'");
     await pool.query("DELETE FROM energy_performance_results WHERE baseline_id = ANY($1::int[])", [[ids.reportBaselineA1, ids.reportBaselineA2, ids.reportBaselineB1]]);
@@ -371,7 +372,8 @@ test("SEU-REPORT official assessment is authoritative, scoped, ordered and numer
   expect(html).not.toMatch(/NaN|Infinity|undefined|\[object Object\]/);
 });
 
-test("SEU-REPORT draft and non-official records cannot replace the controlled empty state", async ({ request }) => {
+test("SEU-REPORT draft and non-official records cannot make the annual SEU section visible", async ({ request }) => {
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
   const assessments = await pool.query<{ id: number }>(`
     INSERT INTO seu_assessments(company_id,unit_id,year,analysis_level,record_type,is_official,unit_total_tep)
     VALUES
@@ -386,25 +388,40 @@ test("SEU-REPORT draft and non-official records cannot replace the controlled em
              ($2,'[F3A8] Non-official SEU marker',9,100,'accepted_as_seu')
     `, [assessments.rows[0]!.id, assessments.rows[1]!.id]);
     const html = await reportHtml(await createReport(request, sessions.adminA.token, { year: 2084, unitId: ids.unitA1 }));
-    expect(html).toContain("Bu yıl için resmî ÖEK değerlendirmesi bulunamadı.");
+    expect(html).not.toContain("Önemli Enerji Kullanımları");
     expect(html).not.toContain("[F3A8] Draft SEU marker");
     expect(html).not.toContain("[F3A8] Non-official SEU marker");
     expect(html).not.toContain("[E2E] Manual SEU A1");
     expect(html).not.toMatch(/NaN|Infinity|undefined|\[object Object\]/);
+    const snapshot = await pool.query<{ settings_snapshot_json: {
+      sections: Array<{ code: string; finalVisibility: boolean; evaluatorResult: { reason: string } }>;
+    } }>("SELECT settings_snapshot_json FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance' ORDER BY id DESC LIMIT 1", [ids.companyA]);
+    expect(snapshot.rows[0]?.settings_snapshot_json.sections.find((section) => section.code === "seu")).toMatchObject({
+      finalVisibility: false,
+      evaluatorResult: { reason: "no_official_assessment" },
+    });
   } finally {
     await pool.query("DELETE FROM seu_assessments WHERE id = ANY($1::int[])", [assessments.rows.map((row) => row.id)]);
   }
 });
 
-test("SEU-REPORT official assessment without items has a controlled item empty state", async ({ request }) => {
+test("SEU-REPORT official assessment without items hides the annual SEU section", async ({ request }) => {
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
   const assessment = await pool.query<{ id: number }>(`
     INSERT INTO seu_assessments(company_id,unit_id,year,analysis_level,record_type,is_official,unit_total_tep)
     VALUES($1,$2,2085,'meter','unit_official',true,0) RETURNING id
   `, [ids.companyA, ids.unitA1]);
   try {
     const html = await reportHtml(await createReport(request, sessions.adminA.token, { year: 2085, unitId: ids.unitA1 }));
-    expect(html).toContain("Resmî ÖEK değerlendirmesinde kayıtlı kalem bulunamadı.");
+    expect(html).not.toContain("Önemli Enerji Kullanımları");
     expect(html).not.toMatch(/NaN|Infinity|undefined|\[object Object\]/);
+    const snapshot = await pool.query<{ settings_snapshot_json: {
+      sections: Array<{ code: string; finalVisibility: boolean; evaluatorResult: { reason: string } }>;
+    } }>("SELECT settings_snapshot_json FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance' ORDER BY id DESC LIMIT 1", [ids.companyA]);
+    expect(snapshot.rows[0]?.settings_snapshot_json.sections.find((section) => section.code === "seu")).toMatchObject({
+      finalVisibility: false,
+      evaluatorResult: { reason: "no_official_items" },
+    });
   } finally {
     await pool.query("DELETE FROM seu_assessments WHERE id=$1", [assessment.rows[0]!.id]);
   }
@@ -460,6 +477,149 @@ test("SEU-REPORT standard, admin and kontrol_admin share the same official unit 
     expect(html).toContain("[E2E] SEU Electricity A1");
     expect(html).not.toContain("[E2E] SEU Electricity A2");
     expect(html).not.toContain("Tenant B");
+  }
+});
+
+test("ANNUAL report creates an immutable settings snapshot with default registry settings", async ({ request }) => {
+  await pool.query("DELETE FROM audit_events WHERE action LIKE 'annual_energy_performance_report.%'");
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
+
+  const response = await createReport(request, sessions.adminA.token, { year: 2025, unitId: ids.unitA1 });
+  const body = await response.json() as { id: number; downloadUrl: string };
+  expect(response.status()).toBe(200);
+  expect(body.downloadUrl).toMatch(/^data:text\/html;base64,/);
+
+  const snapshotRows = await pool.query<{ status: string; filename: string; settings_snapshot_json: {
+    reportType: string;
+    year: number;
+    legacyReportId: number;
+    profileVersion: number;
+    typeSettingsVersion: number;
+    confidentiality: string;
+    outputName: string;
+    sections: Array<{ code: string; finalVisibility: boolean; evaluatorResult: { applies: boolean; dataAvailable: boolean | null } }>;
+  } }>(`
+    SELECT status, filename, settings_snapshot_json
+    FROM report_generation_snapshots
+    WHERE company_id=$1 AND report_type='annual_energy_performance'
+    ORDER BY id DESC LIMIT 1
+  `, [ids.companyA]);
+  const snapshot = snapshotRows.rows[0]!;
+  expect(snapshot.status).toBe("completed");
+  expect(snapshot.filename.endsWith(".html")).toBe(true);
+  expect(snapshot.settings_snapshot_json).toMatchObject({
+    reportType: "annual_energy_performance",
+    year: 2025,
+    legacyReportId: body.id,
+    profileVersion: 0,
+    typeSettingsVersion: 0,
+    confidentiality: "internal",
+  });
+  expect(snapshot.settings_snapshot_json.outputName).toBe(snapshot.filename);
+  expect(snapshot.settings_snapshot_json.sections.find((section) => section.code === "cover")?.finalVisibility).toBe(true);
+  expect(snapshot.settings_snapshot_json.sections.find((section) => section.code === "swot")?.evaluatorResult.applies).toBe(true);
+
+  const audit = await pool.query<{ action: string; metadata_json: { outputName?: string; sectionCodes?: string[]; reportId?: number } }>(`
+    SELECT action, metadata_json
+    FROM audit_events
+    WHERE action LIKE 'annual_energy_performance_report.%' AND company_id=$1
+    ORDER BY id
+  `, [ids.companyA]);
+  expect(audit.rows.map((row) => row.action)).toEqual([
+    "annual_energy_performance_report.generation_started",
+    "annual_energy_performance_report.generation_completed",
+  ]);
+  expect(audit.rows[0]?.metadata_json.outputName).toBe(snapshot.filename);
+  expect(audit.rows[0]?.metadata_json.reportId).toBe(body.id);
+  expect(audit.rows[0]?.metadata_json.sectionCodes).toContain("summary_indicators");
+});
+
+test("ANNUAL report applies company settings and request-scope legacy overrides without mutating DB settings", async ({ request }) => {
+  await pool.query("DELETE FROM audit_events WHERE action LIKE 'annual_energy_performance_report.%'");
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_section_settings WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_profiles(company_id, default_title, default_subtitle, confidentiality_level, cover_style, file_name_pattern, revision_number, footer_text, profile_version)
+    VALUES($1, 'Annual Profile Default', 'Annual Profile Subtitle', 'confidential', 'compact', '{company}_{reportType}_{year}_{revision}', 'A1', 'Annual footer marker', 7)
+  `, [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_type_settings(company_id, report_type, title_override, type_settings_version)
+    VALUES($1, 'annual_energy_performance', 'Annual Type Title', 6)
+  `, [ids.companyA]);
+  await pool.query(`
+    INSERT INTO company_report_section_settings(company_id, report_type, section_code, is_visible, display_order, label_override)
+    VALUES
+      ($1, 'annual_energy_performance', 'swot', false, 40, 'Annual SWOT Label'),
+      ($1, 'annual_energy_performance', 'summary_indicators', true, 999, 'Annual Summary Label')
+  `, [ids.companyA]);
+
+  const html = await reportHtml(await createReport(request, sessions.adminA.token, { year: 2025, unitId: ids.unitA1, includeSwot: true }));
+  expect(html).toContain("Annual Type Title");
+  expect(html).toContain("Annual SWOT Label");
+  expect(html).toContain("Gizli");
+  expect(html).toContain("Annual footer marker");
+  expect(html.indexOf("Annual Summary Label")).toBeLessThan(html.indexOf("Aylık Enerji Tüketimi"));
+
+  const sectionSetting = await pool.query<{ is_visible: boolean }>("SELECT is_visible FROM company_report_section_settings WHERE company_id=$1 AND report_type='annual_energy_performance' AND section_code='swot'", [ids.companyA]);
+  expect(sectionSetting.rows[0]?.is_visible).toBe(false);
+  const snapshot = await pool.query<{ filename: string; settings_snapshot_json: {
+    coverStyle: string;
+    confidentiality: string;
+    profileVersion: number;
+    typeSettingsVersion: number;
+    sections: Array<{ code: string; finalVisibility: boolean; finalOrder: number; finalTitle: string; legacyOverride: { param: string; value: boolean } | null }>;
+  } }>("SELECT filename, settings_snapshot_json FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance' ORDER BY id DESC LIMIT 1", [ids.companyA]);
+  expect(snapshot.rows[0]?.filename).toMatch(/a1\.html$/);
+  expect(snapshot.rows[0]?.settings_snapshot_json).toMatchObject({ coverStyle: "compact", confidentiality: "confidential", profileVersion: 7, typeSettingsVersion: 6 });
+  const swot = snapshot.rows[0]?.settings_snapshot_json.sections.find((section) => section.code === "swot");
+  expect(swot).toMatchObject({ finalVisibility: true, finalTitle: "Annual SWOT Label", legacyOverride: { param: "includeSwot", value: true } });
+  const summary = snapshot.rows[0]?.settings_snapshot_json.sections.find((section) => section.code === "summary_indicators");
+  expect(summary?.finalOrder).toBe(20);
+});
+
+test("ANNUAL report rejects invalid legacy booleans before creating report or snapshot", async ({ request }) => {
+  await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
+  const before = await pool.query<{ count: number }>("SELECT count(*)::int count FROM reports WHERE company_id=$1", [ids.companyA]);
+  const response = await createReport(request, sessions.adminA.token, { year: 2025, unitId: ids.unitA1, includeSwot: "false" });
+  expect(response.status()).toBe(400);
+  const after = await pool.query<{ count: number }>("SELECT count(*)::int count FROM reports WHERE company_id=$1", [ids.companyA]);
+  expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
+  const snapshots = await pool.query<{ count: string }>("SELECT count(*)::text count FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance'", [ids.companyA]);
+  expect(snapshots.rows[0]?.count).toBe("0");
+});
+
+test("ANNUAL report hides conditional sections when report data is absent", async ({ request }) => {
+  const company = await pool.query<{ id: number }>("INSERT INTO companies(name,subdomain) VALUES('[F3D] Empty Annual Tenant','f3d-empty-annual-tenant') RETURNING id");
+  const companyId = company.rows[0]!.id;
+  const unit = await pool.query<{ id: number }>("INSERT INTO units(company_id,name,location,type,city) VALUES($1,'[F3D] Empty Annual Unit','Test','fabrika','Istanbul') RETURNING id", [companyId]);
+  const unitId = unit.rows[0]!.id;
+  try {
+    const html = await reportHtml(await createReport(request, sessions.superadmin.token, { companyId, year: 2999, unitId }));
+    expect(html).not.toContain("SWOT Analizi");
+    expect(html).not.toContain("Risk & Fırsat Analizi");
+    expect(html).not.toContain("Önemli Enerji Kullanımları");
+    const snapshot = await pool.query<{ settings_snapshot_json: {
+      sections: Array<{ code: string; finalVisibility: boolean; evaluatorResult: { applies: boolean; dataAvailable: boolean | null; reason: string } }>;
+    } }>("SELECT settings_snapshot_json FROM report_generation_snapshots WHERE company_id=$1 AND report_type='annual_energy_performance' ORDER BY id DESC LIMIT 1", [companyId]);
+    expect(snapshot.rows[0]?.settings_snapshot_json.sections.find((section) => section.code === "swot")).toMatchObject({
+      finalVisibility: false,
+      evaluatorResult: { applies: true, dataAvailable: false, reason: "no_swot_rows" },
+    });
+    expect(snapshot.rows[0]?.settings_snapshot_json.sections.find((section) => section.code === "regression")).toMatchObject({
+      finalVisibility: false,
+      evaluatorResult: { applies: true, dataAvailable: false, reason: "renderer_not_implemented" },
+    });
+  } finally {
+    await pool.query("DELETE FROM reports WHERE company_id=$1", [companyId]);
+    await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1", [companyId]);
+    await pool.query("DELETE FROM audit_events WHERE company_id=$1", [companyId]);
+    await pool.query("DELETE FROM units WHERE company_id=$1", [companyId]);
+    await pool.query("DELETE FROM companies WHERE id=$1", [companyId]);
   }
 });
 
@@ -638,8 +798,8 @@ test("TARGET report conditional sections disappear without data and legacy boole
   await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
   const empty = await reportHtml(await request.get(`/api/reports/energy-targets/pdf?year=2999&unitId=${ids.unitA1}`, { headers: auth(sessions.adminA.token) }));
   expect(empty).toContain("Bu kapsam ve yıl için kayıtlı enerji hedefi bulunamadı.");
-  expect(empty).not.toContain("VAP PortfÃ¶yÃ¼");
-  expect(empty).not.toContain("GerÃ§ekleÅŸme Kronolojisi");
+  expect(empty).not.toContain("VAP Portföyü");
+  expect(empty).not.toContain("Gerçekleşme Kronolojisi");
 
   const invalid = await request.get(`/api/reports/energy-targets/pdf?year=2026&unitId=${ids.unitA1}&includeVap=maybe`, { headers: auth(sessions.adminA.token) });
   expect(invalid.status()).toBe(400);
