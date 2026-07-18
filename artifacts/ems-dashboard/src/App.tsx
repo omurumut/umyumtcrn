@@ -22,6 +22,7 @@ import Units from "@/pages/Units";
 import Summary from "@/pages/Summary";
 import Targets from "@/pages/Targets";
 import Companies from "@/pages/Companies";
+import CompanySettings from "@/pages/CompanySettings";
 import EnergyUseGroups from "@/pages/EnergyUseGroups";
 import Variables from "@/pages/Variables";
 import EnergyPerformance from "@/pages/EnergyPerformance";
@@ -87,6 +88,9 @@ function Router() {
       </Route>
       <Route path="/firmalar">
         {() => <SuperAdminRoute component={Companies} />}
+      </Route>
+      <Route path="/firma-ayarlari">
+        {() => <AdminRoute component={CompanySettings} />}
       </Route>
       <Route path="/degiskenler" component={Variables} />
       <Route path="/performans-gostergeleri" component={EnergyPerformance} />

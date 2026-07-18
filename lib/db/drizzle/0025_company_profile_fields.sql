@@ -1,0 +1,12 @@
+ALTER TABLE "companies" ADD COLUMN "legal_name" text;
+ALTER TABLE "companies" ADD COLUMN "short_name" text;
+ALTER TABLE "companies" ADD COLUMN "address" text;
+ALTER TABLE "companies" ADD COLUMN "phone" text;
+ALTER TABLE "companies" ADD COLUMN "email" text;
+ALTER TABLE "companies" ADD COLUMN "website" text;
+ALTER TABLE "companies" ADD COLUMN "tax_office" text;
+ALTER TABLE "companies" ADD COLUMN "tax_number" text;
+ALTER TABLE "companies" ADD COLUMN "industry" text;
+ALTER TABLE "companies" ADD COLUMN "report_introduction" text;
+ALTER TABLE "companies" ADD COLUMN "updated_at" timestamp DEFAULT now();
+ALTER TABLE "companies" ADD COLUMN "profile_version" integer DEFAULT 1 NOT NULL;

@@ -45,6 +45,7 @@ export const AUDIT_ACTIONS = [
   "mgm.sync",
   "mgm.import",
   "superadmin.bootstrap",
+  "company_profile.updated",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;

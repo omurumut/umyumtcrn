@@ -7,6 +7,7 @@ export interface AuthUser {
   name: string;
   role: "admin" | "kontrol_admin" | "user" | "superadmin";
   unitId: number | null;
+  companyId: number;
 }
 
 interface AuthContextType {

@@ -74,6 +74,7 @@ const AUDIT_NAV = [
   {
     title: "Yönetim",
     items: [
+      { title: "Firma Ayarları", url: "/firma-ayarlari", icon: Building2 },
       { title: "İşlem Geçmişi", url: "/audit", icon: ClipboardList },
     ],
   },
@@ -264,7 +265,7 @@ export function Layout({ children }: { children: ReactNode }) {
                     setUnitId(null);
                   }}
                 >
-                  <SelectTrigger className="w-48 bg-background">
+                  <SelectTrigger data-testid="company-context-select" className="w-48 bg-background">
                     <Building className="h-3.5 w-3.5 text-muted-foreground mr-1" />
                     <SelectValue placeholder="Firma Seç" />
                   </SelectTrigger>

@@ -169,6 +169,13 @@
       "when": 1784100000000,
       "tag": "0024_audit_events",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784200000000,
+      "tag": "0025_company_profile_fields",
+      "breakpoints": true
     }
   ]
 }

@@ -8,11 +8,23 @@ export const companiesTable = pgTable("companies", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   subdomain: text("subdomain").notNull().unique(),
+  legalName: text("legal_name"),
+  shortName: text("short_name"),
+  address: text("address"),
+  phone: text("phone"),
+  email: text("email"),
+  website: text("website"),
+  taxOffice: text("tax_office"),
+  taxNumber: text("tax_number"),
+  industry: text("industry"),
+  reportIntroduction: text("report_introduction"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  profileVersion: integer("profile_version").notNull().default(1),
 });
 
-export const insertCompanySchema = createInsertSchema(companiesTable).omit({ id: true, createdAt: true });
+export const insertCompanySchema = createInsertSchema(companiesTable).omit({ id: true, createdAt: true, updatedAt: true, profileVersion: true });
 export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companiesTable.$inferSelect;
 
