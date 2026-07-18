@@ -48,6 +48,10 @@ const mappingFile = resolve(tempDir, "station-mapping.xlsx");
 const degreeFile = resolve(tempDir, "degree-days.xlsx");
 const invalidDegreeFile = resolve(tempDir, "invalid-degree-days.xlsx");
 const mixedDegreeFile = resolve(tempDir, "mixed-degree-days.xlsx");
+const mappingFileName = "station-mapping.xlsx";
+const degreeFileName = "degree-days.xlsx";
+const invalidDegreeFileName = "invalid-degree-days.xlsx";
+const mixedDegreeFileName = "mixed-degree-days.xlsx";
 
 function auth(token: string): { Authorization: string } { return { Authorization: `Bearer ${token}` }; }
 async function login(request: APIRequestContext, username: string): Promise<Session> {
@@ -474,28 +478,28 @@ test("LEGACY regression superadmin company context olmadan fail-closed", async (
 
 test("IMPORT station mapping aynı dosyada idempotent update yapar", async ({ request }) => {
   const s = await login(request, credentials.superadmin); const headers = auth(s.token);
-  const first = await request.post("/api/admin/mgm/station-mapping/import-excel", { headers, data: { filePath: mappingFile } }); expect(first.status()).toBe(200);
-  const second = await request.post("/api/admin/mgm/station-mapping/import-excel", { headers, data: { filePath: mappingFile } }); expect(second.status()).toBe(200);
+  const first = await request.post("/api/admin/mgm/station-mapping/import-excel", { headers, data: { filePath: mappingFileName } }); expect(first.status()).toBe(200);
+  const second = await request.post("/api/admin/mgm/station-mapping/import-excel", { headers, data: { filePath: mappingFileName } }); expect(second.status()).toBe(200);
   const count = await pool.query<{ count: string }>("SELECT count(*)::text count FROM mgm_station_mappings WHERE station_key='e2e-import-station'"); expect(Number(count.rows[0]?.count)).toBe(1);
 });
 
 test("IMPORT official degree-day aynı station/year/month satırını upsert eder", async ({ request }) => {
   const s = await login(request, credentials.superadmin); const headers = auth(s.token);
-  expect((await request.post("/api/admin/weather-degree-days/import-excel", { headers, data: { filePath: degreeFile } })).status()).toBe(200);
-  expect((await request.post("/api/admin/weather-degree-days/import-excel", { headers, data: { filePath: degreeFile } })).status()).toBe(200);
+  expect((await request.post("/api/admin/weather-degree-days/import-excel", { headers, data: { filePath: degreeFileName } })).status()).toBe(200);
+  expect((await request.post("/api/admin/weather-degree-days/import-excel", { headers, data: { filePath: degreeFileName } })).status()).toBe(200);
   const rows = await pool.query<{ count: string; hdd: number; cdd: number }>("SELECT count(*)::text count,max(hdd) hdd,max(cdd) cdd FROM weather_degree_days WHERE station_key='e2e-import-station' AND year=2028 AND month=1");
   expect(Number(rows.rows[0]?.count)).toBe(1); expect(rows.rows[0]).toMatchObject({ hdd: 123.6, cdd: 4.4 });
 });
 
 test("IMPORT geçersiz satırı başarı gibi sessizce yutmaz", async ({ request }) => {
   const s = await login(request, credentials.superadmin);
-  const response = await request.post("/api/admin/weather-degree-days/import-excel", { headers: auth(s.token), data: { filePath: invalidDegreeFile } });
+  const response = await request.post("/api/admin/weather-degree-days/import-excel", { headers: auth(s.token), data: { filePath: invalidDegreeFileName } });
   expect(response.status()).toBe(400);
 });
 
 test("IMPORT summary classifies an idempotent update", async ({ request }) => {
   const s = await login(request, credentials.superadmin);
-  const response = await request.post("/api/admin/weather-degree-days/import-excel", { headers: auth(s.token), data: { filePath: degreeFile } });
+  const response = await request.post("/api/admin/weather-degree-days/import-excel", { headers: auth(s.token), data: { filePath: degreeFileName } });
   expect(response.status()).toBe(200);
   const body = await response.json() as { totalRows: number; inserted: number; updated: number; skipped: number; failed: number; errors: unknown[] };
   expect(body).toMatchObject({ totalRows: 1, inserted: 0, updated: 1, skipped: 0, failed: 0, errors: [] });
@@ -504,7 +508,7 @@ test("IMPORT summary classifies an idempotent update", async ({ request }) => {
 
 test("IMPORT invalid-only summary reports a safe row error", async ({ request }) => {
   const s = await login(request, credentials.superadmin);
-  const response = await request.post("/api/admin/weather-degree-days/import-excel", { headers: auth(s.token), data: { filePath: invalidDegreeFile } });
+  const response = await request.post("/api/admin/weather-degree-days/import-excel", { headers: auth(s.token), data: { filePath: invalidDegreeFileName } });
   expect(response.status()).toBe(400);
   const body = await response.json() as { totalRows: number; inserted: number; updated: number; skipped: number; failed: number; errors: Array<{ rowNumber: number; code: string; message: string }> };
   expect(body).toMatchObject({ totalRows: 1, inserted: 0, updated: 0, skipped: 0, failed: 1 });
@@ -516,7 +520,7 @@ test("IMPORT invalid-only summary reports a safe row error", async ({ request })
 
 test("IMPORT mixed file keeps valid rows and reports invalid rows", async ({ request }) => {
   const s = await login(request, credentials.superadmin);
-  const response = await request.post("/api/admin/weather-degree-days/import-excel", { headers: auth(s.token), data: { filePath: mixedDegreeFile } });
+  const response = await request.post("/api/admin/weather-degree-days/import-excel", { headers: auth(s.token), data: { filePath: mixedDegreeFileName } });
   expect(response.status()).toBe(200);
   const body = await response.json() as { totalRows: number; inserted: number; updated: number; skipped: number; failed: number; errors: Array<{ rowNumber: number; code: string }> };
   expect(body).toMatchObject({ totalRows: 2, inserted: 1, updated: 0, skipped: 0, failed: 1 });

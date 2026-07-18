@@ -648,3 +648,22 @@ EnYS release ilkeleri:
 - Kullanıcı onayı olmadan release yapılmamalıdır.
 
 Release, yalnızca kodu paylaşmak değil; EnYS'in denetlenebilir, sürdürülebilir ve ISO 50001 uyumlu kalmasını güvence altına almaktır.
+## Faz 3D operasyonel sertlestirme kontrolu
+
+- [ ] `/api/healthz` liveness DB veya Chromium hatasinda gereksiz yere dusmuyor.
+- [ ] `/api/readyz` DB, schema, browser executable ve production frontend artifact durumunu guvenli ozetle raporluyor.
+- [ ] Readiness response `DATABASE_URL`, DB host/user, SQL, stack trace, tenant verisi veya tam local executable path icermiyor.
+- [ ] Stale snapshot tanimi merkezi olarak 30 dakika varsayilanina gore degerlendirildi; otomatik mutate/cleanup yapilmadi.
+- [ ] `GET /api/admin/report-snapshots/diagnostics` admin/kontrol_admin icin yalniz kendi sirketini, superadmin icin explicit `companyId` context'ini donduruyor.
+- [ ] Snapshot diagnostics tam snapshot JSON, HTML/PDF icerigi veya uzun kullanici metni dondurmuyor.
+- [ ] MGM file-path import varsayilan kapali: `ENABLE_MGM_FILE_IMPORT=true` olmadan endpointler DB write baslatmiyor.
+- [ ] MGM file import root `MGM_FILE_IMPORT_ROOT` ile sinirli; absolute path, `..`, root disi symlink, yanlis extension ve buyuk dosya reddediliyor.
+- [ ] MGM import response ve audit metadata tam local path icermiyor.
+- [ ] `@workspace/db` `push` ve `push-force` scriptleri guard wrapper uzerinden calisiyor.
+- [ ] `ALLOW_DRIZZLE_PUSH=true` ve `TEST_DB_DISPOSABLE=true` olmadan `drizzle-kit push` calismiyor.
+- [ ] `push-force` icin ek `ALLOW_DRIZZLE_PUSH_FORCE=true` gerekiyor.
+- [ ] `NODE_ENV=production` veya non-local DB host icin DB push guard fail-closed.
+- [ ] `pnpm run test:operational-diagnostics`
+- [ ] `pnpm run test:mgm-file-import-guard`
+- [ ] `pnpm run test:db-push-guard`
+- [ ] `pnpm run test:operational-readiness` yalniz dogrulanmis local/disposable veya explicit staging clone DB'de calistirildi.

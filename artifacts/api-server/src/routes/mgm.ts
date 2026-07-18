@@ -9,6 +9,7 @@ import { importStationMapping, importDegreeDays, DEFAULT_MAPPING_FILE, DEFAULT_D
 import { getMgmBootstrapStatus } from "../services/mgm-bootstrap.js";
 import { writeAuditEvent, writeBestEffortAudit } from "../lib/audit.js";
 import { observeImport, observeMgmSync } from "../lib/metrics.js";
+import { guardMgmFileImport, MgmFileImportGuardError, mgmImportGuardStatus } from "../lib/mgm-file-import-guard.js";
 
 const router = Router();
 
@@ -45,6 +46,14 @@ function handleInvalidMgmParameter(res: { status(code: number): { json(body: unk
   if (!(err instanceof InvalidMgmParameterError)) return false;
   res.status(400).json({ error: err.message });
   return true;
+}
+
+function defaultImportFilename(filePath: string): string {
+  return filePath.split(/[\\/]/).pop() ?? filePath;
+}
+
+function safeImportLogs(logs: string[], fullPath: string): string[] {
+  return logs.map(log => log.replace(fullPath, "[redacted-path]").replace(/[A-Z]:\\[^\s]+|\/[^\s]+/gi, "[redacted-path]"));
 }
 
 // GET /api/mgm/stations — Tüm MGM istasyonları
@@ -562,15 +571,17 @@ router.get("/mgm/degree-data", requireAuth, async (req, res) => {
 // POST /api/admin/mgm/station-mapping/import-excel
 // Repo içindeki mgm_station_mapping_checked.xlsx dosyasını mgm_station_mappings tablosuna import eder
 router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireSuperAdmin, async (req, res) => {
+  let guardedFileName: string | null = null;
   try {
-    const filePath = req.body?.filePath ?? DEFAULT_MAPPING_FILE;
+    const guardedFile = await guardMgmFileImport(req.body?.filePath, defaultImportFilename(DEFAULT_MAPPING_FILE));
+    guardedFileName = guardedFile.fileName;
     const logs: string[] = [];
     const onProgress = (msg: string) => {
       logs.push(msg);
-      req.log.info(msg);
+      req.log.info({ fileName: guardedFile.fileName }, msg.replace(guardedFile.fullPath, "[redacted-path]"));
     };
 
-    const result = await importStationMapping(filePath, onProgress);
+    const result = await importStationMapping(guardedFile.fullPath, onProgress);
     observeImport("mgm_station_mapping", result.failed > 0 ? (result.inserted > 0 || result.updated > 0 ? "partial" : "failure") : "success", {
       total: result.totalRows,
       inserted: result.inserted,
@@ -586,14 +597,19 @@ router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireSuper
       entityId: "excel",
       outcome: result.failed > 0 ? "partial" : "success",
       changes: { total: result.totalRows, inserted: result.inserted, updated: result.updated, failed: result.failed },
+      metadata: { fileName: guardedFile.fileName, sizeBytes: guardedFile.sizeBytes },
     });
     res.json({
       message: "MGM istasyon eşleştirme import tamamlandı",
-      filePath,
+      fileName: guardedFile.fileName,
       ...result,
-      logs,
+      logs: safeImportLogs(logs, guardedFile.fullPath),
     });
   } catch (err) {
+    if (err instanceof MgmFileImportGuardError) {
+      res.status(mgmImportGuardStatus(err)).json({ error: "MGM file import reddedildi", code: err.code });
+      return;
+    }
     observeImport("mgm_station_mapping", "failure", { total: 0, failed: 1 });
     req.log.error(err);
     await writeBestEffortAudit(db, {
@@ -604,24 +620,26 @@ router.post("/admin/mgm/station-mapping/import-excel", requireAuth, requireSuper
       entityType: "mgm_station_mapping",
       entityId: "excel",
       outcome: "failure",
-      metadata: { operation: "station-mapping-import" },
+      metadata: { operation: "station-mapping-import", fileName: guardedFileName },
     });
-    res.status(500).json({ error: `Import hatası: ${String(err)}` });
+    res.status(500).json({ error: "Import hatasi" });
   }
 });
 
 // POST /api/admin/weather-degree-days/import-excel
 // Repo içindeki mgm_degree_days_last_10_years_final.xlsx dosyasını weather_degree_days tablosuna import eder
 router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuperAdmin, async (req, res) => {
+  let guardedFileName: string | null = null;
   try {
-    const filePath = req.body?.filePath ?? DEFAULT_DEGREE_DAYS_FILE;
+    const guardedFile = await guardMgmFileImport(req.body?.filePath, defaultImportFilename(DEFAULT_DEGREE_DAYS_FILE));
+    guardedFileName = guardedFile.fileName;
     const logs: string[] = [];
     const onProgress = (msg: string) => {
       logs.push(msg);
-      req.log.info(msg);
+      req.log.info({ fileName: guardedFile.fileName }, msg.replace(guardedFile.fullPath, "[redacted-path]"));
     };
 
-    const result = await importDegreeDays(filePath, onProgress);
+    const result = await importDegreeDays(guardedFile.fullPath, onProgress);
     observeImport("mgm_degree_days", result.failed > 0 ? (result.inserted > 0 || result.updated > 0 ? "partial" : "failure") : "success", {
       total: result.totalRows,
       inserted: result.inserted,
@@ -643,17 +661,21 @@ router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuper
       res.status(400).json({
         message: result.totalRows === 0 ? "İşlenecek veri satırı bulunamadı" : "MGM gün derece import başarısız",
         ...result,
-        logs,
+        logs: safeImportLogs(logs, guardedFile.fullPath),
       });
       return;
     }
     res.json({
       message: result.failed > 0 ? "MGM gün derece import kısmen tamamlandı" : "MGM gün derece import tamamlandı",
-      filePath,
+      fileName: guardedFile.fileName,
       ...result,
-      logs,
+      logs: safeImportLogs(logs, guardedFile.fullPath),
     });
   } catch (err) {
+    if (err instanceof MgmFileImportGuardError) {
+      res.status(mgmImportGuardStatus(err)).json({ error: "MGM file import reddedildi", code: err.code });
+      return;
+    }
     observeImport("mgm_degree_days", "failure", { total: 0, failed: 1 });
     req.log.error(err);
     await writeBestEffortAudit(db, {
@@ -664,7 +686,7 @@ router.post("/admin/weather-degree-days/import-excel", requireAuth, requireSuper
       entityType: "weather_degree_days",
       entityId: "excel",
       outcome: "failure",
-      metadata: { operation: "degree-days-import" },
+      metadata: { operation: "degree-days-import", fileName: guardedFileName },
     });
     res.status(400).json({ error: "MGM gün derece import dosyası işlenemedi" });
   }

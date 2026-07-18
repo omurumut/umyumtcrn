@@ -1714,3 +1714,14 @@ EnYS sorun giderme ilkeleri:
 - Frontend filtresi backend güvenliği yerine geçmez.
 
 Sorun çözmenin amacı yalnızca hatayı susturmak değildir. Amaç, EnYS'in denetlenebilir, sürdürülebilir ve ISO 50001 uyumlu davranışını koruyarak sorunu çözmektir.
+## MGM file import operasyon notu
+
+MGM Excel file-path import endpointleri varsayilan kapali gelir. Kontrollu staging veya bakim operasyonunda kullanmadan once:
+
+- Import edilecek dosya yalniz `MGM_FILE_IMPORT_ROOT` altina konur.
+- `ENABLE_MGM_FILE_IMPORT=true` sadece import penceresinde acilir ve is bitince kapatilir.
+- Dosya checksum'i ve beklenen row count operasyonel olarak kaydedilir.
+- Production'da import oncesi backup/PITR durumu dogrulanir.
+- Absolute path, `..`, root disi symlink, `.xlsx/.xls` disi extension ve `MGM_FILE_IMPORT_MAX_BYTES` ustu dosyalar reddedilir.
+- Response ve audit metadata tam local path dondurmez; yalniz guvenli dosya adi ve ozet sayilar kullanilir.
+- Startup sirasinda otomatik file-path import yoktur. `drizzle-kit push` veya `push-force` import runbook'unun parcasi degildir.

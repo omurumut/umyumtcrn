@@ -110,6 +110,8 @@ ORDER BY generated_at;
 
 Manuel `failed` isaretleme yalniz uygulama loglari, audit durumu ve kullanici etkisi incelendikten sonra dusunulmelidir.
 
+Faz 3D itibariyla operasyonel, read-only diagnostics icin `GET /api/admin/report-snapshots/diagnostics` kullanilir. Varsayilan stale `generating` esigi 30 dakikadir; query ile yalniz 5-1440 dakika araliginda sinirli deger kabul edilir. Endpoint tam `settings_snapshot_json`, HTML/PDF icerigi, local path veya secret dondurmez. Admin ve kontrol_admin yalniz kendi sirketini gorur; superadmin explicit `companyId` ile calisir.
+
 ## Bilinen Eksikler
 
 - Distributed lock ve idempotency key yok; ayni kullanici ayni raporu es zamanli uretirse duplicate snapshot kabul edilir.

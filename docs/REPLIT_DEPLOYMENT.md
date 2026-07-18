@@ -88,7 +88,7 @@ For Autoscale deployments, keep the in-process scheduler disabled. Use an extern
 ## Liveness, readiness, and shutdown
 
 - `GET /api/healthz` is process liveness. It returns `200 {"status":"ok"}` during normal operation and `503 {"status":"draining"}` after shutdown begins when the listener is still reachable.
-- `GET /api/readyz` checks completed startup state plus a bounded `SELECT 1` through the PostgreSQL pool. It returns `200 {"status":"ready"}` or the safe response `503 {"status":"not_ready"}`.
+- `GET /api/readyz` checks completed startup state plus bounded DB, schema, browser executable, and production frontend artifact readiness. It returns a safe summary with `status`, `service`, `timestamp`, `checks.*`, and elapsed time. It never returns `DATABASE_URL`, DB host/user, SQL, stack traces, tenant data, or local executable paths. Readiness failures return `503`.
 - Migrations finish before the listener opens and before readiness becomes true.
 - `SIGTERM` and `SIGINT` mark the process not ready, stop the scheduler, stop accepting new HTTP connections, wait for active requests, and close the PostgreSQL pool.
 - Graceful shutdown is bounded to 15 seconds. A second signal or timeout forces a non-zero exit.
@@ -113,11 +113,12 @@ For Autoscale deployments, keep the in-process scheduler disabled. Use an extern
 6. Confirm runtime migrations finish before readiness.
 7. Start `pnpm run start:prod` with `NODE_ENV=production`.
 8. Check `/api/healthz` and `/api/readyz`.
-9. Verify login.
-10. Verify dashboard and SPA route refresh.
-11. Generate a real PDF and check logs for errors.
-12. Confirm MGM bootstrap/scheduler flags match the intended autoscale policy; do not enable the in-process scheduler on ordinary Autoscale instances.
-13. Send `SIGTERM` in a controlled smoke environment and confirm the listener, database pool, scheduler timers, and browser children close.
+9. Run `pnpm run test:operational-readiness` only against a confirmed local/disposable or explicitly acknowledged staging clone DB.
+10. Verify login.
+11. Verify dashboard and SPA route refresh.
+12. Generate a real PDF and check logs for errors.
+13. Confirm MGM bootstrap/scheduler flags match the intended autoscale policy; do not enable the in-process scheduler on ordinary Autoscale instances.
+14. Send `SIGTERM` in a controlled smoke environment and confirm the listener, database pool, scheduler timers, and browser children close.
 
 ## Development
 

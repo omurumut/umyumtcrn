@@ -109,25 +109,30 @@ async function spawnProduction(browserPath: string, overrides: NodeJS.ProcessEnv
   const repoRoot = resolve(import.meta.dirname, "../..");
   const port = await reservePort();
   let captured = "";
+  const browserExecutablePath = browserPath.includes("iso50001-missing-browser-") ? undefined : chromium.executablePath();
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    NODE_ENV: "production",
+    PORT: String(port),
+    PLAYWRIGHT_BROWSERS_PATH: browserPath,
+    PDF_CHROMIUM_EXECUTABLE_PATH: browserExecutablePath,
+    PDF_CHROMIUM_NO_SANDBOX: "false",
+    ENABLE_MGM_BOOTSTRAP: "false",
+    ENABLE_MGM_SCHEDULER: "false",
+    MGM_SCHEDULER_INSTANCE_MODE: undefined,
+    ENABLE_DEMO_SEED: "false",
+    ENABLE_SEED: "false",
+    ENABLE_BOOTSTRAP: "false",
+    ENABLE_SUPERADMIN_BOOTSTRAP: "false",
+    CORS_ALLOWED_ORIGINS: ` ${ALLOWED_ORIGIN},${ALLOWED_ORIGIN} `,
+    ...overrides,
+  };
+  for (const [key, value] of Object.entries(childEnv)) {
+    if (value === undefined) delete childEnv[key];
+  }
   const child = spawn(process.execPath, ["--enable-source-maps", resolve(repoRoot, "artifacts/api-server/dist/index.mjs")], {
     cwd: repoRoot,
-    env: {
-      ...process.env,
-      NODE_ENV: "production",
-      PORT: String(port),
-      PLAYWRIGHT_BROWSERS_PATH: browserPath,
-      PDF_CHROMIUM_EXECUTABLE_PATH: undefined,
-      PDF_CHROMIUM_NO_SANDBOX: "false",
-      ENABLE_MGM_BOOTSTRAP: "false",
-      ENABLE_MGM_SCHEDULER: "false",
-      MGM_SCHEDULER_INSTANCE_MODE: undefined,
-      ENABLE_DEMO_SEED: "false",
-      ENABLE_SEED: "false",
-      ENABLE_BOOTSTRAP: "false",
-      ENABLE_SUPERADMIN_BOOTSTRAP: "false",
-      CORS_ALLOWED_ORIGINS: ` ${ALLOWED_ORIGIN},${ALLOWED_ORIGIN} `,
-      ...overrides,
-    },
+    env: childEnv,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -142,17 +147,34 @@ async function spawnProduction(browserPath: string, overrides: NodeJS.ProcessEnv
 
 async function waitForReady(running: RunningProduction): Promise<void> {
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+  let lastReadyBody = "";
   while (Date.now() < deadline) {
     if (running.child.exitCode !== null) throw new Error("Production process readiness öncesinde sonlandı.");
     try {
       const response = await fetch(`${running.baseUrl}/api/readyz`);
+      lastReadyBody = (await response.clone().text()).slice(0, 500);
       if (response.status === 200) return;
     } catch {
       // Readiness polling intentionally retries connection refusal.
     }
     await delay(200);
   }
-  throw new Error("Production readiness zaman aşımına uğradı.");
+  throw new Error(`Production readiness zaman asimina ugradi. Son readyz: ${lastReadyBody}. Loglar: ${running.logs().slice(-2_000)}`);
+}
+
+async function waitForLiveness(running: RunningProduction): Promise<void> {
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (running.child.exitCode !== null) throw new Error("Production process liveness öncesinde sonlandı.");
+    try {
+      const response = await fetch(`${running.baseUrl}/api/healthz`);
+      if (response.status === 200) return;
+    } catch {
+      // Liveness polling intentionally retries connection refusal.
+    }
+    await delay(200);
+  }
+  throw new Error(`Production liveness zaman asimina ugradi. Loglar: ${running.logs().slice(-2_000)}`);
 }
 
 async function startProduction(browserPath: string, overrides: NodeJS.ProcessEnv = {}): Promise<RunningProduction> {
@@ -611,7 +633,10 @@ async function assertDatabaseOutageRecovery(running: RunningProduction): Promise
     }
     assert(outageResponse?.status === 503, "DB outage sırasında readiness 503 dönmedi.");
     const body = await outageResponse.text();
-    assert(body === '{"status":"not_ready"}', "DB outage readiness response güvenli değil.");
+    const parsed = JSON.parse(body) as { status?: unknown; checks?: { database?: { status?: unknown } } };
+    assert(parsed.status === "not_ready", "DB outage readiness status güvenli değil.");
+    assert(parsed.checks?.database?.status === "fail", "DB outage readiness database check eksik.");
+    assert(!/postgres(?:ql)?:\/\/|secret|password|ms-playwright|chromium-[0-9]|[A-Z]:\\/i.test(body), "DB outage readiness response secret/path sızdırdı.");
     assert((await fetch(`${running.baseUrl}/api/healthz`)).status === 200, "DB outage sırasında liveness 200 dönmedi.");
   } finally {
     await runDocker(["unpause", containerId]);
@@ -744,11 +769,11 @@ async function main(): Promise<void> {
     running = null;
 
     missingBrowserDirectory = await mkdtemp(join(tmpdir(), "iso50001-missing-browser-"));
-    running = await startProduction(missingBrowserDirectory);
-    const missingToken = await login(running.baseUrl);
-    const missingResponse = await fetchPdf(running.baseUrl, missingToken);
+    running = await spawnProduction(missingBrowserDirectory);
+    await waitForLiveness(running);
+    const missingResponse = await fetch(`${running.baseUrl}/api/readyz`);
     const missingBody = await missingResponse.text();
-    assert(missingResponse.status >= 500 && missingResponse.status < 600, "Missing browser kontrollü 5xx dönmedi.");
+    assert(missingResponse.status === 503, "Missing browser readiness kontrollü 503 dönmedi.");
     assert(missingResponse.headers.get("content-type")?.includes("application/json"), "Missing browser JSON hata dönmedi.");
     assertSecurityHeaders(missingResponse);
     assert(!/stack|node_modules|ms-playwright|chromium-[0-9]|[A-Z]:\\/i.test(missingBody), "Missing browser response path/stack sızdırdı.");

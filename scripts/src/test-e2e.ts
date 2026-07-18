@@ -131,6 +131,8 @@ async function main(): Promise<number> {
   try {
     const requestedFrontendPort = await reserveLocalPort();
     process.env.TEST_CORS_ALLOWED_ORIGIN = `http://127.0.0.1:${requestedFrontendPort}`;
+    process.env.ENABLE_MGM_FILE_IMPORT = "true";
+    process.env.MGM_FILE_IMPORT_ROOT = resolve(repoRoot, "tmp", "f3a9-weather-e2e");
     const appUrl = pathToFileURL(
       resolve(repoRoot, "artifacts/api-server/src/app.ts"),
     ).href;
@@ -177,6 +179,8 @@ async function main(): Promise<number> {
     }, process.argv.slice(2));
   } finally {
     delete process.env.TEST_CORS_ALLOWED_ORIGIN;
+    delete process.env.ENABLE_MGM_FILE_IMPORT;
+    delete process.env.MGM_FILE_IMPORT_ROOT;
     if (viteServer) await viteServer.close().catch(() => undefined);
     await closeServer(apiServer).catch(() => undefined);
     const dbUrl = pathToFileURL(resolve(repoRoot, "lib/db/src/index.ts")).href;
