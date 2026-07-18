@@ -21,6 +21,7 @@
     "test:with-fixtures": "pnpm --filter @workspace/scripts run test:with-fixtures",
     "test:e2e": "pnpm --filter @workspace/scripts run test:e2e",
     "test:production-readiness": "pnpm --filter @workspace/scripts run test:production-readiness",
+    "test:report-migration-readiness": "pnpm --filter @workspace/scripts run test:report-migration-readiness",
     "test:proxy-pool": "pnpm --filter @workspace/scripts run test:proxy-pool",
     "test:shared-auth": "pnpm --filter @workspace/scripts run test:shared-auth",
     "test:auth-migration-upgrade": "pnpm --filter @workspace/scripts run test:auth-migration-upgrade",

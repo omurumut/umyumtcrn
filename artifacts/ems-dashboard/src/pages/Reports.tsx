@@ -28,12 +28,14 @@ export default function Reports() {
   const [includeRisks, setIncludeRisks] = useState(true);
   const [includeSeu, setIncludeSeu] = useState(true);
   const [includeRegression, setIncludeRegression] = useState(true);
+  const [annualOverrideTouched, setAnnualOverrideTouched] = useState<Record<string, boolean>>({});
 
   // ── ISO 50001 Hedef/Eylem/VAP raporu state ─────────────────────────────
   const [targetYear, setTargetYear] = useState(year.toString());
   const [targetStatus, setTargetStatus] = useState("all");
   const [targetIncludeVap, setTargetIncludeVap] = useState(true);
   const [targetIncludeProgress, setTargetIncludeProgress] = useState(true);
+  const [targetOverrideTouched, setTargetOverrideTouched] = useState<Record<string, boolean>>({});
   const [targetLoading, setTargetLoading] = useState(false);
 
   async function handleTargetReport() {
@@ -42,8 +44,8 @@ export default function Reports() {
       const params = new URLSearchParams({ year: targetYear });
       if (unitId !== null) params.set("unitId", String(unitId));
       if (targetStatus !== "all") params.set("status", targetStatus);
-      params.set("includeVap", String(targetIncludeVap));
-      params.set("includeProgress", String(targetIncludeProgress));
+      if (targetOverrideTouched.includeVap) params.set("includeVap", String(targetIncludeVap));
+      if (targetOverrideTouched.includeProgress) params.set("includeProgress", String(targetIncludeProgress));
 
       const res = await fetch(`/api/reports/energy-targets/pdf?${params.toString()}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -76,13 +78,16 @@ export default function Reports() {
     : (reports ?? []);
 
   function handleGenerate() {
+    const legacyOverrides = {
+      ...(annualOverrideTouched.includeSwot ? { includeSwot } : {}),
+      ...(annualOverrideTouched.includeRisks ? { includeRisks } : {}),
+      ...(annualOverrideTouched.includeSeu ? { includeSeu } : {}),
+      ...(annualOverrideTouched.includeRegression ? { includeRegression } : {}),
+    };
     generate.mutate({
       data: {
         year: parseInt(reportYear),
-        includeSwot,
-        includeRisks,
-        includeSeu,
-        includeRegression,
+        ...legacyOverrides,
         ...(unitId !== null ? { unitId } : {}),
       },
     }, {
@@ -146,7 +151,10 @@ export default function Reports() {
                   <Checkbox
                     id={item.id}
                     checked={item.checked}
-                    onCheckedChange={(v) => item.setter(v === true)}
+                    onCheckedChange={(v) => {
+                      item.setter(v === true);
+                      setAnnualOverrideTouched((current) => ({ ...current, [`include${item.id === "swot" ? "Swot" : item.id === "risks" ? "Risks" : item.id === "seu" ? "Seu" : "Regression"}`]: true }));
+                    }}
                   />
                   <label htmlFor={item.id} className="text-sm cursor-pointer">{item.label}</label>
                 </div>
@@ -203,7 +211,10 @@ export default function Reports() {
                 <Checkbox
                   id="target-include-vap"
                   checked={targetIncludeVap}
-                  onCheckedChange={(v) => setTargetIncludeVap(v === true)}
+                  onCheckedChange={(v) => {
+                    setTargetIncludeVap(v === true);
+                    setTargetOverrideTouched((current) => ({ ...current, includeVap: true }));
+                  }}
                 />
                 <label htmlFor="target-include-vap" className="text-sm cursor-pointer">VAP Portföyü</label>
               </div>
@@ -211,7 +222,10 @@ export default function Reports() {
                 <Checkbox
                   id="target-include-progress"
                   checked={targetIncludeProgress}
-                  onCheckedChange={(v) => setTargetIncludeProgress(v === true)}
+                  onCheckedChange={(v) => {
+                    setTargetIncludeProgress(v === true);
+                    setTargetOverrideTouched((current) => ({ ...current, includeProgress: true }));
+                  }}
                 />
                 <label htmlFor="target-include-progress" className="text-sm cursor-pointer">Gerçekleşme Kronolojisi</label>
               </div>
