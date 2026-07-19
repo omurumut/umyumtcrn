@@ -27,7 +27,7 @@ import {
   type UnitTechnicalProfileTechnicalStatus,
   type UnitTechnicalProfileValues,
 } from "@workspace/api-zod";
-import { AlertCircle, CheckCircle2, Eye, Loader2, RefreshCw, RotateCcw, Save, ScrollText } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, Eye, Loader2, RefreshCw, RotateCcw, Save, ScrollText, Upload } from "lucide-react";
 
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -35,6 +35,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -42,6 +43,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { downloadBlobResponse } from "@/lib/download";
 
 type TextField = keyof typeof UNIT_TECHNICAL_PROFILE_TEXT_LIMITS;
 type NumericField = keyof typeof UNIT_TECHNICAL_PROFILE_NUMERIC_LIMITS;
@@ -62,6 +64,27 @@ type FormState = Record<TextField, string> &
   };
 
 type FieldErrors = Partial<Record<string, string>>;
+type ImportIssue = {
+  row: number;
+  column?: string;
+  fieldCode?: string;
+  code: string;
+  message: string;
+  unitKey?: string;
+  level: "error" | "warning";
+};
+type ImportPreview = {
+  totalRows: number;
+  validRows: number;
+  errorRows: number;
+  createCount: number;
+  updateCount: number;
+  noChangeCount: number;
+  warningCount: number;
+  errors: ImportIssue[];
+  warnings: ImportIssue[];
+  message: string;
+};
 
 class ApiError extends Error {
   status: number;
@@ -177,6 +200,14 @@ function buildChildUrl(unitId: number, childPath: string, companyId: number | nu
   if (isSuperAdmin && companyId !== null) params.set("companyId", companyId.toString());
   const qs = params.toString();
   return `/api/unit-technical-profiles/${unitId}/${childPath}${qs ? `?${qs}` : ""}`;
+}
+
+function buildImportExportUrl(path: string, unitId: number | undefined, companyId: number | null, isSuperAdmin: boolean) {
+  const params = new URLSearchParams();
+  if (unitId !== undefined) params.set("unitId", unitId.toString());
+  if (isSuperAdmin && companyId !== null) params.set("companyId", companyId.toString());
+  const qs = params.toString();
+  return `/api/unit-technical-profiles/${path}${qs ? `?${qs}` : ""}`;
 }
 
 function localToday() {
@@ -896,6 +927,10 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
   const [publishChangeSummary, setPublishChangeSummary] = useState("");
   const [publishDateError, setPublishDateError] = useState<string | null>(null);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
 
   const queryEnabled = !!token && !!activeUnitId && (!isSuperAdmin || companyId !== null);
   const queryKey = ["unit-technical-profile", activeUnitId, isSuperAdmin ? companyId : "own"];
@@ -927,6 +962,65 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
       buildChildUrl(activeUnitId!, `history/${selectedSnapshotId}`, companyId, !!isSuperAdmin),
     ),
   });
+
+  const handleDownloadTemplate = async () => {
+    if (!token) return;
+    try {
+      const response = await fetch(buildImportExportUrl("import/template", activeUnitId, companyId, !!isSuperAdmin), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error("Sablon indirilemedi");
+      await downloadBlobResponse(response, "teknik-profil-template.xlsx");
+    } catch (error) {
+      toast({ title: "Sablon indirilemedi", description: error instanceof Error ? error.message : "Sunucu hatasi", variant: "destructive" });
+    }
+  };
+
+  const handleExport = async () => {
+    if (!token) return;
+    try {
+      const response = await fetch(buildImportExportUrl("export", activeUnitId, companyId, !!isSuperAdmin), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error("Export alinamadi");
+      await downloadBlobResponse(response, "teknik-profil.xlsx");
+    } catch (error) {
+      toast({ title: "Export alinamadi", description: error instanceof Error ? error.message : "Sunucu hatasi", variant: "destructive" });
+    }
+  };
+
+  const uploadImportFile = async (path: "import/preview" | "import", confirm = false) => {
+    if (!token || !importFile) return;
+    setImportBusy(true);
+    try {
+      const formData = new FormData();
+      formData.set("file", importFile);
+      formData.set("mode", "update_non_empty");
+      if (confirm) formData.set("confirm", "true");
+      const response = await fetch(buildImportExportUrl(path, undefined, companyId, !!isSuperAdmin), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const body = await response.json().catch(() => null) as ImportPreview | { error?: string } | null;
+      if (!response.ok) {
+        if (body && "errors" in body) setImportPreview(body as ImportPreview);
+        throw new Error(body && "error" in body && body.error ? body.error : "Import islemi tamamlanamadi");
+      }
+      setImportPreview(body as ImportPreview);
+      if (confirm) {
+        await queryClient.invalidateQueries({ queryKey });
+        await queryClient.invalidateQueries({ queryKey: historyQueryKey });
+        toast({ title: "Import uygulandi", description: "Degisiklikler current taslak profile yazildi; snapshot gecmisi degismedi." });
+        setImportDialogOpen(false);
+        setImportFile(null);
+      }
+    } catch (error) {
+      toast({ title: confirm ? "Import uygulanamadi" : "Preview alinamadi", description: error instanceof Error ? error.message : "Sunucu hatasi", variant: "destructive" });
+    } finally {
+      setImportBusy(false);
+    }
+  };
 
   const canEdit = profileQuery.data?.permissions.canEdit ?? false;
   const canPublish = profileQuery.data?.permissions.canPublish ?? false;
@@ -1320,6 +1414,26 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
           )}
           {canEdit && viewMode === "form" && (
             <>
+              <Button variant="outline" onClick={handleDownloadTemplate} disabled={disabled} className="gap-2" data-testid="unit-technical-profile-template">
+                <Download className="h-4 w-4" /> Sablon
+              </Button>
+              <Button variant="outline" onClick={handleExport} disabled={disabled} className="gap-2" data-testid="unit-technical-profile-export">
+                <Download className="h-4 w-4" /> Export
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (isDirty && !window.confirm("Kaydedilmemis degisiklikler var. Import oncesi server verisi esas alinacak. Devam edilsin mi?")) return;
+                  setImportDialogOpen(true);
+                  setImportPreview(null);
+                  setImportFile(null);
+                }}
+                disabled={disabled}
+                className="gap-2"
+                data-testid="unit-technical-profile-import-open"
+              >
+                <Upload className="h-4 w-4" /> Import
+              </Button>
               <Button variant="outline" onClick={handleReset} disabled={!isDirty || saveMutation.isPending} className="gap-2">
                 <RotateCcw className="h-4 w-4" /> Degisiklikleri geri al
               </Button>
@@ -1336,6 +1450,97 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
           )}
         </div>
       </div>
+
+      <Dialog open={importDialogOpen} onOpenChange={(open) => {
+        setImportDialogOpen(open);
+        if (!open) {
+          setImportPreview(null);
+          setImportFile(null);
+        }
+      }}>
+        <DialogContent className="max-h-[88vh] max-w-4xl overflow-y-auto" data-testid="unit-technical-profile-import-dialog">
+          <DialogHeader>
+            <DialogTitle>Teknik profil import</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Alert>
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Import taslak/current profil uzerinde calisir</AlertTitle>
+              <AlertDescription>Snapshot gecmisi, validFrom/validTo ve yayinlanmis tarihce degismez. Bos hucreler mevcut degeri korur; temizleme token'i __CLEAR__.</AlertDescription>
+            </Alert>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={handleDownloadTemplate} disabled={importBusy} className="gap-2">
+                <Download className="h-4 w-4" /> Sablon indir
+              </Button>
+              <Input
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                disabled={importBusy}
+                onChange={(event) => {
+                  setImportFile(event.target.files?.[0] ?? null);
+                  setImportPreview(null);
+                }}
+                className="max-w-sm"
+                data-testid="unit-technical-profile-import-file"
+              />
+              <Button onClick={() => uploadImportFile("import/preview")} disabled={!importFile || importBusy} className="gap-2" data-testid="unit-technical-profile-import-preview">
+                {importBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+                Preview
+              </Button>
+            </div>
+            {importPreview && (
+              <div className="space-y-3" data-testid="unit-technical-profile-import-preview-result">
+                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                  {[
+                    ["Satir", importPreview.totalRows],
+                    ["Gecerli", importPreview.validRows],
+                    ["Hata", importPreview.errorRows],
+                    ["Create", importPreview.createCount],
+                    ["Update", importPreview.updateCount],
+                    ["No-change", importPreview.noChangeCount],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-md border p-2">
+                      <div className="text-xs text-muted-foreground">{label}</div>
+                      <div className="text-lg font-semibold">{value}</div>
+                    </div>
+                  ))}
+                </div>
+                {importPreview.warnings.length > 0 && (
+                  <Alert className="border-amber-500/40 bg-amber-500/10">
+                    <AlertCircle className="h-4 w-4 text-amber-400" />
+                    <AlertTitle>Uyarilar</AlertTitle>
+                    <AlertDescription>{importPreview.warnings.slice(0, 5).map((issue) => `Satir ${issue.row}: ${issue.code}`).join(", ")}</AlertDescription>
+                  </Alert>
+                )}
+                {importPreview.errors.length > 0 && (
+                  <div className="max-h-56 overflow-y-auto rounded-md border" data-testid="unit-technical-profile-import-errors">
+                    {importPreview.errors.map((issue, index) => (
+                      <div key={`${issue.row}-${issue.code}-${index}`} className="border-b p-2 text-sm last:border-b-0">
+                        <span className="font-medium">Satir {issue.row}</span>
+                        {issue.column && <span className="text-muted-foreground"> / {issue.column}</span>}
+                        <span className="ml-2 rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">{issue.code}</span>
+                        <div className="mt-1 text-muted-foreground">{issue.message}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-sm text-muted-foreground">{importPreview.message}</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setImportDialogOpen(false)} disabled={importBusy}>Vazgec</Button>
+            <Button
+              onClick={() => uploadImportFile("import", true)}
+              disabled={!importPreview || importPreview.errors.length > 0 || importBusy}
+              data-testid="unit-technical-profile-import-apply"
+            >
+              {importBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Uygula
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "profile" | "history")}>
         <TabsList>

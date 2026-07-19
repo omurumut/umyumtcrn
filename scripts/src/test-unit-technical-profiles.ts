@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { Pool } from "pg";
+import ExcelJS from "exceljs";
 import {
   calculateUnitTechnicalProfileCompletion,
   validateUnitTechnicalProfilePublishMinimum,
@@ -136,6 +137,27 @@ async function publishProfile(baseUrl: string, token: string, unitId: number, bo
   return api(baseUrl, token, `/api/unit-technical-profiles/${unitId}/publish${query}`, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+async function workbookBuffer(headers: string[], rows: unknown[][]): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Teknik Profil");
+  sheet.addRow(headers);
+  for (const row of rows) sheet.addRow(row);
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
+}
+
+async function uploadProfileImport(baseUrl: string, token: string, path: string, buffer: Buffer, fields: Record<string, string> = {}) {
+  const form = new FormData();
+  const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+  form.set("file", new Blob([arrayBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "technical-profiles.xlsx");
+  for (const [key, value] of Object.entries(fields)) form.set(key, value);
+  return fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: auth(token),
+    body: form,
   });
 }
 
@@ -587,7 +609,18 @@ async function main() {
     const firstSnapshotAfterDefinitionUpdate = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/history/${firstPublishBody.snapshot.id}`);
     const firstSnapshotAfterDefinitionUpdateBody = await json(firstSnapshotAfterDefinitionUpdate);
     assert(firstSnapshotAfterDefinitionUpdateBody.snapshot.customFieldDefinitions.some((definition: any) => definition.code === "phase3c3_line_type" && definition.label === "Line type"), "Snapshot definition metadata sonradan degisti.");
-    assertions += 2;
+    const importSelectDefinitionRes = await createDefinition(server.baseUrl, adminToken, {
+      code: "phase3c5_import_line",
+      label: "Import line",
+      fieldType: "single_select",
+      options: [
+        { code: "assembly", label: "Assembly", isActive: true },
+        { code: "packaging", label: "Packaging", isActive: true },
+      ],
+      sortOrder: 20,
+    });
+    assert(importSelectDefinitionRes.status === 201, "3C.5 import custom definition olusturulamadi.");
+    assertions += 3;
 
     const profileBeforeSecondPublish = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}`);
     const profileBeforeSecondPublishBody = await json(profileBeforeSecondPublish);
@@ -638,6 +671,114 @@ async function main() {
     assert(superEffectiveWithContext.status === 200, "Superadmin explicit context effective okuyamadi.");
     assertions += 3;
 
+    const templateRes = await api(server.baseUrl, adminToken, "/api/unit-technical-profiles/import/template?includeCustomFields=true");
+    assert(templateRes.status === 200, `Template 200 yerine ${templateRes.status}`);
+    const templateWorkbook = new ExcelJS.Workbook();
+    await templateWorkbook.xlsx.load(await templateRes.arrayBuffer());
+    const templateSheet = templateWorkbook.getWorksheet("Teknik Profil");
+    const helpSheet = templateWorkbook.getWorksheet("Aciklamalar");
+    const optionsSheet = templateWorkbook.getWorksheet("Secenekler");
+    assert(templateSheet && helpSheet && optionsSheet, "Template sheet yapisi eksik.");
+    const templateHeaders = (templateSheet!.getRow(1).values as unknown[]).map((value) => String(value ?? ""));
+    assert(templateHeaders.some((header) => header.includes("[unitId]")), "Template unitId kolonu yok.");
+    assert(templateHeaders.some((header) => header.includes("[mainActivity]")), "Template standart kolon yok.");
+    assert(templateHeaders.some((header) => header.includes("[custom:phase3c5_import_line]")), "Template aktif custom kolon yok.");
+    assert(!templateHeaders.some((header) => header.includes("[custom:phase3c3_process_temperature]")), "Template pasif custom kolonu yeni giris olarak iceriyor.");
+    const standardTemplate = await api(server.baseUrl, standardToken, `/api/unit-technical-profiles/import/template?unitId=${unitA2.id}`);
+    assert(standardTemplate.status === 403, "Standard baska unit template alabildi.");
+    const superTemplateNoContext = await api(server.baseUrl, superadminToken, "/api/unit-technical-profiles/import/template");
+    assert(superTemplateNoContext.status === 400, "Superadmin context olmadan template alabildi.");
+    assertions += 8;
+
+    await pool.query("UPDATE units SET name='=Formula Unit' WHERE id=$1", [unitA2.id]);
+    const exportRes = await api(server.baseUrl, adminToken, "/api/unit-technical-profiles/export");
+    assert(exportRes.status === 200, `Export 200 yerine ${exportRes.status}`);
+    const exportWorkbook = new ExcelJS.Workbook();
+    await exportWorkbook.xlsx.load(await exportRes.arrayBuffer());
+    const exportSheet = exportWorkbook.getWorksheet("Teknik Profil");
+    assert(exportSheet, "Export Teknik Profil sheet yok.");
+    const exportedUnitNames = exportSheet!.getColumn(2).values.map((value) => String(value ?? ""));
+    assert(exportedUnitNames.some((value) => value === "'=Formula Unit"), "Formula injection exportta sanitize edilmedi.");
+    const standardExportOther = await api(server.baseUrl, standardToken, `/api/unit-technical-profiles/export?unitId=${unitA2.id}`);
+    assert(standardExportOther.status === 403, "Standard baska unit export alabildi.");
+    const superExportNoContext = await api(server.baseUrl, superadminToken, "/api/unit-technical-profiles/export");
+    assert(superExportNoContext.status === 400, "Superadmin context olmadan export alabildi.");
+    assertions += 5;
+
+    const importHeaders = [
+      "Birim ID [unitId]",
+      "Birim Adi [unitName]",
+      "Beklenen Profil Versiyonu [expectedProfileVersion]",
+      "Ana faaliyet [mainActivity]",
+      "Toplam kapali alan [totalEnclosedAreaM2]",
+      "Bina otomasyonu [buildingAutomationStatus]",
+      "Import line [custom:phase3c5_import_line]",
+    ];
+    const validImportBuffer = await workbookBuffer(importHeaders, [[
+      unitA1.id,
+      "Wrong display name",
+      secondPublishBody.profile.profileVersion,
+      "Imported draft activity",
+      2500.5,
+      "no",
+      "packaging",
+    ]]);
+    const previewRes = await uploadProfileImport(server.baseUrl, adminToken, "/api/unit-technical-profiles/import/preview", validImportBuffer, { mode: "update_non_empty" });
+    assert(previewRes.status === 200, `Preview 200 yerine ${previewRes.status}`);
+    const previewBody = await json(previewRes);
+    assert(previewBody.totalRows === 1 && previewBody.updateCount === 1 && previewBody.errors.length === 0, `Preview update ozeti bozuk: ${JSON.stringify(previewBody)}`);
+    assert(previewBody.warningCount === 1 && previewBody.warnings[0].code === "unit_name_mismatch", "Unit name mismatch uyarisi uretilmedi.");
+    const snapshotCountBeforeImport = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM unit_technical_profile_snapshots WHERE unit_id=$1", [unitA1.id]);
+    const applyRes = await uploadProfileImport(server.baseUrl, adminToken, "/api/unit-technical-profiles/import", validImportBuffer, { mode: "update_non_empty", confirm: "true" });
+    assert(applyRes.status === 200, `Apply 200 yerine ${applyRes.status}`);
+    const applyBody = await json(applyRes);
+    assert(applyBody.updateCount === 1 && applyBody.message.includes("snapshot gecmisi degismedi"), "Apply sonucu mesaji/ozeti bozuk.");
+    const profileAfterImportRes = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}`);
+    const profileAfterImport = await json(profileAfterImportRes);
+    assert(profileAfterImport.profile.profileVersion === secondPublishBody.profile.profileVersion + 1, "Import update version artirmadi.");
+    assert(profileAfterImport.profile.profileStatus === "draft", "Import current profili draft'a cekmedi.");
+    assert(profileAfterImport.profile.mainActivity === "Imported draft activity", "Import standart alan yazmadi.");
+    assert(profileAfterImport.customFieldValues.phase3c5_import_line === "packaging", "Import custom select yazmadi.");
+    const snapshotCountAfterImport = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM unit_technical_profile_snapshots WHERE unit_id=$1", [unitA1.id]);
+    assert(snapshotCountAfterImport.rows[0]?.count === snapshotCountBeforeImport.rows[0]?.count, "Import snapshot olusturdu.");
+    const effectiveAfterImport = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?date=2026-07-01`);
+    const effectiveAfterImportBody = await json(effectiveAfterImport);
+    assert(effectiveAfterImportBody.snapshot.standardValues.mainActivity === "Assembly snapshot v2", "Import effective snapshot sonucunu degistirdi.");
+    assertions += 11;
+
+    const staleImportBuffer = await workbookBuffer(importHeaders, [[unitA1.id, unitA1.name, secondPublishBody.profile.profileVersion, "Stale import", "", "", ""]]);
+    const stalePreview = await uploadProfileImport(server.baseUrl, adminToken, "/api/unit-technical-profiles/import/preview", staleImportBuffer);
+    const stalePreviewBody = await json(stalePreview);
+    assert(stalePreview.status === 200 && stalePreviewBody.errors.some((issue: any) => issue.code === "version_conflict"), "Stale import preview conflict uretmedi.");
+    const duplicatePreview = await uploadProfileImport(server.baseUrl, adminToken, "/api/unit-technical-profiles/import/preview", await workbookBuffer(importHeaders, [
+      [unitA1.id, unitA1.name, profileAfterImport.profile.profileVersion, "Duplicate A", "", "", ""],
+      [unitA1.id, unitA1.name, profileAfterImport.profile.profileVersion, "Duplicate B", "", "", ""],
+    ]));
+    const duplicatePreviewBody = await json(duplicatePreview);
+    assert(duplicatePreviewBody.errors.some((issue: any) => issue.code === "duplicate_unit"), "Duplicate unit import hatasi yok.");
+    const invalidPreview = await uploadProfileImport(server.baseUrl, adminToken, "/api/unit-technical-profiles/import/preview", await workbookBuffer(importHeaders, [[
+      unitA1.id,
+      unitA1.name,
+      profileAfterImport.profile.profileVersion,
+      "=HYPERLINK(\"x\")",
+      -1,
+      "maybe",
+      "missing_option",
+    ]]));
+    const invalidPreviewBody = await json(invalidPreview);
+    assert(invalidPreviewBody.errors.some((issue: any) => issue.code === "formula_not_allowed"), "Formula cell reddedilmedi.");
+    assert(invalidPreviewBody.errors.some((issue: any) => issue.code === "out_of_range"), "Out of range import hatasi yok.");
+    assert(invalidPreviewBody.errors.some((issue: any) => issue.code === "invalid_enum"), "Invalid enum import hatasi yok.");
+    assert(invalidPreviewBody.errors.some((issue: any) => issue.code === "invalid_custom_value"), "Invalid custom option import hatasi yok.");
+    const allOrNothing = await uploadProfileImport(server.baseUrl, adminToken, "/api/unit-technical-profiles/import", await workbookBuffer(importHeaders, [
+      [unitA1.id, unitA1.name, profileAfterImport.profile.profileVersion, "Should rollback", "", "", ""],
+      [999999, "No unit", "", "Invalid", "", "", ""],
+    ]), { confirm: "true" });
+    assert(allOrNothing.status === 422, "Hatali import all-or-nothing 422 donmedi.");
+    const profileAfterRollback = await json(await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}`));
+    assert(profileAfterRollback.profile.mainActivity === "Imported draft activity", "All-or-nothing rollback calismadi.");
+    assertions += 9;
+
     const audits = await pool.query<{
       action: string;
       changes_text: string | null;
@@ -677,7 +818,16 @@ async function main() {
       [unitA1.id],
     );
     assert(snapshotAudit.rows.some((row) => row.action === "unit_technical_profile.snapshot_created" && row.metadata_json?.snapshotNumber === 1), "Snapshot create audit yok.");
-    assertions += 9;
+    const importAudit = await pool.query<{ action: string; metadata_json: any }>(
+      `SELECT action, metadata_json
+       FROM audit_events
+       WHERE action='unit_technical_profile.import_applied'
+       ORDER BY id`,
+    );
+    assert(importAudit.rows.some((row) => row.metadata_json?.mode === "update_non_empty" && row.metadata_json?.affectedUnitCount === 1), "Import audit summary yok.");
+    const exportAudit = await pool.query<{ action: string }>("SELECT action FROM audit_events WHERE action='unit_technical_profile.exported'");
+    assert((exportAudit.rowCount ?? 0) >= 1, "Export audit yok.");
+    assertions += 11;
 
     console.log(JSON.stringify({ ok: true, assertions }, null, 2));
   } finally {

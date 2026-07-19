@@ -30,6 +30,7 @@ const scriptsRequire = createRequire(resolve(process.cwd(), "scripts/package.jso
 const { Pool } = scriptsRequire("pg") as {
   Pool: new (options: { connectionString: string }) => TestPool;
 };
+const ExcelJS = scriptsRequire("exceljs") as typeof import("exceljs");
 const pool = new Pool({ connectionString: assertDisposableDatabase() });
 
 const credentials = {
@@ -97,6 +98,15 @@ async function openTechnicalProfile(page: Page): Promise<void> {
 async function chooseSelectOption(page: Page, testId: string, option: string): Promise<void> {
   await page.getByTestId(testId).click();
   await page.getByRole("option", { name: option }).click();
+}
+
+async function workbookBuffer(headers: string[], rows: unknown[][]): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Teknik Profil");
+  sheet.addRow(headers);
+  for (const row of rows) sheet.addRow(row);
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
 }
 
 test.afterAll(async () => {
@@ -275,6 +285,55 @@ test("UNIT-TECH-PROFILE-UI admin publish paneli snapshot ve tarihce olusturur", 
   });
   expect(history.status()).toBe(200);
   expect((await history.json()).items[0]).toMatchObject({ snapshotNumber: 1, validFrom: "2026-01-15" });
+});
+
+test("UNIT-TECH-PROFILE-UI xlsx import preview ve apply akisini kullanir", async ({ page, request }) => {
+  const standard = await login(request, credentials.standardA1);
+  expect(standard.user.unitId).not.toBeNull();
+  await resetProfile(standard.user.unitId!);
+  await useSession(page, standard);
+  await openTechnicalProfile(page);
+
+  await expect(page.getByTestId("unit-technical-profile-template")).toBeVisible();
+  await expect(page.getByTestId("unit-technical-profile-export")).toBeVisible();
+  await page.getByTestId("unit-technical-profile-import-open").click();
+  await expect(page.getByTestId("unit-technical-profile-import-dialog")).toBeVisible();
+
+  const buffer = await workbookBuffer(
+    [
+      "Birim ID [unitId]",
+      "Birim Adi [unitName]",
+      "Beklenen Profil Versiyonu [expectedProfileVersion]",
+      "Tesis kullanim tipi [facilityUseType]",
+      "Ana faaliyet [mainActivity]",
+      "Toplam kapali alan [totalEnclosedAreaM2]",
+      "Gunluk calisma suresi [dailyOperatingHours]",
+    ],
+    [[standard.user.unitId!, await unitName(standard.user.unitId!), "", "Uretim", "XLSX montaj", 1234.5, 8]],
+  );
+  await page.getByTestId("unit-technical-profile-import-file").setInputFiles({
+    name: "technical-profile.xlsx",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    buffer,
+  });
+  await page.getByTestId("unit-technical-profile-import-preview").click();
+  await expect(page.getByTestId("unit-technical-profile-import-preview-result")).toContainText("Create");
+  await expect(page.getByTestId("unit-technical-profile-import-apply")).toBeEnabled();
+  await page.getByTestId("unit-technical-profile-import-apply").click();
+  await expect(page.getByTestId("unit-technical-profile-import-dialog")).toBeHidden();
+  await expect(page.getByTestId("utp-field-mainActivity")).toHaveValue("XLSX montaj");
+
+  await page.getByTestId("unit-technical-profile-history-tab").click();
+  await expect(page.getByTestId("unit-technical-profile-history")).toContainText("Henuz yayimlanmis teknik profil snapshot'i yok.");
+
+  const apiResponse = await request.get(`/api/unit-technical-profiles/${standard.user.unitId}`, {
+    headers: authorization(standard.token),
+  });
+  expect(apiResponse.status()).toBe(200);
+  const body = await apiResponse.json();
+  expect(body.profile.profileStatus).toBe("draft");
+  expect(body.profile.profileVersion).toBe(1);
+  expect(body.profile.mainActivity).toBe("XLSX montaj");
 });
 
 test("UNIT-TECH-PROFILE-UI salt okunur ozet ve responsive yatay tasma kontrolu", async ({ page, request }) => {

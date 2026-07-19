@@ -39,6 +39,10 @@ const WRAP_TEXT_WIDTH_THRESHOLD = 30;
 
 // ─── Hücre değeri normalleştirme ────────────────────────────────────────────
 
+export function sanitizeSpreadsheetText(value: string): string {
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
+
 function normalizeXlsxCell(value: unknown, type: XlsxColType): string | number | null {
   if (value === null || value === undefined || value === "") return null;
 
@@ -60,7 +64,7 @@ function normalizeXlsxCell(value: unknown, type: XlsxColType): string | number |
   }
 
   // text
-  return String(value);
+  return sanitizeSpreadsheetText(String(value));
 }
 
 // ─── XLSX üretici ───────────────────────────────────────────────────────────
