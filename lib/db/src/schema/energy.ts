@@ -403,6 +403,7 @@ export const unitTechnicalProfilesTable = pgTable("unit_technical_profiles", {
   knownEnergyIssues: text("known_energy_issues"),
   technicalImprovements: text("technical_improvements"),
   plannedInfrastructureChanges: text("planned_infrastructure_changes"),
+  customValues: jsonb("custom_values_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   profileStatus: text("profile_status").notNull().default("draft"),
   profileVersion: integer("profile_version").notNull().default(1),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -417,6 +418,33 @@ export const unitTechnicalProfilesTable = pgTable("unit_technical_profiles", {
 export const insertUnitTechnicalProfileSchema = createInsertSchema(unitTechnicalProfilesTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertUnitTechnicalProfile = z.infer<typeof insertUnitTechnicalProfileSchema>;
 export type UnitTechnicalProfile = typeof unitTechnicalProfilesTable.$inferSelect;
+
+export const unitTechnicalProfileFieldDefinitionsTable = pgTable("unit_technical_profile_field_definitions", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  code: text("code").notNull(),
+  label: text("label").notNull(),
+  description: text("description"),
+  fieldType: text("field_type").notNull(),
+  unitLabel: text("unit_label"),
+  options: jsonb("options_json").$type<Array<{ code: string; label: string; isActive: boolean }>>().notNull().default(sql`'[]'::jsonb`),
+  isRequiredForPublish: boolean("is_required_for_publish").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  validationConfig: jsonb("validation_config_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  definitionVersion: integer("definition_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdBy: integer("created_by").references(() => usersTable.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyCodeUnique: uniqueIndex("utp_field_definitions_company_code_unique").on(table.companyId, table.code),
+  companyActiveSortIdx: index("utp_field_definitions_company_active_sort_idx").on(table.companyId, table.isActive, table.sortOrder),
+}));
+
+export const insertUnitTechnicalProfileFieldDefinitionSchema = createInsertSchema(unitTechnicalProfileFieldDefinitionsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertUnitTechnicalProfileFieldDefinition = z.infer<typeof insertUnitTechnicalProfileFieldDefinitionSchema>;
+export type UnitTechnicalProfileFieldDefinition = typeof unitTechnicalProfileFieldDefinitionsTable.$inferSelect;
 
 // ── Energy Sources (Enerji Kaynakları) ────────────────────
 export const energySourcesTable = pgTable("energy_sources", {

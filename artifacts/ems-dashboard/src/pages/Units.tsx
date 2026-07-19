@@ -463,7 +463,7 @@ export default function Units() {
               value={adminUnitFilter?.toString() ?? "all"}
               onValueChange={v => setAdminUnitFilter(v === "all" ? undefined : parseInt(v))}
             >
-              <SelectTrigger className="w-52 h-8 text-xs border-teal-500/40 text-teal-400 focus:ring-teal-500/20">
+              <SelectTrigger data-testid="unit-tab-filter" className="w-52 h-8 text-xs border-teal-500/40 text-teal-400 focus:ring-teal-500/20">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

@@ -2,6 +2,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { Pool } from "pg";
+import {
+  calculateUnitTechnicalProfileCompletion,
+  validateUnitTechnicalProfilePublishMinimum,
+} from "@workspace/api-zod";
 
 type LoginBody = { token?: string };
 
@@ -127,12 +131,64 @@ async function patchProfile(baseUrl: string, token: string, unitId: number, body
   });
 }
 
+function definitionPath(companyId?: number) {
+  const query = companyId === undefined ? "?includeInactive=true" : `?companyId=${companyId}&includeInactive=true`;
+  return `/api/unit-technical-profile-field-definitions${query}`;
+}
+
+async function createDefinition(baseUrl: string, token: string, body: Record<string, unknown>, companyId?: number) {
+  const query = companyId === undefined ? "" : `?companyId=${companyId}`;
+  return api(baseUrl, token, `/api/unit-technical-profile-field-definitions${query}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+async function patchDefinition(baseUrl: string, token: string, id: number, body: Record<string, unknown>, companyId?: number) {
+  const query = companyId === undefined ? "" : `?companyId=${companyId}`;
+  return api(baseUrl, token, `/api/unit-technical-profile-field-definitions/${id}${query}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+async function archiveDefinition(baseUrl: string, token: string, id: number, expectedDefinitionVersion: number, companyId?: number) {
+  const query = companyId === undefined ? "" : `?companyId=${companyId}`;
+  return api(baseUrl, token, `/api/unit-technical-profile-field-definitions/${id}/archive${query}`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDefinitionVersion }),
+  });
+}
+
 async function main() {
   assertDisposableDatabase();
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const server = await startServer();
   let assertions = 0;
   try {
+    const emptyCompletion = calculateUnitTechnicalProfileCompletion({});
+    assert(emptyCompletion.ratio === 0 && emptyCompletion.nextIncompleteSectionId === "general", "Bos profil doluluk hesabi bozuk.");
+    const zeroCompletion = calculateUnitTechnicalProfileCompletion({ personnelCount: 0 });
+    assert(zeroCompletion.completedFields === 1, "0 degeri dolu sayilmadi.");
+    const unknownCompletion = calculateUnitTechnicalProfileCompletion({ generatorStatus: "unknown" });
+    assert(unknownCompletion.completedFields === 1, "unknown bilincli secim sayilmadi.");
+    const notApplicableCompletion = calculateUnitTechnicalProfileCompletion({ steamSystemStatus: "not_applicable" });
+    assert(notApplicableCompletion.completedFields === 1, "not_applicable bilincli secim sayilmadi.");
+    const whitespaceCompletion = calculateUnitTechnicalProfileCompletion({ mainActivity: "   " });
+    assert(whitespaceCompletion.completedFields === 0, "Whitespace metin eksik sayilmadi.");
+    const partialOperation = calculateUnitTechnicalProfileCompletion({ dailyOperatingHours: 8 });
+    assert(partialOperation.sections.find((section) => section.id === "operation")?.status === "partial", "Kismi bolum durumu bozuk.");
+    const fullEnergySystems = calculateUnitTechnicalProfileCompletion({
+      compressedAirStatus: "yes",
+      steamSystemStatus: "no",
+      generatorStatus: "unknown",
+      renewableEnergyStatus: "not_applicable",
+    });
+    assert(fullEnergySystems.sections.find((section) => section.id === "energySystems")?.status === "completed", "Tam bolum durumu bozuk.");
+    assert(calculateUnitTechnicalProfileCompletion({ facilityUseType: "Uretim", mainActivity: "Montaj", mainProcessDescription: "Hat" }).nextIncompleteSectionId === "physical", "Sonraki eksik bolum hesabi bozuk.");
+    assert(validateUnitTechnicalProfilePublishMinimum({}).includes("operation"), "Publish minimum operasyon sentinel yok.");
+    assertions += 9;
+
     const userRows = await pool.query<{
       username: string;
       company_id: number;
@@ -199,8 +255,21 @@ async function main() {
       mainActivity: "Assembly and packaging",
       profileStatus: "published",
     });
-    assert(updatedRes.status === 200, `Admin update 200 yerine ${updatedRes.status}`);
-    const updated = await json(updatedRes);
+    assert(updatedRes.status === 422, `Eksik minimum publish 422 yerine ${updatedRes.status}`);
+    const missingPublish = await json(updatedRes);
+    assert(Array.isArray(missingPublish.missingFields) && missingPublish.missingFields.includes("totalEnclosedAreaM2") && missingPublish.missingFields.includes("heatingSystemType"), "Publish eksik alan response bozuk.");
+    assertions += 2;
+
+    const minimumPublishRes = await patchProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: 1,
+      mainActivity: "Assembly and packaging",
+      totalEnclosedAreaM2: 0,
+      heatingSystemType: "Natural gas boiler",
+      coolingSystemType: "Rooftop unit",
+      profileStatus: "published",
+    });
+    assert(minimumPublishRes.status === 200, `Admin publish 200 yerine ${minimumPublishRes.status}`);
+    const updated = await json(minimumPublishRes);
     assert(updated.profile.profileVersion === 2 && updated.profile.profileStatus === "published", "Update version/status sozlesmesi bozuk.");
     assertions += 2;
 
@@ -251,7 +320,12 @@ async function main() {
 
     const kontrolUpdate = await patchProfile(server.baseUrl, kontrolToken, unitA2.id, {
       expectedProfileVersion: 1,
+      facilityUseType: "Office",
       mainActivity: "Kontrol admin update",
+      totalEnclosedAreaM2: 100,
+      dailyOperatingHours: 8,
+      heatingSystemType: "Heat pump",
+      coolingSystemType: "Split system",
       profileStatus: "published",
     });
     assert(kontrolUpdate.status === 200, `kontrol_admin write/publish basarisiz: ${kontrolUpdate.status}`);
@@ -299,6 +373,161 @@ async function main() {
     assert(tenantLeak.status === 403, "Tenant izolasyonu standard B -> A reddedilmedi.");
     assertions += 2;
 
+    const standardDefinitions = await api(server.baseUrl, standardToken, definitionPath());
+    assert(standardDefinitions.status === 403, "Standard alan tanimlarini gorebildi.");
+    const kontrolDefinitions = await api(server.baseUrl, kontrolToken, definitionPath());
+    assert(kontrolDefinitions.status === 200, "kontrol_admin alan tanimlarini okuyamadi.");
+    const kontrolDefinitionsBody = await json(kontrolDefinitions);
+    assert(kontrolDefinitionsBody.permissions.canEdit === false, "kontrol_admin alan tanimlarini duzenleyebilir gorundu.");
+    const kontrolCreate = await createDefinition(server.baseUrl, kontrolToken, { code: "kontrol_field", label: "Kontrol Field", fieldType: "short_text" });
+    assert(kontrolCreate.status === 403, "kontrol_admin alan tanimi olusturabildi.");
+    const superDefinitionNoContext = await api(server.baseUrl, superadminToken, definitionPath());
+    assert(superDefinitionNoContext.status === 400, "Superadmin alan taniminda context olmadan basarili oldu.");
+    assertions += 5;
+
+    const reservedDefinition = await createDefinition(server.baseUrl, adminToken, {
+      code: "mainActivity",
+      label: "Reserved",
+      fieldType: "short_text",
+    });
+    assert(reservedDefinition.status === 400, "Standart alan kodu ozel alan olarak kabul edildi.");
+    const invalidOptions = await createDefinition(server.baseUrl, adminToken, {
+      code: "phase3c3_bad_options",
+      label: "Bad options",
+      fieldType: "single_select",
+      options: [
+        { code: "a1", label: "A", isActive: true },
+        { code: "a1", label: "A duplicate", isActive: true },
+      ],
+    });
+    assert(invalidOptions.status === 400, "Duplicate option kodu kabul edildi.");
+    const invalidRange = await createDefinition(server.baseUrl, adminToken, {
+      code: "phase3c3_bad_range",
+      label: "Bad range",
+      fieldType: "decimal",
+      validationConfig: { min: 10, max: 1 },
+    });
+    assert(invalidRange.status === 400, "min > max validationConfig kabul edildi.");
+    assertions += 3;
+
+    const numericDefinitionRes = await createDefinition(server.baseUrl, adminToken, {
+      code: "phase3c3_process_temperature",
+      label: "Process temperature",
+      fieldType: "unit_number",
+      unitLabel: "C",
+      sortOrder: 10,
+      validationConfig: { min: 0, max: 120 },
+    });
+    assert(numericDefinitionRes.status === 201, `Numeric definition 201 yerine ${numericDefinitionRes.status}`);
+    const numericDefinitionBody = await json(numericDefinitionRes);
+    const numericDefinition = numericDefinitionBody.definition;
+    assert(numericDefinition.definitionVersion === 1 && numericDefinition.hasValues === false, "Definition create response bozuk.");
+    const duplicateDefinition = await createDefinition(server.baseUrl, adminToken, {
+      code: "phase3c3_process_temperature",
+      label: "Duplicate",
+      fieldType: "unit_number",
+    });
+    assert(duplicateDefinition.status === 409, "Duplicate definition code reddedilmedi.");
+    const staleDefinition = await patchDefinition(server.baseUrl, adminToken, numericDefinition.id, {
+      expectedDefinitionVersion: 99,
+      label: "Stale",
+    });
+    assert(staleDefinition.status === 409, "Stale definition version 409 donmedi.");
+    assertions += 4;
+
+    const selectDefinitionRes = await createDefinition(server.baseUrl, adminToken, {
+      code: "phase3c3_line_type",
+      label: "Line type",
+      fieldType: "single_select",
+      options: [
+        { code: "assembly", label: "Assembly", isActive: true },
+        { code: "packaging", label: "Packaging", isActive: true },
+      ],
+    });
+    assert(selectDefinitionRes.status === 201, "Select definition olusturulamadi.");
+    const selectDefinition = (await json(selectDefinitionRes)).definition;
+    assertions += 1;
+
+    const invalidCustomValue = await patchProfile(server.baseUrl, standardToken, unitA1.id, {
+      expectedProfileVersion: 3,
+      customFieldValues: { phase3c3_process_temperature: 500 },
+    });
+    assert(invalidCustomValue.status === 400, "Custom numeric max validation reddedilmedi.");
+    const invalidSelectValue = await patchProfile(server.baseUrl, standardToken, unitA1.id, {
+      expectedProfileVersion: 3,
+      customFieldValues: { phase3c3_line_type: "unknown" },
+    });
+    assert(invalidSelectValue.status === 400, "Custom select invalid option reddedilmedi.");
+    const validCustomValue = await patchProfile(server.baseUrl, standardToken, unitA1.id, {
+      expectedProfileVersion: 3,
+      customFieldValues: {
+        phase3c3_process_temperature: 42.5,
+        phase3c3_line_type: "assembly",
+      },
+    });
+    assert(validCustomValue.status === 200, `Custom value save 200 yerine ${validCustomValue.status}`);
+    const validCustomBody = await json(validCustomValue);
+    assert(validCustomBody.profile.profileVersion === 4, "Custom value profileVersion artirmadi.");
+    assert(validCustomBody.customFieldValues.phase3c3_process_temperature === 42.5, "Custom numeric value donmedi.");
+    assertions += 5;
+
+    const usedTypePatch = await patchDefinition(server.baseUrl, adminToken, selectDefinition.id, {
+      expectedDefinitionVersion: selectDefinition.definitionVersion,
+      fieldType: "multi_select",
+    });
+    assert(usedTypePatch.status === 409, "Kullanilmis alan tipi degistirilebildi.");
+    const archiveNumeric = await archiveDefinition(server.baseUrl, adminToken, numericDefinition.id, numericDefinition.definitionVersion);
+    assert(archiveNumeric.status === 200, "Kullanilmis alan archive edilemedi.");
+    const profileAfterArchive = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}`);
+    assert(profileAfterArchive.status === 200, "Archive sonrasi profil okunamadi.");
+    const profileAfterArchiveBody = await json(profileAfterArchive);
+    assert(
+      profileAfterArchiveBody.customFieldDefinitions.some((definition: any) => definition.code === "phase3c3_process_temperature" && definition.isActive === false),
+      "Pasif kullanilmis definition profil GET icinde korunmadi.",
+    );
+    assert(profileAfterArchiveBody.customFieldValues.phase3c3_process_temperature === 42.5, "Pasif alan eski degeri korunmadi.");
+    assertions += 5;
+
+    const requiredBDefinitionRes = await createDefinition(server.baseUrl, superadminToken, {
+      code: "phase3c3_required_metering",
+      label: "Required metering",
+      fieldType: "boolean",
+      isRequiredForPublish: true,
+    }, standardBUser.company_id);
+    assert(requiredBDefinitionRes.status === 201, "Tenant B required custom definition olusturulamadi.");
+    const publishMissingCustom = await patchProfile(server.baseUrl, superadminToken, unitB1.id, {
+      expectedProfileVersion: 0,
+      facilityUseType: "Office",
+      mainActivity: "Tenant B",
+      totalEnclosedAreaM2: 100,
+      dailyOperatingHours: 8,
+      heatingSystemType: "Heat pump",
+      coolingSystemType: "Split",
+      profileStatus: "published",
+    }, standardBUser.company_id);
+    assert(publishMissingCustom.status === 422, "Required custom publish eksigi 422 donmedi.");
+    const publishMissingCustomBody = await json(publishMissingCustom);
+    assert(publishMissingCustomBody.missingFields.includes("phase3c3_required_metering"), "Required custom missingFields icinde yok.");
+    assert(publishMissingCustomBody.missingFieldDetails.some((field: any) => field.kind === "custom" && field.code === "phase3c3_required_metering"), "Required custom missingFieldDetails yok.");
+    const publishWithCustom = await patchProfile(server.baseUrl, superadminToken, unitB1.id, {
+      expectedProfileVersion: 0,
+      facilityUseType: "Office",
+      mainActivity: "Tenant B",
+      totalEnclosedAreaM2: 100,
+      dailyOperatingHours: 8,
+      heatingSystemType: "Heat pump",
+      coolingSystemType: "Split",
+      profileStatus: "published",
+      customFieldValues: { phase3c3_required_metering: "yes" },
+    }, standardBUser.company_id);
+    assert(publishWithCustom.status === 200, "Required custom tamamlaninca publish basarisiz.");
+    const crossTenantCustomCode = await patchProfile(server.baseUrl, standardBToken, unitB1.id, {
+      expectedProfileVersion: 1,
+      customFieldValues: { phase3c3_process_temperature: 1 },
+    });
+    assert(crossTenantCustomCode.status === 400, "Tenant B, tenant A custom kodunu yazabildi.");
+    assertions += 6;
+
     const audits = await pool.query<{
       action: string;
       changes_text: string | null;
@@ -320,7 +549,17 @@ async function main() {
       auditRows.some((row) => Number.isInteger(row.changes?.previousVersion) && Number.isInteger(row.changes?.newVersion)),
       `Audit version metadata yok: ${JSON.stringify(auditRows)}`,
     );
-    assertions += 4;
+    const customAudit = audits.rows.find((row) => row.action === "unit_technical_profile.custom_values_updated" && row.changes_text?.includes("phase3c3_process_temperature"));
+    assert(customAudit, "Custom values audit yok.");
+    assert(!customAudit.changes_text?.includes("42.5"), "Custom values audit ham deger iceriyor.");
+    const definitionAudit = await pool.query<{ action: string }>(
+      `SELECT action FROM audit_events
+       WHERE entity_type='unit_technical_profile_field'
+       ORDER BY occurred_at, id`,
+    );
+    assert(definitionAudit.rows.some((row) => row.action === "unit_technical_profile_field.created"), "Definition create audit yok.");
+    assert(definitionAudit.rows.some((row) => row.action === "unit_technical_profile_field.archived"), "Definition archive audit yok.");
+    assertions += 8;
 
     console.log(JSON.stringify({ ok: true, assertions }, null, 2));
   } finally {

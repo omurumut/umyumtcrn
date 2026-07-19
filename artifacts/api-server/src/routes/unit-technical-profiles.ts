@@ -1,15 +1,21 @@
 import { Router, type Request, type Response } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import {
   companiesTable,
   db,
+  unitTechnicalProfileFieldDefinitionsTable,
   unitTechnicalProfilesTable,
   unitsTable,
 } from "@workspace/db";
 import {
   createDefaultUnitTechnicalProfile,
+  missingRequiredUnitTechnicalProfileCustomFieldsForPublish,
   unitTechnicalProfilePatchRequestSchema,
+  validateUnitTechnicalProfileCustomFieldValues,
+  validateUnitTechnicalProfilePublishMinimum,
+  type UnitTechnicalProfileCustomFieldDefinitionDto,
   type UnitTechnicalProfileDto,
+  type UnitTechnicalProfileValues,
 } from "@workspace/api-zod";
 import { requireAuth } from "../middlewares/auth.js";
 import { changedAuditFields, writeAuditEvent, type AuditAction } from "../lib/audit.js";
@@ -51,6 +57,8 @@ const PROFILE_FIELDS = [
 
 type ProfileField = typeof PROFILE_FIELDS[number];
 type ProfilePatch = Partial<Pick<typeof unitTechnicalProfilesTable.$inferInsert, ProfileField>>;
+type CustomFieldValues = Record<string, unknown>;
+type DefinitionRow = typeof unitTechnicalProfileFieldDefinitionsTable.$inferSelect;
 
 class UnitTechnicalProfileScopeError extends Error {
   status: number;
@@ -176,14 +184,62 @@ function serializeProfile(profile: typeof unitTechnicalProfilesTable.$inferSelec
   };
 }
 
-function responseFor(profile: typeof unitTechnicalProfilesTable.$inferSelect | null, scope: Awaited<ReturnType<typeof resolveScope>>) {
+function serializeDefinition(row: DefinitionRow): UnitTechnicalProfileCustomFieldDefinitionDto {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    code: row.code,
+    label: row.label,
+    description: row.description,
+    fieldType: row.fieldType as UnitTechnicalProfileCustomFieldDefinitionDto["fieldType"],
+    unitLabel: row.unitLabel,
+    options: row.options ?? [],
+    isRequiredForPublish: row.isRequiredForPublish,
+    isActive: row.isActive,
+    sortOrder: row.sortOrder,
+    validationConfig: row.validationConfig ?? {},
+    definitionVersion: row.definitionVersion,
+    createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
+    updatedAt: row.updatedAt.toISOString(),
+    updatedBy: row.updatedBy,
+  };
+}
+
+function profileCustomValues(profile: typeof unitTechnicalProfilesTable.$inferSelect | null): CustomFieldValues {
+  const values = profile?.customValues;
+  return values && typeof values === "object" && !Array.isArray(values) ? values : {};
+}
+
+async function getDefinitionsForProfile(companyId: number, customValues: CustomFieldValues) {
+  const rows = await db.select()
+    .from(unitTechnicalProfileFieldDefinitionsTable)
+    .where(eq(unitTechnicalProfileFieldDefinitionsTable.companyId, companyId))
+    .orderBy(
+      asc(unitTechnicalProfileFieldDefinitionsTable.sortOrder),
+      asc(unitTechnicalProfileFieldDefinitionsTable.label),
+    );
+  return rows
+    .filter((row) => row.isActive || Object.prototype.hasOwnProperty.call(customValues, row.code))
+    .map(serializeDefinition);
+}
+
+async function responseFor(profile: typeof unitTechnicalProfilesTable.$inferSelect | null, scope: Awaited<ReturnType<typeof resolveScope>>) {
+  const customFieldValues = profileCustomValues(profile);
   return {
     profile: serializeProfile(profile, scope.companyId, scope.unitId),
+    customFieldDefinitions: await getDefinitionsForProfile(scope.companyId, customFieldValues),
+    customFieldValues,
     permissions: {
       canEdit: scope.canEdit,
       canPublish: scope.canPublish,
     },
   };
+}
+
+function changedCustomValueCodes(before: CustomFieldValues, after: CustomFieldValues) {
+  const codes = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return [...codes].filter((code) => JSON.stringify(before[code] ?? null) !== JSON.stringify(after[code] ?? null));
 }
 
 function patchValues(parsedBody: Record<string, unknown>): ProfilePatch {
@@ -194,6 +250,49 @@ function patchValues(parsedBody: Record<string, unknown>): ProfilePatch {
     }
   }
   return patch;
+}
+
+function mergedProfileValues(
+  current: UnitTechnicalProfileDto,
+  updates: ProfilePatch,
+): UnitTechnicalProfileValues {
+  const valueFor = <Field extends keyof UnitTechnicalProfileValues>(field: Field): UnitTechnicalProfileValues[Field] =>
+    Object.prototype.hasOwnProperty.call(updates, field)
+      ? (updates as Partial<UnitTechnicalProfileValues>)[field] as UnitTechnicalProfileValues[Field]
+      : current[field];
+
+  return {
+    facilityUseType: valueFor("facilityUseType"),
+    mainActivity: valueFor("mainActivity"),
+    buildingCount: valueFor("buildingCount"),
+    totalEnclosedAreaM2: valueFor("totalEnclosedAreaM2"),
+    heatedAreaM2: valueFor("heatedAreaM2"),
+    cooledAreaM2: valueFor("cooledAreaM2"),
+    openAreaM2: valueFor("openAreaM2"),
+    personnelCount: valueFor("personnelCount"),
+    averageDailyUsers: valueFor("averageDailyUsers"),
+    dailyOperatingHours: valueFor("dailyOperatingHours"),
+    weeklyOperatingDays: valueFor("weeklyOperatingDays"),
+    annualOperatingDays: valueFor("annualOperatingDays"),
+    shiftCount: valueFor("shiftCount"),
+    shiftType: valueFor("shiftType"),
+    seasonalOperationStatus: valueFor("seasonalOperationStatus"),
+    insulationStatus: valueFor("insulationStatus"),
+    heatingSystemType: valueFor("heatingSystemType"),
+    coolingSystemType: valueFor("coolingSystemType"),
+    domesticHotWaterSystem: valueFor("domesticHotWaterSystem"),
+    buildingAutomationStatus: valueFor("buildingAutomationStatus"),
+    compressedAirStatus: valueFor("compressedAirStatus"),
+    steamSystemStatus: valueFor("steamSystemStatus"),
+    generatorStatus: valueFor("generatorStatus"),
+    renewableEnergyStatus: valueFor("renewableEnergyStatus"),
+    mainProcessDescription: valueFor("mainProcessDescription"),
+    energyInfrastructureDescription: valueFor("energyInfrastructureDescription"),
+    knownEnergyIssues: valueFor("knownEnergyIssues"),
+    technicalImprovements: valueFor("technicalImprovements"),
+    plannedInfrastructureChanges: valueFor("plannedInfrastructureChanges"),
+    profileStatus: valueFor("profileStatus"),
+  };
 }
 
 router.get("/unit-technical-profiles/:unitId", requireAuth, async (req, res) => {
@@ -207,7 +306,7 @@ router.get("/unit-technical-profiles/:unitId", requireAuth, async (req, res) => 
         eq(unitTechnicalProfilesTable.unitId, scope.unitId),
       ))
       .limit(1);
-    res.json(responseFor(profile ?? null, scope));
+    res.json(await responseFor(profile ?? null, scope));
   } catch (error) {
     if (handleScopeError(res, error)) return;
     req.log.error(error);
@@ -230,6 +329,7 @@ router.patch("/unit-technical-profiles/:unitId", requireAuth, async (req, res) =
     }
 
     const updates = patchValues(parsed.data);
+    const customFieldPatch = parsed.data.customFieldValues;
     const expectedProfileVersion = parsed.data.expectedProfileVersion;
     const result = await db.transaction(async (tx) => {
       const [unit] = await tx.select({ id: unitsTable.id })
@@ -251,11 +351,38 @@ router.patch("/unit-technical-profiles/:unitId", requireAuth, async (req, res) =
       const now = new Date();
       if (!existing) {
         if (expectedProfileVersion !== 0) return { status: "conflict" as const, profile: null };
+        if (updates.profileStatus === "published") {
+          const merged = mergedProfileValues(createDefaultUnitTechnicalProfile(scope.companyId, scope.unitId), updates);
+          const definitions = await tx.select()
+            .from(unitTechnicalProfileFieldDefinitionsTable)
+            .where(eq(unitTechnicalProfileFieldDefinitionsTable.companyId, scope.companyId));
+          const customValidation = validateUnitTechnicalProfileCustomFieldValues(
+            definitions.map(serializeDefinition),
+            customFieldPatch ?? {},
+          );
+          if (!customValidation.ok) return { status: "custom-validation" as const, error: customValidation.error };
+          const missingStandardFields = validateUnitTechnicalProfilePublishMinimum(merged);
+          const missingCustomFields = missingRequiredUnitTechnicalProfileCustomFieldsForPublish(
+            definitions.map(serializeDefinition),
+            customValidation.value,
+          );
+          if (missingStandardFields.length > 0 || missingCustomFields.length > 0) {
+            return { status: "publish-validation" as const, missingFields: missingStandardFields, missingCustomFields };
+          }
+        }
+        const definitions = await tx.select()
+          .from(unitTechnicalProfileFieldDefinitionsTable)
+          .where(eq(unitTechnicalProfileFieldDefinitionsTable.companyId, scope.companyId));
+        const customValidation = customFieldPatch === undefined
+          ? { ok: true as const, value: {} as CustomFieldValues }
+          : validateUnitTechnicalProfileCustomFieldValues(definitions.map(serializeDefinition), customFieldPatch);
+        if (!customValidation.ok) return { status: "custom-validation" as const, error: customValidation.error };
         const [created] = await tx.insert(unitTechnicalProfilesTable)
           .values({
             companyId: scope.companyId,
             unitId: scope.unitId,
             ...updates,
+            customValues: customValidation.value,
             profileStatus: typeof updates.profileStatus === "string" ? updates.profileStatus : "draft",
             profileVersion: 1,
             createdAt: now,
@@ -280,6 +407,21 @@ router.patch("/unit-technical-profiles/:unitId", requireAuth, async (req, res) =
             newVersion: created.profileVersion,
           },
         });
+        if (Object.keys(customValidation.value).length > 0) {
+          await writeAuditEvent(tx, {
+            request: req,
+            companyId: scope.companyId,
+            unitId: scope.unitId,
+            action: "unit_technical_profile.custom_values_updated",
+            entityType: "unit_technical_profile",
+            entityId: created.id,
+            changes: {
+              changedCodes: Object.keys(customValidation.value),
+              previousVersion: 0,
+              newVersion: created.profileVersion,
+            },
+          });
+        }
         return { status: "ok" as const, profile: created };
       }
 
@@ -287,19 +429,55 @@ router.patch("/unit-technical-profiles/:unitId", requireAuth, async (req, res) =
         return { status: "conflict" as const, profile: existing };
       }
 
+      if (existing.profileStatus !== "published" && updates.profileStatus === "published") {
+        const merged = mergedProfileValues(serializeProfile(existing, scope.companyId, scope.unitId), updates);
+        const definitions = await tx.select()
+          .from(unitTechnicalProfileFieldDefinitionsTable)
+          .where(eq(unitTechnicalProfileFieldDefinitionsTable.companyId, scope.companyId));
+        const existingCustomValues = profileCustomValues(existing);
+        const customValidation = customFieldPatch === undefined
+          ? { ok: true as const, value: existingCustomValues }
+          : validateUnitTechnicalProfileCustomFieldValues(definitions.map(serializeDefinition), customFieldPatch);
+        if (!customValidation.ok) return { status: "custom-validation" as const, error: customValidation.error };
+        const mergedCustomValues = customFieldPatch === undefined ? existingCustomValues : { ...existingCustomValues, ...customValidation.value };
+        const missingStandardFields = validateUnitTechnicalProfilePublishMinimum(merged);
+        const missingCustomFields = missingRequiredUnitTechnicalProfileCustomFieldsForPublish(
+          definitions.map(serializeDefinition),
+          mergedCustomValues,
+        );
+        if (missingStandardFields.length > 0 || missingCustomFields.length > 0) {
+          return { status: "publish-validation" as const, missingFields: missingStandardFields, missingCustomFields };
+        }
+      }
+
+      const definitions = await tx.select()
+        .from(unitTechnicalProfileFieldDefinitionsTable)
+        .where(eq(unitTechnicalProfileFieldDefinitionsTable.companyId, scope.companyId));
+      const existingCustomValues = profileCustomValues(existing);
+      const customValidation = customFieldPatch === undefined
+        ? { ok: true as const, value: {} as CustomFieldValues }
+        : validateUnitTechnicalProfileCustomFieldValues(definitions.map(serializeDefinition), customFieldPatch);
+      if (!customValidation.ok) return { status: "custom-validation" as const, error: customValidation.error };
+      const nextCustomValues = customFieldPatch === undefined
+        ? existingCustomValues
+        : { ...existingCustomValues, ...customValidation.value };
+
       const nextProfile = {
         ...existing,
         ...updates,
+        customValues: nextCustomValues,
         updatedAt: now,
         updatedBy: scope.userId,
         profileVersion: existing.profileVersion + 1,
       };
       const changedFields = Object.keys(changedAuditFields(existing, nextProfile, [...PROFILE_FIELDS]));
-      if (changedFields.length === 0) return { status: "ok" as const, profile: existing };
+      const changedCustomCodes = changedCustomValueCodes(existingCustomValues, nextCustomValues);
+      if (changedFields.length === 0 && changedCustomCodes.length === 0) return { status: "ok" as const, profile: existing };
 
       const [updated] = await tx.update(unitTechnicalProfilesTable)
         .set({
           ...updates,
+          customValues: nextCustomValues,
           profileVersion: existing.profileVersion + 1,
           updatedAt: now,
           updatedBy: scope.userId,
@@ -327,6 +505,21 @@ router.patch("/unit-technical-profiles/:unitId", requireAuth, async (req, res) =
           newVersion: updated.profileVersion,
         },
       });
+      if (changedCustomCodes.length > 0) {
+        await writeAuditEvent(tx, {
+          request: req,
+          companyId: scope.companyId,
+          unitId: scope.unitId,
+          action: "unit_technical_profile.custom_values_updated",
+          entityType: "unit_technical_profile",
+          entityId: updated.id,
+          changes: {
+            changedCodes: changedCustomCodes,
+            previousVersion: existing.profileVersion,
+            newVersion: updated.profileVersion,
+          },
+        });
+      }
       return { status: "ok" as const, profile: updated };
     });
 
@@ -345,11 +538,32 @@ router.patch("/unit-technical-profiles/:unitId", requireAuth, async (req, res) =
       res.status(409).json({
         error: "Birim teknik profili baska bir oturum tarafindan guncellendi. Guncel bilgileri yeniden yukleyin.",
         profile: serializeProfile(current ?? null, scope.companyId, scope.unitId),
+        customFieldDefinitions: await getDefinitionsForProfile(scope.companyId, profileCustomValues(current ?? null)),
+        customFieldValues: profileCustomValues(current ?? null),
+      });
+      return;
+    }
+    if (result.status === "custom-validation") {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    if (result.status === "publish-validation") {
+      const missingCustomFields = result.missingCustomFields ?? [];
+      res.status(422).json({
+        error: "Teknik profil yayinlamak icin minimum alanlar tamamlanmalidir.",
+        missingFields: [
+          ...result.missingFields,
+          ...missingCustomFields.map((field) => field.code),
+        ],
+        missingFieldDetails: [
+          ...result.missingFields.map((code) => ({ kind: "standard" as const, code })),
+          ...missingCustomFields,
+        ],
       });
       return;
     }
 
-    res.json(responseFor(result.profile, scope));
+    res.json(await responseFor(result.profile, scope));
   } catch (error) {
     if (handleScopeError(res, error)) return;
     req.log.error(error);

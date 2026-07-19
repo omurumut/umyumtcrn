@@ -29,6 +29,7 @@ const REQUIRED_TABLES = [
   "energy_performance_results",
   "energy_review_records",
   "unit_technical_profiles",
+  "unit_technical_profile_field_definitions",
 ] as const;
 const REQUIRED_INDEXES = [
   "wdd_station_key_year_month_official_idx",
@@ -57,6 +58,8 @@ const REQUIRED_INDEXES = [
   "audit_events_request_id_idx",
   "unit_technical_profiles_unit_id_unique",
   "unit_technical_profiles_company_unit_idx",
+  "utp_field_definitions_company_code_unique",
+  "utp_field_definitions_company_active_sort_idx",
 ] as const;
 
 interface JournalEntry {
@@ -296,6 +299,24 @@ async function schemaSummary(queryable: Queryable): Promise<SchemaSummary> {
   const targetParentColumns = new Set(targetParentColumnsResult.rows.map((row) => row.column_name));
   assert(targetParentColumns.has("seu_assessment_item_id"), "energy_targets.seu_assessment_item_id fresh şemada yok.");
   assert(targetParentColumns.has("baseline_id"), "energy_targets.baseline_id fresh şemada yok.");
+
+  const technicalProfileColumnsResult = await queryable.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'unit_technical_profiles'
+       AND column_name IN ('custom_values_json')`,
+  );
+  const technicalProfileColumns = new Set(technicalProfileColumnsResult.rows.map((row) => row.column_name));
+  assert(technicalProfileColumns.has("custom_values_json"), "unit_technical_profiles.custom_values_json fresh semada yok.");
+
+  const technicalProfileDefinitionColumnsResult = await queryable.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'unit_technical_profile_field_definitions'
+       AND column_name IN ('company_id','code','field_type','options_json','validation_config_json','definition_version','is_active')`,
+  );
+  const technicalProfileDefinitionColumns = new Set(technicalProfileDefinitionColumnsResult.rows.map((row) => row.column_name));
+  for (const column of ["company_id", "code", "field_type", "options_json", "validation_config_json", "definition_version", "is_active"]) {
+    assert(technicalProfileDefinitionColumns.has(column), `unit_technical_profile_field_definitions.${column} fresh semada yok.`);
+  }
 
   const companiesResult = await queryable.query<{
     total: string;

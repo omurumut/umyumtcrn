@@ -33,6 +33,7 @@ import {
 import { AlertCircle, ArrowDown, ArrowUp, Building2, FileText, ImageIcon, Info, RefreshCw, Save, Trash2, Upload } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
+import { TechnicalProfileFieldsSettings } from "@/components/company-settings/TechnicalProfileFieldsSettings";
 import { useToast } from "@/hooks/use-toast";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -1306,6 +1307,7 @@ export default function CompanySettings() {
           <TabsTrigger data-testid="company-localization-tab" value="localization">Yerelleştirme ve Gösterim</TabsTrigger>
           <TabsTrigger data-testid="company-brand-tab" value="brand">Kurumsal Kimlik</TabsTrigger>
           <TabsTrigger data-testid="company-reports-tab" value="reports">Raporlar</TabsTrigger>
+          <TabsTrigger data-testid="company-technical-profile-fields-tab" value="technical-profile-fields">Teknik Profil Alanlari</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="space-y-6">
@@ -2044,6 +2046,10 @@ export default function CompanySettings() {
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        <TabsContent value="technical-profile-fields" className="space-y-6">
+          <TechnicalProfileFieldsSettings companyId={effectiveCompanyId} />
         </TabsContent>
       </Tabs>
     </div>

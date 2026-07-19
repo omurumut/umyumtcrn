@@ -38,6 +38,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "drizzle-orm": "catalog:",
     "exceljs": "^4.4.0",
