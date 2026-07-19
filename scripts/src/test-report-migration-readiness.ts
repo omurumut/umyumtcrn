@@ -26,9 +26,10 @@ async function prepareMigrationsThrough0027(sourceFolder: string, targetFolder: 
   await unlink(join(targetFolder, "0029_report_generation_snapshots.sql"));
   await unlink(join(targetFolder, "0028_company_report_settings.sql"));
   await unlink(join(targetFolder, "0030_report_archives.sql"));
+  await unlink(join(targetFolder, "0031_report_archive_retention.sql"));
   const journalPath = join(targetFolder, "meta", "_journal.json");
   const journal = JSON.parse(await readFile(journalPath, "utf8")) as Journal;
-  journal.entries = journal.entries.filter((entry) => !["0028_company_report_settings", "0029_report_generation_snapshots", "0030_report_archives"].includes(entry.tag));
+  journal.entries = journal.entries.filter((entry) => !["0028_company_report_settings", "0029_report_generation_snapshots", "0030_report_archives", "0031_report_archive_retention"].includes(entry.tag));
   await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
 }
 
@@ -54,8 +55,8 @@ async function syncSerial(table: string, column = "id"): Promise<void> {
 }
 
 async function assertCurrentConstraints(): Promise<void> {
-  assert(await migrationCount() === 30, "Migration sayısı 30 değil.");
-  assert(await tableCount() === 43, "Tablo sayısı 43 değil.");
+  assert(await migrationCount() === 31, "Migration sayısı 31 değil.");
+  assert(await tableCount() === 44, "Tablo sayısı 44 değil.");
   await syncSerial("companies");
   const company = await pool.query<{ id: number }>("INSERT INTO companies(name, subdomain) VALUES('[F3B4] Constraint A', 'f3b4-constraint-a') RETURNING id");
   const companyId = company.rows[0]!.id;
@@ -98,6 +99,16 @@ async function assertCurrentConstraints(): Promise<void> {
   await expectRejected("duplicate section", "INSERT INTO company_report_section_settings(company_id, report_type, section_code, is_visible, display_order) VALUES($1, 'energy_targets_management', 'vap_portfolio', true, 50)", [companyId]);
   await expectRejected("invalid section code", "INSERT INTO company_report_section_settings(company_id, report_type, section_code, is_visible, display_order) VALUES($1, 'energy_targets_management', 'Bad-Section', true, 50)", [companyId]);
   await expectRejected("invalid display order", "INSERT INTO company_report_section_settings(company_id, report_type, section_code, is_visible, display_order) VALUES($1, 'energy_targets_management', 'progress_chronology', true, 0)", [companyId]);
+
+  await pool.query(
+    "INSERT INTO company_report_retention_settings(company_id, retention_enabled, completed_retention_days, failed_retention_days, deleted_grace_days, settings_version, updated_by) VALUES($1, false, 3650, 90, 30, 1, $2)",
+    [companyId, userId],
+  );
+  await expectRejected("duplicate retention settings", "INSERT INTO company_report_retention_settings(company_id) VALUES($1)", [companyId]);
+  await expectRejected("too short completed retention", "INSERT INTO company_report_retention_settings(company_id, completed_retention_days) VALUES($1, 30)", [companyId]);
+  await expectRejected("too short failed retention", "INSERT INTO company_report_retention_settings(company_id, failed_retention_days) VALUES($1, 1)", [companyId]);
+  await expectRejected("too short deleted grace", "INSERT INTO company_report_retention_settings(company_id, deleted_grace_days) VALUES($1, 1)", [companyId]);
+  await expectRejected("zero retention version", "INSERT INTO company_report_retention_settings(company_id, settings_version) VALUES($1, 0)", [companyId]);
 
   await expectRejected("invalid snapshot status", "INSERT INTO report_generation_snapshots(company_id, unit_id, report_type, status, storage_status, filename, settings_snapshot_json, generated_by) VALUES($1, $2, 'energy_targets_management', 'done', 'not_stored', 'x.pdf', '{}', $3)", [companyId, unitId, userId]);
   await expectRejected("invalid snapshot report type", "INSERT INTO report_generation_snapshots(company_id, unit_id, report_type, status, storage_status, filename, settings_snapshot_json, generated_by) VALUES($1, $2, 'bad', 'generating', 'not_stored', 'x.pdf', '{}', $3)", [companyId, unitId, userId]);
@@ -144,8 +155,8 @@ async function assertPopulatedUpgrade(migrationsFolder: string): Promise<void> {
     await pool.query("INSERT INTO audit_events(request_id, actor_user_id, actor_role, company_id, unit_id, action, entity_type, entity_id, outcome, metadata_json) VALUES('f3b4-before', $1, 'admin', $2, $3, 'user.update', 'report', $4, 'success', '{\"phase\":\"before-0028\"}')", [userA.rows[0]!.id, companyAId, unitA.rows[0]!.id, String(legacyReport.rows[0]!.id)]);
 
     await runMigrations(resolve(migrationsFolder));
-    assert(await migrationCount() === 30, "Upgrade sonrası migration sayısı 30 değil.");
-    assert(await tableCount() === 43, "Upgrade sonrası tablo sayısı 43 değil.");
+    assert(await migrationCount() === 31, "Upgrade sonrası migration sayısı 31 değil.");
+    assert(await tableCount() === 44, "Upgrade sonrası tablo sayısı 44 değil.");
     const preserved = await pool.query<{ reports: string; audit: string; consumption: string }>(
       "SELECT (SELECT count(*)::text FROM reports WHERE id=$1) reports, (SELECT count(*)::text FROM audit_events WHERE request_id='f3b4-before') audit, (SELECT count(*)::text FROM consumption WHERE company_id=$2) consumption",
       [legacyReport.rows[0]!.id, companyAId],
@@ -158,6 +169,8 @@ async function assertPopulatedUpgrade(migrationsFolder: string): Promise<void> {
     await pool.query("INSERT INTO report_archives(company_id, unit_id, report_type, report_year, title, output_name, content_type, size_bytes, checksum_sha256, storage_provider, storage_key, status, generated_by, snapshot_id, legacy_report_id) VALUES($1, $2, 'annual_energy_performance', 2026, 'Tenant A Annual', 'tenant-a.html', 'text/html; charset=utf-8', 64, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'local', 'companies/1/reports/annual_energy_performance/2026/1/tenant-a.html', 'completed', $3, $4, $5)", [companyAId, unitA.rows[0]!.id, userA.rows[0]!.id, snapshot.rows[0]!.id, legacyReport.rows[0]!.id]);
     const tenantMix = await pool.query<{ count: string }>("SELECT count(*)::text FROM report_generation_snapshots WHERE company_id=$1", [companyBId]);
     assert(tenantMix.rows[0]?.count === "0", "Tenant B üzerinde beklenmeyen snapshot oluştu.");
+    const retentionBackfill = await pool.query<{ count: string }>("SELECT count(*)::text FROM company_report_retention_settings WHERE company_id IN ($1, $2)", [companyAId, companyBId]);
+    assert(retentionBackfill.rows[0]?.count === "0", "Retention settings destructive backfill yapmamalı.");
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -176,7 +189,7 @@ async function main(): Promise<void> {
     migrations: await migrationCount(),
     tableCount: await tableCount(),
     currentConstraintChecks: "passed",
-    populatedUpgrade0027To0030: "passed",
+    populatedUpgrade0027To0031: "passed",
   }));
 }
 

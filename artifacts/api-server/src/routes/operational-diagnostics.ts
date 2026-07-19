@@ -136,6 +136,24 @@ router.get("/admin/report-snapshots/diagnostics", requireAuth, async (req, res) 
       staleParams,
     );
 
+    const archiveHealth = await pool.query<{
+      purge_failed: string;
+      stale_purging: string;
+      retention_expired: string;
+      deleted_grace_expired: string;
+    }>(
+      `
+        SELECT
+          count(*) FILTER (WHERE status = 'purge_failed')::text AS purge_failed,
+          count(*) FILTER (WHERE status = 'purging' AND updated_at < now() - ($2::int * interval '1 minute'))::text AS stale_purging,
+          count(*) FILTER (WHERE status IN ('completed','failed') AND retention_expires_at IS NOT NULL AND retention_expires_at <= now())::text AS retention_expired,
+          count(*) FILTER (WHERE status = 'deleted' AND purge_eligible_at IS NOT NULL AND purge_eligible_at <= now())::text AS deleted_grace_expired
+        FROM report_archives
+        WHERE company_id = $1 ${reportTypeClause}
+      `,
+      params,
+    );
+
     res.json({
       status: "ok",
       staleMinutes,
@@ -164,6 +182,12 @@ router.get("/admin/report-snapshots/diagnostics", requireAuth, async (req, res) 
         failedAt: row.failed_at?.toISOString() ?? null,
         failureCategory: safeFailureCategory(row.failure_reason),
       })),
+      archives: {
+        purgeFailedCount: Number(archiveHealth.rows[0]?.purge_failed ?? 0),
+        stalePurgingCount: Number(archiveHealth.rows[0]?.stale_purging ?? 0),
+        retentionExpiredCount: Number(archiveHealth.rows[0]?.retention_expired ?? 0),
+        deletedGraceExpiredCount: Number(archiveHealth.rows[0]?.deleted_grace_expired ?? 0),
+      },
     });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("invalid_")) {

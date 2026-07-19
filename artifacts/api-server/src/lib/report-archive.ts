@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { db, reportArchivesTable, reportGenerationSnapshotsTable } from "@workspace/db";
 import { writeBestEffortAudit } from "./audit.js";
 import { calculateSha256, reportStorage } from "./report-storage.js";
+import { calculateRetentionExpiresAt, getReportRetentionSettings } from "./report-retention.js";
 
 export type ArchiveReportType = "annual_energy_performance" | "energy_targets_management" | "energy_performance_monitoring";
 export type ArchiveContentType = "text/html; charset=utf-8" | "application/pdf";
@@ -157,6 +158,7 @@ export async function completeReportArchive(input: CompleteArchiveInput): Promis
     if (metadata.contentLength !== input.content.length || metadata.checksumSha256 !== checksumSha256) {
       throw new Error("storage_integrity_mismatch");
     }
+    const completedAt = new Date();
     await db.update(reportArchivesTable)
       .set({
         status: "completed",
@@ -164,8 +166,14 @@ export async function completeReportArchive(input: CompleteArchiveInput): Promis
         storageKey,
         sizeBytes: metadata.contentLength,
         checksumSha256,
-        completedAt: new Date(),
-        updatedAt: new Date(),
+        completedAt,
+        retentionExpiresAt: calculateRetentionExpiresAt({
+          status: "completed",
+          completedAt,
+          generatedAt: completedAt,
+          settings: await getReportRetentionSettings(input.companyId),
+        }),
+        updatedAt: completedAt,
       })
       .where(and(eq(reportArchivesTable.id, input.archiveId), eq(reportArchivesTable.companyId, input.companyId)));
     await db.update(reportGenerationSnapshotsTable)
@@ -199,12 +207,17 @@ export async function completeReportArchive(input: CompleteArchiveInput): Promis
 export async function failReportArchive(input: FailArchiveInput): Promise<void> {
   if (input.storageKey) await reportStorage.delete(input.storageKey).catch(() => undefined);
   if (input.archiveId !== null) {
+    const now = new Date();
+    const settings = input.companyId ? await getReportRetentionSettings(input.companyId) : null;
     await db.update(reportArchivesTable)
       .set({
         status: "failed",
-        failedAt: new Date(),
+        failedAt: now,
         failureCategory: input.failureCategory.slice(0, 80),
-        updatedAt: new Date(),
+        retentionExpiresAt: settings && input.companyId
+          ? calculateRetentionExpiresAt({ status: "failed", failedAt: now, generatedAt: now, settings })
+          : null,
+        updatedAt: now,
       })
       .where(eq(reportArchivesTable.id, input.archiveId));
   }

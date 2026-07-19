@@ -26,6 +26,7 @@
     "test:mgm-file-import-guard": "pnpm --filter @workspace/scripts run test:mgm-file-import-guard",
     "test:operational-diagnostics": "pnpm --filter @workspace/scripts run test:operational-diagnostics",
     "test:report-migration-readiness": "pnpm --filter @workspace/scripts run test:report-migration-readiness",
+    "test:report-archive-retention": "pnpm --filter @workspace/scripts run test:report-archive-retention",
     "test:report-storage-s3": "pnpm --filter @workspace/scripts run test:report-storage-s3",
     "test:report-storage-s3-smoke": "pnpm --filter @workspace/scripts run test:report-storage-s3-smoke",
     "test:proxy-pool": "pnpm --filter @workspace/scripts run test:proxy-pool",

@@ -45,7 +45,7 @@ Beklenen akis:
 
 Snapshot JSON'u karar kaydidir; tam HTML, data URL, PDF binary veya buyuk veri seti saklamaz. Completed kayitlar uygulama tarafindan immutable kabul edilir. Faz 4A'dan sonra yeni rapor binary'leri `reports.download_url` icinde saklanmaz; arama ve indirme icin `report_archives` kullanilir. Annual HTML response'u geriye donuk e2e/istemci uyumu icin gecici `dataUrl` dondurur, ancak bu deger DB'ye yazilmaz.
 
-## Migration 0028/0029/0030
+## Migration 0028/0029/0030/0031
 
 `0028_company_report_settings.sql` su tablolari ekler:
 
@@ -62,6 +62,13 @@ Snapshot JSON'u karar kaydidir; tam HTML, data URL, PDF binary veya buyuk veri s
 - `report_archives`
 - `report_generation_snapshots.storage_status` icin `stored` ve `storage_failed` degerleri
 - tenant, status, generated date ve storage key indexleri
+
+`0031_report_archive_retention.sql` su degisiklikleri ekler:
+
+- `company_report_retention_settings`
+- `report_archives` lifecycle kolonlari: `deleted_at`, `deleted_by`, `delete_reason`, `purge_eligible_at`, `purged_at`, `purged_by`, `purge_failure_category`, `retention_expires_at`, `deletion_locked`, `previous_status`, `lifecycle_version`
+- `deleted`, `purging`, `purged`, `purge_failed` status degerleri
+- retention ve purge aday sorgulari icin tenant/status/date indexleri
 
 Production oncesi disposable dry-run zorunludur:
 
@@ -83,16 +90,17 @@ Bu komutlar production DB kullanmaz; `test-db.ts` tarafindan dogrulanan localhos
 5. `0028_company_report_settings.sql` migration'ini uygula.
 6. `0029_report_generation_snapshots.sql` migration'ini uygula.
 7. `0030_report_archives.sql` migration'ini uygula.
-8. Constraint ve indexleri dogrula.
-9. Report storage provider env'lerini dogrula.
-10. Backend deploy et.
-11. Frontend deploy et.
-12. Settings API smoke test yap.
-13. Uc rapor turu icin smoke test yap.
-14. Archive list/download smoke test yap.
-15. Audit event, snapshot ve archive insert kontrolu yap.
-16. Monitoring izle.
-17. Rollback veya devam kararini ver.
+8. `0031_report_archive_retention.sql` migration'ini uygula.
+9. Constraint ve indexleri dogrula.
+10. Report storage provider env'lerini dogrula.
+11. Backend deploy et.
+12. Frontend deploy et.
+13. Settings API smoke test yap.
+14. Uc rapor turu icin smoke test yap.
+15. Archive list/download/delete/restore smoke test yap.
+16. Audit event, snapshot ve archive insert kontrolu yap.
+17. Monitoring izle.
+18. Rollback veya devam kararini ver.
 
 ## Report Archive Storage
 
@@ -141,6 +149,43 @@ Bu komut varsayilan `skipped: not_configured` sonucuyla cikar. Remote write yaln
 
 Legacy `reports.download_url` icinde daha once saklanmis data URL kayitlari destructive migration ile tasinmadi. Eski kayitlar eski history ekraninda kalabilir; yeni raporlar archive tablosundan indirilir.
 
+## Retention, Delete, Restore ve Purge Lifecycle
+
+Faz 4C retention modeli tenant-scoped ve varsayilan kapali gelir. Yeni sirket kaydi olmadiginda effective default:
+
+- `retentionEnabled=false`
+- `completedRetentionDays=3650`
+- `failedRetentionDays=90`
+- `deletedGraceDays=30`
+- `automaticCleanupAllowed=false`
+
+Bounds bilerek destructive olmayan sekilde genistir: completed 365-36500 gun, failed 30-3650 gun, deleted grace 7-365 gun. Retention kapaliyken completed/failed archive kayitlari retention nedeniyle purge adayi sayilmaz. Soft-delete grace ayari retention kapali olsa bile manuel silinen kayitlarin purge eligible tarihini belirler.
+
+Expiry materialized davranir. Archive `completed` veya `failed` oldugunda o andaki company policy okunur ve `retention_expires_at` hesaplanir. Sonradan policy degisirse eski archive kayitlari otomatik recalculation yapmaz; ayrica recalculation operasyonu sonraki faza birakildi. Tum gun hesabi UTC epoch millisecond uzerinden deterministic yapilir.
+
+Soft-delete storage object'i silmez. `DELETE /api/reports/archive/:id` yalniz admin/superadmin icindir, `completed` ve `failed` kayitlari `deleted` durumuna alir, `previous_status`, `deleted_at`, `deleted_by`, `delete_reason` ve `purge_eligible_at` yazar. `kontrol_admin` ve standard user mutate edemez. Download yalniz `completed` icin aciktir; `deleted`, `purging`, `purged`, `purge_failed` ve `failed` indirilemez.
+
+Restore `POST /api/reports/archive/:id/restore` ile yalniz `deleted` kayit icin calisir. Storage object `exists` kontrolu gecmeden restore yapilmaz; object eksikse missing-object diagnostics ile gorunur. Restore eski guvenli statuye (`completed` veya `failed`) doner ve soft-delete timestamp alanlarini temizler; audit history korunur.
+
+Purge iki kontrollu yoldan calisir:
+
+- Tek kayit: `POST /api/reports/archive/:id/purge`, explicit `ack=PURGE_ARCHIVE_<id>` ister.
+- Batch ops: `pnpm --filter @workspace/scripts run report-archive-cleanup -- --company-id <id>` varsayilan dry-run calisir.
+
+Purge once DB status claim yapar, sonra storage delete calisir, sonra tombstone kaydi `purged` olur. DB row hard-delete edilmez. Storage hatasinda status `purge_failed` ve guvenli failure category yazilir. `deletion_locked=true` kayitlar silme/purge icin reddedilir; tam legal hold UI sonraki faz kapsamidir.
+
+Batch execute icin guard'lar:
+
+```powershell
+pnpm.cmd --filter @workspace/scripts run report-archive-cleanup -- --company-id 1 --execute --ack EXECUTE_REPORT_ARCHIVE_CLEANUP_1 --max-count 25 --max-bytes 52428800
+```
+
+Remote DB write icin ek olarak `REPORT_ARCHIVE_CLEANUP_REMOTE_ACK=EXECUTE_REPORT_ARCHIVE_CLEANUP_<companyId>` gerekir. Production'da bu komut yalniz backup/PITR, storage readiness ve aday plan review tamamlandiktan sonra calistirilmelidir. Bu fazda cron, scheduler, retry queue veya nightly cleanup yoktur.
+
+Missing-object diagnostics `GET /api/reports/archive/diagnostics/missing` ile DB adaylari uzerinde bounded `exists` kontrolu yapar; full bucket scan yoktur. Orphan diagnostics `GET /api/reports/archive/diagnostics/orphans` ile yalniz `companies/<companyId>/reports/` prefix'i altinda bounded provider listing kullanir, object identifier hash/redacted doner, default davranis dry-run/read-only'dir. Orphan cleanup execute bu fazda UI veya API olarak acilmamistir.
+
+Backup/restore notu: DB backup tek basina storage object'lerini geri getirmez. Object storage versioning ve bucket lifecycle korunumu tavsiye edilir. DB restore sonrasi missing-object diagnostics ve rapor archive smoke calistirilmalidir.
+
 ## Smoke Testler
 
 - Login ve tenant secimi.
@@ -151,6 +196,9 @@ Legacy `reports.download_url` icinde daha once saklanmis data URL kayitlari dest
 - Energy performance PDF uretimi ve tenant scope dogrulamasi.
 - Archive listesinde yalniz kullanicinin tenant/unit kapsamindaki raporlarin gorunmesi.
 - Archive download endpoint'inin completed olmayan veya baska tenant'a ait kayitlari reddetmesi.
+- Archive soft-delete sonrasi kaydin varsayilan listeden cikmasi ve download'un 409 donmesi.
+- Deleted archive restore icin storage object `exists` kontrolunun gecmesi.
+- Purge dry-run planinin storage key, bucket veya endpoint sizdirmamasi.
 - Indirme audit event'inin storage key, local path veya bucket bilgisi icermemesi.
 - Standard kullanicinin kendi unit scope disina cikamamasi.
 - Superadmin icin explicit company context zorunlulugu.
@@ -181,4 +229,4 @@ Faz 3D itibariyla operasyonel, read-only diagnostics icin `GET /api/admin/report
 - Otomatik stale-generating cleanup/retry yok.
 - Renderer crash ve completed update failure icin daha hedefli fault-injection testleri eklenebilir.
 - Snapshot JSON boyutu icin DB check constraint yok; helper'lar buyuk binary/HTML saklamayacak sekilde sinirli veri yazar.
-- Retention policy, orphan cleanup job, multipart upload esigi, scheduled deletion ve customer-managed encryption key sonraki operasyonel faz kapsamidir.
+- Automatic scheduler, retry queue, orphan cleanup execution UI, multipart upload esigi ve customer-managed encryption key sonraki operasyonel faz kapsamidir.

@@ -85,6 +85,25 @@ class FakeS3Client implements ReportS3Client {
       this.objects.delete(key);
       return {};
     }
+    if (name === "ListObjectsV2Command") {
+      const prefix = String(command.input.Prefix ?? "");
+      const maxKeys = Number(command.input.MaxKeys ?? 1000);
+      const continuationToken = typeof command.input.ContinuationToken === "string" ? command.input.ContinuationToken : null;
+      const keys = [...this.objects.keys()].filter(candidate => candidate.startsWith(prefix)).sort((a, b) => a.localeCompare(b));
+      const foundStart = continuationToken ? keys.findIndex(candidate => candidate > continuationToken) : 0;
+      const start = foundStart < 0 ? keys.length : foundStart;
+      const page = keys.slice(start, start + maxKeys);
+      const next = page.length === maxKeys && keys[start + maxKeys] ? page[page.length - 1] : undefined;
+      return {
+        Contents: page.map(pageKey => ({
+          Key: pageKey,
+          Size: this.objects.get(pageKey)!.body.length,
+          LastModified: new Date("2026-01-01T00:00:00.000Z"),
+        })),
+        IsTruncated: next !== undefined,
+        NextContinuationToken: next,
+      };
+    }
     throw new Error(`Unexpected command: ${name}`);
   }
 }
@@ -103,6 +122,7 @@ async function main(): Promise<void> {
       get(key: string): Promise<{ checksumSha256: string; stream: Readable }>;
       delete(key: string): Promise<void>;
       exists(key: string): Promise<boolean>;
+      list(input: { prefix: string; continuationToken?: string | null; maxKeys: number }): Promise<{ objects: Array<{ key: string; sizeBytes: number; lastModified: Date | null }>; nextContinuationToken: string | null; truncated: boolean }>;
       checkReadinessDetails?(): Promise<{ status: string; category?: string }>;
     };
     normalizeReportStoragePrefix(value: string | undefined): string;
@@ -173,6 +193,26 @@ async function main(): Promise<void> {
   assert(put.checksumSha256.length === 64, "Put checksum missing.");
   assert(fake.objects.has(`env-a/${key}`), "Prefix was not applied to S3 object key.");
   assert(await storage.exists(key), "Exists should return true.");
+  const secondKey = "companies/1/reports/annual/2026/2/report.html";
+  await storage.put({ key: secondKey, content: Buffer.from("<!doctype html><html><body>two</body></html>", "utf8"), contentType: "text/html; charset=utf-8" });
+  const listed = await storage.list({ prefix: "companies/1/reports/", maxKeys: 1 });
+  assert(listed.objects.length === 1 && listed.objects[0]?.key === key && listed.truncated === true && listed.nextContinuationToken === `env-a/${key}`, "S3 list first page mismatch.");
+  const listedSecondPage = await storage.list({ prefix: "companies/1/reports/", maxKeys: 1, continuationToken: listed.nextContinuationToken });
+  assert(listedSecondPage.objects.length === 1 && listedSecondPage.objects[0]?.key === secondKey && listedSecondPage.truncated === false, "S3 list continuation mismatch.");
+  assert(listed.objects[0]?.sizeBytes === content.length && listed.objects[0]?.lastModified instanceof Date, "S3 list metadata mismatch.");
+  for (const invalidListInput of [
+    { prefix: "", maxKeys: 10 },
+    { prefix: "../", maxKeys: 10 },
+    { prefix: "companies\\1\\reports\\", maxKeys: 10 },
+    { prefix: "companies/1/reports/", maxKeys: 1001 },
+  ]) {
+    try {
+      await storage.list(invalidListInput);
+      throw new Error("Invalid list input accepted.");
+    } catch (error) {
+      assertStorageError(error, "storage_config_invalid");
+    }
+  }
   const got = await storage.get(key);
   assert((await readAll(got.stream)).equals(content), "Downloaded stream content mismatch.");
   assert(got.checksumSha256 === put.checksumSha256, "Downloaded checksum mismatch.");
@@ -197,7 +237,7 @@ async function main(): Promise<void> {
   const readiness = await storage.checkReadinessDetails?.();
   assert(readiness?.status === "fail" && readiness.category === "storage_access_denied", "Readiness access denied mapping failed.");
 
-  console.log(JSON.stringify({ s3ProviderScenarios: 18, network: "not_used" }));
+  console.log(JSON.stringify({ s3ProviderScenarios: 27, network: "not_used" }));
 }
 
 main().catch((error: unknown) => {

@@ -186,6 +186,26 @@ export const insertCompanyReportSectionSettingsSchema = createInsertSchema(compa
 export type InsertCompanyReportSectionSettings = z.infer<typeof insertCompanyReportSectionSettingsSchema>;
 export type CompanyReportSectionSettings = typeof companyReportSectionSettingsTable.$inferSelect;
 
+export const companyReportRetentionSettingsTable = pgTable("company_report_retention_settings", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  retentionEnabled: boolean("retention_enabled").notNull().default(false),
+  completedRetentionDays: integer("completed_retention_days").notNull().default(3650),
+  failedRetentionDays: integer("failed_retention_days").notNull().default(90),
+  deletedGraceDays: integer("deleted_grace_days").notNull().default(30),
+  automaticCleanupAllowed: boolean("automatic_cleanup_allowed").notNull().default(false),
+  settingsVersion: integer("settings_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyUnique: uniqueIndex("company_report_retention_settings_company_id_unique").on(table.companyId),
+}));
+
+export const insertCompanyReportRetentionSettingsSchema = createInsertSchema(companyReportRetentionSettingsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompanyReportRetentionSettings = z.infer<typeof insertCompanyReportRetentionSettingsSchema>;
+export type CompanyReportRetentionSettings = typeof companyReportRetentionSettingsTable.$inferSelect;
+
 export const reportGenerationSnapshotsTable = pgTable("report_generation_snapshots", {
   id: serial("id").primaryKey(),
   companyId: integer("company_id").references(() => companiesTable.id).notNull(),
@@ -230,6 +250,17 @@ export const reportArchivesTable = pgTable("report_archives", {
   completedAt: timestamp("completed_at"),
   failedAt: timestamp("failed_at"),
   failureCategory: text("failure_category"),
+  deletedAt: timestamp("deleted_at"),
+  deletedBy: integer("deleted_by").references(() => usersTable.id, { onDelete: "set null" }),
+  deleteReason: text("delete_reason"),
+  purgeEligibleAt: timestamp("purge_eligible_at"),
+  purgedAt: timestamp("purged_at"),
+  purgedBy: integer("purged_by").references(() => usersTable.id, { onDelete: "set null" }),
+  purgeFailureCategory: text("purge_failure_category"),
+  retentionExpiresAt: timestamp("retention_expires_at"),
+  deletionLocked: boolean("deletion_locked").notNull().default(false),
+  previousStatus: text("previous_status"),
+  lifecycleVersion: integer("lifecycle_version").notNull().default(1),
   snapshotId: integer("snapshot_id").references(() => reportGenerationSnapshotsTable.id, { onDelete: "set null" }),
   legacyReportId: integer("legacy_report_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -237,6 +268,8 @@ export const reportArchivesTable = pgTable("report_archives", {
 }, (table) => ({
   companyGeneratedIndex: index("report_archives_company_generated_idx").on(table.companyId, table.generatedAt),
   companyReportStatusIndex: index("report_archives_company_report_status_idx").on(table.companyId, table.reportType, table.status, table.generatedAt),
+  companyRetentionIndex: index("report_archives_company_retention_idx").on(table.companyId, table.status, table.retentionExpiresAt),
+  companyPurgeEligibleIndex: index("report_archives_company_purge_eligible_idx").on(table.companyId, table.status, table.purgeEligibleAt),
   snapshotIndex: index("report_archives_snapshot_idx").on(table.snapshotId),
   storageKeyUnique: uniqueIndex("report_archives_storage_key_unique").on(table.storageKey),
 }));

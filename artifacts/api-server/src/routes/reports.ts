@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { pipeline } from "node:stream/promises";
-import { db, companiesTable, reportsTable, reportGenerationSnapshotsTable, reportArchivesTable, usersTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
+import { db, pool, companiesTable, reportsTable, reportGenerationSnapshotsTable, reportArchivesTable, usersTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
 import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc, count, ilike } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { renderHtmlToPdf, safePdfFilename } from "../lib/pdf-render.js";
@@ -32,6 +32,15 @@ import {
 } from "../lib/annual-energy-report-snapshot.js";
 import { createReportArchiveRecord, completeReportArchive, failReportArchive, sanitizeArchiveFilename, type ArchiveReportType } from "../lib/report-archive.js";
 import { ReportStorageError, reportStorage } from "../lib/report-storage.js";
+import {
+  archiveDownloadable,
+  archiveIdFromStorageKey,
+  calculatePurgeEligibleAt,
+  companyReportPrefix,
+  getReportRetentionSettings,
+  normalizeDeleteReason,
+  redactedObjectIdentifier,
+} from "../lib/report-retention.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -121,7 +130,7 @@ function parseArchiveOffset(value: unknown): number {
 }
 
 const ARCHIVE_REPORT_TYPES: ReadonlySet<ArchiveReportType> = new Set([ANNUAL_ENERGY_REPORT_TYPE, ENERGY_TARGETS_REPORT_TYPE, ENERGY_PERFORMANCE_REPORT_TYPE]);
-const ARCHIVE_STATUSES = new Set(["generating", "completed", "failed", "deleted"]);
+const ARCHIVE_STATUSES = new Set(["generating", "completed", "failed", "deleted", "purging", "purged", "purge_failed"]);
 
 function isArchiveReportType(value: string): value is ArchiveReportType {
   return ARCHIVE_REPORT_TYPES.has(value as ArchiveReportType);
@@ -282,6 +291,112 @@ function handleReportScopeError(res: Response, err: unknown) {
   return true;
 }
 
+function requireArchiveMutationRole(req: Request): void {
+  const role = req.user?.role;
+  if (role !== "admin" && role !== "superadmin") {
+    throw new ReportScopeError(403, "Bu islem icin yetkiniz yok");
+  }
+}
+
+function safeDiagnosticsCategory(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  return /^[a-z][a-z0-9_-]{0,63}$/.test(value) ? value : "redacted";
+}
+
+async function purgeArchiveClaimed(input: {
+  request: Request;
+  archiveId: number;
+  companyId: number;
+  actorUserId: number;
+  forceRetention?: boolean;
+}) {
+  const claim = await pool.query<{
+    id: number;
+    company_id: number;
+    unit_id: number | null;
+    report_type: ArchiveReportType;
+    storage_key: string | null;
+  }>(
+    `
+      UPDATE report_archives
+      SET status='purging', updated_at=now(), lifecycle_version=lifecycle_version+1
+      WHERE id=$1
+        AND company_id=$2
+        AND deletion_locked=false
+        AND (
+          (status='deleted' AND purge_eligible_at IS NOT NULL AND purge_eligible_at <= now())
+          OR ($3::boolean = true AND status IN ('completed','failed') AND retention_expires_at IS NOT NULL AND retention_expires_at <= now())
+          OR status='purge_failed'
+        )
+      RETURNING id, company_id, unit_id, report_type, storage_key
+    `,
+    [input.archiveId, input.companyId, input.forceRetention === true],
+  );
+  const archive = claim.rows[0];
+  if (!archive) return { status: "not-eligible" as const };
+  await writeBestEffortAudit(db, {
+    request: input.request,
+    companyId: archive.company_id,
+    unitId: archive.unit_id,
+    action: "report_archive.purge_started",
+    entityType: "report_archive",
+    entityId: archive.id,
+    metadata: { archiveId: archive.id, reportType: archive.report_type },
+  });
+  try {
+    if (archive.storage_key) await reportStorage.delete(archive.storage_key);
+    await pool.query(
+      `
+        UPDATE report_archives
+        SET status='purged',
+            purged_at=now(),
+            purged_by=$2,
+            storage_key=NULL,
+            storage_provider=NULL,
+            purge_failure_category=NULL,
+            updated_at=now(),
+            lifecycle_version=lifecycle_version+1
+        WHERE id=$1 AND company_id=$3 AND status='purging'
+      `,
+      [archive.id, input.actorUserId, input.companyId],
+    );
+    await writeBestEffortAudit(db, {
+      request: input.request,
+      companyId: archive.company_id,
+      unitId: archive.unit_id,
+      action: "report_archive.purged",
+      entityType: "report_archive",
+      entityId: archive.id,
+      metadata: { archiveId: archive.id, reportType: archive.report_type },
+    });
+    return { status: "purged" as const };
+  } catch (error) {
+    const category = error instanceof ReportStorageError ? error.category : "storage_delete_failed";
+    await pool.query(
+      `
+        UPDATE report_archives
+        SET status='purge_failed',
+            purge_failure_category=$2,
+            updated_at=now(),
+            lifecycle_version=lifecycle_version+1
+        WHERE id=$1 AND company_id=$3
+      `,
+      [archive.id, category, input.companyId],
+    );
+    await writeBestEffortAudit(db, {
+      request: input.request,
+      companyId: archive.company_id,
+      unitId: archive.unit_id,
+      action: "report_archive.purge_failed",
+      entityType: "report_archive",
+      entityId: archive.id,
+      outcome: "failure",
+      metadata: { archiveId: archive.id, reportType: archive.report_type, failureCategory: category },
+    });
+    return { status: "failed" as const, category };
+  }
+}
+
 const MONTH_NAMES = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
 
 // GET /api/reports
@@ -360,6 +475,7 @@ router.get("/reports/archive", requireAuth, async (req, res) => {
     if (scope.unitId !== null) conditions.push(eq(reportArchivesTable.unitId, scope.unitId));
     if (reportType) conditions.push(eq(reportArchivesTable.reportType, reportType));
     if (status) conditions.push(eq(reportArchivesTable.status, status));
+    else conditions.push(inArray(reportArchivesTable.status, ["generating", "completed", "failed"]));
     if (year !== undefined) conditions.push(eq(reportArchivesTable.reportYear, year));
     if (generatedBy !== undefined) conditions.push(eq(reportArchivesTable.generatedBy, generatedBy));
     if (dateFrom) conditions.push(gte(reportArchivesTable.generatedAt, dateFrom));
@@ -389,6 +505,12 @@ router.get("/reports/archive", requireAuth, async (req, res) => {
       periodLabel: reportArchivesTable.periodLabel,
       snapshotId: reportArchivesTable.snapshotId,
       failureCategory: reportArchivesTable.failureCategory,
+      deletedAt: reportArchivesTable.deletedAt,
+      purgeEligibleAt: reportArchivesTable.purgeEligibleAt,
+      purgedAt: reportArchivesTable.purgedAt,
+      retentionExpiresAt: reportArchivesTable.retentionExpiresAt,
+      deletionLocked: reportArchivesTable.deletionLocked,
+      purgeFailureCategory: reportArchivesTable.purgeFailureCategory,
     })
       .from(reportArchivesTable)
       .leftJoin(usersTable, eq(reportArchivesTable.generatedBy, usersTable.id))
@@ -411,8 +533,15 @@ router.get("/reports/archive", requireAuth, async (req, res) => {
         year: item.reportYear,
         periodLabel: item.periodLabel,
         downloadable: item.status === "completed",
+        lifecycle: {
+          deletedAt: item.deletedAt,
+          purgeEligibleAt: item.purgeEligibleAt,
+          purgedAt: item.purgedAt,
+          retentionExpiresAt: item.retentionExpiresAt,
+          deletionLocked: item.deletionLocked,
+        },
         snapshot: item.snapshotId ? { id: item.snapshotId } : null,
-        failureCategory: item.status === "failed" ? item.failureCategory : null,
+        failureCategory: item.status === "failed" ? item.failureCategory : item.status === "purge_failed" ? item.purgeFailureCategory : null,
       })),
       total,
       limit,
@@ -476,6 +605,281 @@ router.get("/reports/archive/:id/download", requireAuth, async (req, res) => {
     req.log.error(err);
     if (!res.headersSent) res.status(500).json({ error: "Rapor indirilemedi" });
     else res.destroy();
+  }
+});
+
+// DELETE /api/reports/archive/:id
+router.delete("/reports/archive/:id", requireAuth, async (req, res) => {
+  try {
+    requireArchiveMutationRole(req);
+    const archiveId = parseRequiredId(req.params.id, "id");
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    const settings = await getReportRetentionSettings(scope.companyId);
+    const reason = normalizeDeleteReason((req.body as { reason?: unknown } | undefined)?.reason);
+    const deletedAt = new Date();
+    const purgeEligibleAt = calculatePurgeEligibleAt(deletedAt, settings.deletedGraceDays);
+    const result = await pool.query<{ id: number; unit_id: number | null; report_type: ArchiveReportType; status: string; purge_eligible_at: Date | null }>(
+      `
+        UPDATE report_archives
+        SET status='deleted',
+            previous_status=status,
+            deleted_at=$3,
+            deleted_by=$4,
+            delete_reason=$5,
+            purge_eligible_at=$6,
+            updated_at=$3,
+            lifecycle_version=lifecycle_version+1
+        WHERE id=$1
+          AND company_id=$2
+          AND status IN ('completed','failed')
+          AND deletion_locked=false
+          ${scope.unitId !== null ? "AND unit_id=$7" : ""}
+        RETURNING id, unit_id, report_type, status, purge_eligible_at
+      `,
+      scope.unitId !== null
+        ? [archiveId, scope.companyId, deletedAt, req.user!.userId, reason, purgeEligibleAt, scope.unitId]
+        : [archiveId, scope.companyId, deletedAt, req.user!.userId, reason, purgeEligibleAt],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      const exists = await pool.query("SELECT status FROM report_archives WHERE id=$1 AND company_id=$2 LIMIT 1", [archiveId, scope.companyId]);
+      res.status(exists.rowCount === 0 ? 404 : 409).json({ error: exists.rowCount === 0 ? "Rapor bulunamadi" : "Rapor silinebilir durumda degil" });
+      return;
+    }
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: scope.companyId,
+      unitId: row.unit_id,
+      action: "report_archive.soft_deleted",
+      entityType: "report_archive",
+      entityId: row.id,
+      metadata: { archiveId: row.id, reportType: row.report_type, reasonCategory: reason === "manual_admin_delete" ? reason : "admin_provided", policyVersion: settings.settingsVersion },
+    });
+    res.json({ id: row.id, status: row.status, purgeEligibleAt: row.purge_eligible_at });
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Rapor silinemedi" });
+  }
+});
+
+router.post("/reports/archive/:id/restore", requireAuth, async (req, res) => {
+  try {
+    requireArchiveMutationRole(req);
+    const archiveId = parseRequiredId(req.params.id, "id");
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    const found = await pool.query<{
+      id: number;
+      unit_id: number | null;
+      report_type: ArchiveReportType;
+      status: string;
+      previous_status: string | null;
+      storage_key: string | null;
+      deletion_locked: boolean;
+    }>(
+      `SELECT id, unit_id, report_type, status, previous_status, storage_key, deletion_locked
+       FROM report_archives
+       WHERE id=$1 AND company_id=$2 ${scope.unitId !== null ? "AND unit_id=$3" : ""}
+       LIMIT 1`,
+      scope.unitId !== null ? [archiveId, scope.companyId, scope.unitId] : [archiveId, scope.companyId],
+    );
+    const archive = found.rows[0];
+    if (!archive) {
+      res.status(404).json({ error: "Rapor bulunamadi" });
+      return;
+    }
+    if (archive.status !== "deleted" || archive.deletion_locked || !archive.storage_key || !["completed", "failed"].includes(archive.previous_status ?? "")) {
+      res.status(409).json({ error: "Rapor geri alinabilir durumda degil" });
+      return;
+    }
+    if (!await reportStorage.exists(archive.storage_key)) {
+      res.status(409).json({ error: "Storage nesnesi bulunamadigi icin geri alinamaz", category: "storage_object_not_found" });
+      return;
+    }
+    const restored = await pool.query<{ id: number; status: string }>(
+      `
+        UPDATE report_archives
+        SET status=previous_status,
+            previous_status=NULL,
+            deleted_at=NULL,
+            deleted_by=NULL,
+            delete_reason=NULL,
+            purge_eligible_at=NULL,
+            updated_at=now(),
+            lifecycle_version=lifecycle_version+1
+        WHERE id=$1 AND company_id=$2 AND status='deleted'
+        RETURNING id, status
+      `,
+      [archiveId, scope.companyId],
+    );
+    if (!restored.rows[0]) {
+      res.status(409).json({ error: "Rapor geri alma yarisi nedeniyle tamamlanamadi" });
+      return;
+    }
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: scope.companyId,
+      unitId: archive.unit_id,
+      action: "report_archive.restored",
+      entityType: "report_archive",
+      entityId: archive.id,
+      metadata: { archiveId: archive.id, reportType: archive.report_type },
+    });
+    res.json(restored.rows[0]);
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Rapor geri alinamadi" });
+  }
+});
+
+router.post("/reports/archive/:id/purge", requireAuth, async (req, res) => {
+  try {
+    requireArchiveMutationRole(req);
+    const archiveId = parseRequiredId(req.params.id, "id");
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    const body = req.body as { mode?: unknown; ack?: unknown } | undefined;
+    if (body?.ack !== `PURGE_ARCHIVE_${archiveId}`) {
+      res.status(400).json({ error: "Kalici silme icin explicit ACK zorunludur" });
+      return;
+    }
+    const settings = await getReportRetentionSettings(scope.companyId);
+    const result = await purgeArchiveClaimed({
+      request: req,
+      archiveId,
+      companyId: scope.companyId,
+      actorUserId: req.user!.userId,
+      forceRetention: settings.retentionEnabled && body?.mode === "retention",
+    });
+    if (result.status === "not-eligible") {
+      const scopedExists = await pool.query(
+        `SELECT id FROM report_archives WHERE id=$1 AND company_id=$2 ${scope.unitId !== null ? "AND unit_id=$3" : ""} LIMIT 1`,
+        scope.unitId !== null ? [archiveId, scope.companyId, scope.unitId] : [archiveId, scope.companyId],
+      );
+      if (scopedExists.rowCount === 0) {
+        res.status(404).json({ error: "Rapor bulunamadi" });
+        return;
+      }
+      res.status(409).json({ error: "Rapor purge icin uygun degil" });
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Rapor kalici silinemedi" });
+  }
+});
+
+router.get("/reports/archive/diagnostics/missing", requireAuth, async (req, res) => {
+  try {
+    if (!req.user || !["admin", "kontrol_admin", "superadmin"].includes(req.user.role)) throw new ReportScopeError(req.user ? 403 : 401, "Bu islem icin yetkiniz yok");
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    const limit = parseArchiveLimit(req.query.limit);
+    const candidates = await pool.query<{
+      id: number;
+      report_type: ArchiveReportType;
+      status: string;
+      generated_at: Date;
+      completed_at: Date | null;
+      deleted_at: Date | null;
+      output_name: string;
+      storage_key: string | null;
+    }>(
+      `
+        SELECT id, report_type, status, generated_at, completed_at, deleted_at, output_name, storage_key
+        FROM report_archives
+        WHERE company_id=$1 AND status IN ('completed','deleted') AND storage_key IS NOT NULL
+        ORDER BY generated_at ASC
+        LIMIT $2
+      `,
+      [scope.companyId, limit],
+    );
+    const missing = [];
+    for (const archive of candidates.rows) {
+      try {
+        if (archive.storage_key && !await reportStorage.exists(archive.storage_key)) {
+          missing.push({ archiveId: archive.id, reportType: archive.report_type, status: archive.status, generatedAt: archive.generated_at, completedAt: archive.completed_at, deletedAt: archive.deleted_at, outputName: archive.output_name, category: "storage_object_not_found" });
+        }
+      } catch (error) {
+        missing.push({ archiveId: archive.id, reportType: archive.report_type, status: archive.status, generatedAt: archive.generated_at, completedAt: archive.completed_at, deletedAt: archive.deleted_at, outputName: archive.output_name, category: error instanceof ReportStorageError ? error.category : "storage_unknown_error" });
+      }
+    }
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: scope.companyId,
+      action: "report_archive.missing_diagnostics_run",
+      entityType: "report_archive",
+      entityId: scope.companyId,
+      metadata: { candidateCount: candidates.rows.length, missingCount: missing.length },
+    });
+    res.json({
+      companyId: scope.companyId,
+      candidateCount: candidates.rows.length,
+      missingCount: missing.length,
+      byReportType: Object.entries(missing.reduce<Record<string, number>>((acc, item) => {
+        acc[item.reportType] = (acc[item.reportType] ?? 0) + 1;
+        return acc;
+      }, {})).map(([reportType, count]) => ({ reportType, count })),
+      oldest: missing[0] ?? null,
+      items: missing,
+    });
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Missing object diagnostics calistirilamadi" });
+  }
+});
+
+router.get("/reports/archive/diagnostics/orphans", requireAuth, async (req, res) => {
+  try {
+    if (!req.user || !["admin", "kontrol_admin", "superadmin"].includes(req.user.role)) throw new ReportScopeError(req.user ? 403 : 401, "Bu islem icin yetkiniz yok");
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    if (!reportStorage.list) {
+      res.status(501).json({ error: "Storage listing desteklenmiyor" });
+      return;
+    }
+    const companyId = scope.companyId;
+    const maxKeys = parseArchiveLimit(req.query.limit);
+    const listed = await reportStorage.list({ prefix: companyReportPrefix(companyId), maxKeys, continuationToken: typeof req.query.continuationToken === "string" ? req.query.continuationToken : null });
+    const archiveIds = listed.objects.map((object) => archiveIdFromStorageKey(object.key, companyId)).filter((id): id is number => id !== null);
+    const existing = archiveIds.length > 0
+      ? await pool.query<{ id: number }>("SELECT id FROM report_archives WHERE company_id=$1 AND id = ANY($2::int[])", [companyId, archiveIds])
+      : { rows: [] as Array<{ id: number }> };
+    const existingIds = new Set(existing.rows.map((row) => row.id));
+    const items = listed.objects.flatMap((object) => {
+      const archiveId = archiveIdFromStorageKey(object.key, companyId);
+      if (archiveId !== null && existingIds.has(archiveId)) return [];
+      return [{ objectId: redactedObjectIdentifier(object.key), parsedArchiveId: archiveId, sizeBytes: object.sizeBytes, lastModified: object.lastModified, reason: archiveId === null ? "invalid_key_format" : "archive_record_missing" }];
+    });
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: scope.companyId,
+      action: "report_archive.orphan_diagnostics_run",
+      entityType: "report_archive",
+      entityId: scope.companyId,
+      metadata: { listedCount: listed.objects.length, orphanCount: items.length, dryRun: true },
+    });
+    res.json({
+      companyId: scope.companyId,
+      prefixScope: "company_reports",
+      dryRun: true,
+      listedCount: listed.objects.length,
+      orphanCount: items.length,
+      totalBytes: items.reduce((sum, item) => sum + item.sizeBytes, 0),
+      items,
+      nextContinuationToken: listed.nextContinuationToken,
+      truncated: listed.truncated,
+    });
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Orphan diagnostics calistirilamadi" });
   }
 });
 

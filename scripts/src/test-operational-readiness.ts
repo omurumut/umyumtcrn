@@ -108,13 +108,21 @@ async function main(): Promise<void> {
     stale_generating: string;
     failed_recent: string;
     completed_recent: string;
+    purge_failed: string;
+    stale_purging: string;
+    retention_expired: string;
   }>(
     `
       SELECT
         count(*) FILTER (WHERE status = 'generating')::text AS generating,
         count(*) FILTER (WHERE status = 'generating' AND generated_at < now() - interval '30 minutes')::text AS stale_generating,
         count(*) FILTER (WHERE status = 'failed' AND coalesce(failed_at, generated_at) > now() - interval '24 hours')::text AS failed_recent,
-        count(*) FILTER (WHERE status = 'completed' AND completed_at > now() - interval '24 hours')::text AS completed_recent
+        count(*) FILTER (WHERE status = 'completed' AND completed_at > now() - interval '24 hours')::text AS completed_recent,
+        count(*) FILTER (WHERE status = 'purge_failed')::text AS purge_failed,
+        count(*) FILTER (WHERE status = 'purging' AND updated_at < now() - interval '30 minutes')::text AS stale_purging,
+        count(*) FILTER (
+          WHERE status IN ('completed','failed') AND retention_expires_at IS NOT NULL AND retention_expires_at <= now()
+        )::text AS retention_expired
       FROM report_archives
     `,
   );
@@ -137,6 +145,9 @@ async function main(): Promise<void> {
       staleGenerating: Number(archiveSummary.rows[0]?.stale_generating ?? 0),
       failedRecent: Number(archiveSummary.rows[0]?.failed_recent ?? 0),
       completedRecent: Number(archiveSummary.rows[0]?.completed_recent ?? 0),
+      purgeFailed: Number(archiveSummary.rows[0]?.purge_failed ?? 0),
+      stalePurging: Number(archiveSummary.rows[0]?.stale_purging ?? 0),
+      retentionExpired: Number(archiveSummary.rows[0]?.retention_expired ?? 0),
     },
     browserDeepSmoke: "passed",
     reportStorageSmoke: "passed",

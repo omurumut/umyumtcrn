@@ -70,6 +70,17 @@ export const AUDIT_ACTIONS = [
   "report_archive.completed",
   "report_archive.failed",
   "report_archive.downloaded",
+  "report_archive.soft_deleted",
+  "report_archive.restored",
+  "report_archive.purge_started",
+  "report_archive.purged",
+  "report_archive.purge_failed",
+  "report_retention_settings.created",
+  "report_retention_settings.updated",
+  "report_archive.missing_diagnostics_run",
+  "report_archive.orphan_diagnostics_run",
+  "report_archive.cleanup_dry_run",
+  "report_archive.cleanup_executed",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;

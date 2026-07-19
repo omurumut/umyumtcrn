@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, type ReadStream } from "node:fs";
 import { constants } from "node:fs";
-import { access, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
+import { access, mkdir, open, readdir, realpath, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -9,6 +9,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -62,12 +63,31 @@ export type ReportStorageReadiness = {
   category?: ReportStorageErrorCategory;
 };
 
+export type ReportStorageListedObject = {
+  key: string;
+  sizeBytes: number;
+  lastModified: Date | null;
+};
+
+export type ReportStorageListInput = {
+  prefix: string;
+  continuationToken?: string | null;
+  maxKeys: number;
+};
+
+export type ReportStorageListResult = {
+  objects: ReportStorageListedObject[];
+  nextContinuationToken: string | null;
+  truncated: boolean;
+};
+
 export interface ReportStorage {
   provider: ReportStorageProviderName;
   put(input: ReportStoragePutInput): Promise<ReportStorageMetadata>;
   get(key: string): Promise<ReportStorageReadResult>;
   delete(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;
+  list?(input: ReportStorageListInput): Promise<ReportStorageListResult>;
   checkReadiness(): Promise<"pass" | "disabled" | "fail">;
   checkReadinessDetails?(): Promise<ReportStorageReadiness>;
 }
@@ -112,6 +132,17 @@ function sha256File(filePath: string): Promise<string> {
 
 function assertSafeStorageKey(key: string): void {
   if (!SAFE_KEY_PATTERN.test(key) || key.includes("..") || key.startsWith("/") || key.startsWith("\\") || key.includes("\\")) {
+    throw new ReportStorageError("storage_config_invalid");
+  }
+}
+
+function assertSafeListInput(input: ReportStorageListInput): void {
+  assertSafeStorageKey(input.prefix);
+  if (!input.prefix.endsWith("/")) throw new ReportStorageError("storage_config_invalid");
+  if (!Number.isSafeInteger(input.maxKeys) || input.maxKeys < 1 || input.maxKeys > 1000) {
+    throw new ReportStorageError("storage_config_invalid");
+  }
+  if (input.continuationToken !== undefined && input.continuationToken !== null && input.continuationToken.length > 512) {
     throw new ReportStorageError("storage_config_invalid");
   }
 }
@@ -316,6 +347,43 @@ class LocalReportStorage implements ReportStorage {
     }
   }
 
+  async list(input: ReportStorageListInput): Promise<ReportStorageListResult> {
+    assertSafeListInput(input);
+    await mkdir(this.rootDirectory, { recursive: true });
+    const prefixRoot = this.pathFor(input.prefix);
+    await assertInsideRoot(this.rootDirectory, prefixRoot);
+    const objects: ReportStorageListedObject[] = [];
+    const walk = async (directory: string): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const target = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          await walk(target);
+        } else if (entry.isFile()) {
+          const metadata = await stat(target);
+          objects.push({
+            key: path.relative(this.rootDirectory, target).replace(/\\/g, "/"),
+            sizeBytes: metadata.size,
+            lastModified: metadata.mtime,
+          });
+        }
+        if (objects.length > input.maxKeys + 1) return;
+      }
+    };
+    await walk(prefixRoot);
+    objects.sort((a, b) => a.key.localeCompare(b.key));
+    const foundStart = input.continuationToken ? objects.findIndex((item) => item.key > input.continuationToken!) : 0;
+    const start = foundStart < 0 ? objects.length : foundStart;
+    const page = objects.slice(start, start + input.maxKeys);
+    const next = page.length === input.maxKeys && objects[start + input.maxKeys] ? page[page.length - 1]!.key : null;
+    return { objects: page, nextContinuationToken: next, truncated: next !== null };
+  }
+
   async checkReadiness(): Promise<"pass"> {
     await access(this.rootDirectory, constants.R_OK | constants.W_OK);
     return "pass";
@@ -431,6 +499,35 @@ export class S3ReportStorage implements ReportStorage {
     }
   }
 
+  async list(input: ReportStorageListInput): Promise<ReportStorageListResult> {
+    assertSafeListInput(input);
+    const prefix = s3ObjectKey(this.config, input.prefix);
+    try {
+      const result = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.config.bucket,
+        Prefix: prefix,
+        ContinuationToken: input.continuationToken ?? undefined,
+        MaxKeys: input.maxKeys,
+      }) as unknown as { input: Record<string, unknown>; constructor: { name: string } }) as {
+        Contents?: Array<{ Key?: string; Size?: number; LastModified?: Date }>;
+        IsTruncated?: boolean;
+        NextContinuationToken?: string;
+      };
+      const storagePrefix = this.config.prefix ? `${this.config.prefix}/` : "";
+      return {
+        objects: (result.Contents ?? []).flatMap((item) => {
+          if (!item.Key || item.Size === undefined) return [];
+          const key = storagePrefix && item.Key.startsWith(storagePrefix) ? item.Key.slice(storagePrefix.length) : item.Key;
+          return [{ key, sizeBytes: item.Size, lastModified: item.LastModified ?? null }];
+        }),
+        nextContinuationToken: result.NextContinuationToken ?? null,
+        truncated: result.IsTruncated === true,
+      };
+    } catch (error) {
+      throw new ReportStorageError(safeS3Category(error, "storage_unknown_error"));
+    }
+  }
+
   async checkReadiness(): Promise<"pass" | "fail"> {
     return (await this.checkReadinessDetails()).status === "pass" ? "pass" : "fail";
   }
@@ -460,6 +557,7 @@ class UnconfiguredReportStorage implements ReportStorage {
   async get(): Promise<ReportStorageReadResult> { this.fail(); }
   async delete(): Promise<void> { this.fail(); }
   async exists(): Promise<boolean> { return false; }
+  async list(): Promise<ReportStorageListResult> { this.fail(); }
   async checkReadiness(): Promise<"disabled" | "fail"> {
     return process.env.REPORT_ARCHIVE_STORAGE_REQUIRED === "false" ? "disabled" : "fail";
   }

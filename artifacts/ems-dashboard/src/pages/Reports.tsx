@@ -12,9 +12,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FileText, Download, RefreshCw, ClipboardList, Archive } from "lucide-react";
+import { FileText, Download, RefreshCw, ClipboardList, Archive, RotateCcw, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { downloadBlobResponse, downloadPdfResponse } from "@/lib/download";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 type ArchiveItem = {
   id: number;
@@ -30,6 +31,13 @@ type ArchiveItem = {
   periodLabel: string | null;
   downloadable: boolean;
   failureCategory: string | null;
+  lifecycle?: {
+    deletedAt: string | null;
+    purgeEligibleAt: string | null;
+    purgedAt: string | null;
+    retentionExpiresAt: string | null;
+    deletionLocked: boolean;
+  };
 };
 
 type ArchiveResponse = {
@@ -81,7 +89,10 @@ export default function Reports() {
   const [archiveData, setArchiveData] = useState<ArchiveResponse | null>(null);
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [archiveActionLoading, setArchiveActionLoading] = useState<number | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<ArchiveItem | null>(null);
   const archiveLimit = 10;
+  const canMutateArchive = user?.role === "admin" || user?.role === "superadmin";
 
   async function fetchArchive(page = archivePage) {
     if (!token) return;
@@ -132,6 +143,46 @@ export default function Reports() {
 
   async function downloadArchive(item: ArchiveItem) {
     await downloadArchiveByUrl(`/api/reports/archive/${item.id}/download`, item.outputName);
+  }
+
+  async function softDeleteArchive(item: ArchiveItem) {
+    if (!token) return;
+    setArchiveActionLoading(item.id);
+    try {
+      const response = await fetch(`/api/reports/archive/${item.id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "manual_admin_delete" }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error ?? `HTTP ${response.status}`);
+      setDeleteCandidate(null);
+      toast({ title: "Rapor arsivden kaldirildi", description: "Kalici silme yalniz operasyonel temizleme surecinde yapilir." });
+      void fetchArchive(0);
+    } catch (error) {
+      toast({ title: "Rapor silinemedi", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally {
+      setArchiveActionLoading(null);
+    }
+  }
+
+  async function restoreArchive(item: ArchiveItem) {
+    if (!token) return;
+    setArchiveActionLoading(item.id);
+    try {
+      const response = await fetch(`/api/reports/archive/${item.id}/restore`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error ?? `HTTP ${response.status}`);
+      toast({ title: "Rapor geri alindi" });
+      void fetchArchive(0);
+    } catch (error) {
+      toast({ title: "Rapor geri alinamadi", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally {
+      setArchiveActionLoading(null);
+    }
   }
 
   async function handleTargetReport() {
@@ -386,6 +437,9 @@ export default function Reports() {
                   <SelectItem value="completed">Hazır</SelectItem>
                   <SelectItem value="generating">Üretiliyor</SelectItem>
                   <SelectItem value="failed">Hatalı</SelectItem>
+                  <SelectItem value="deleted">Silinen</SelectItem>
+                  <SelectItem value="purged">Kalıcı silinmiş</SelectItem>
+                  <SelectItem value="purge_failed">Purge hatalı</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -411,7 +465,7 @@ export default function Reports() {
                     <TableHead>Tarih</TableHead>
                     <TableHead>Durum</TableHead>
                     <TableHead>Boyut</TableHead>
-                    <TableHead className="text-right">İndir</TableHead>
+                    <TableHead className="text-right">Aksiyon</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -432,17 +486,35 @@ export default function Reports() {
                         <TableCell>
                           <Badge variant="outline" className={
                             item.status === "completed" ? "bg-green-500/10 text-green-400 border-green-500/20" :
-                            item.status === "failed" ? "bg-red-500/10 text-red-400 border-red-500/20" :
+                            item.status === "failed" || item.status === "purge_failed" ? "bg-red-500/10 text-red-400 border-red-500/20" :
+                            item.status === "deleted" || item.status === "purged" ? "bg-slate-500/10 text-slate-300 border-slate-500/20" :
                             "bg-amber-500/10 text-amber-400 border-amber-500/20"
                           }>
-                            {item.status === "completed" ? "Hazır" : item.status === "failed" ? `Hata${item.failureCategory ? `: ${item.failureCategory}` : ""}` : "Üretiliyor"}
+                            {item.status === "completed" ? "Hazır" :
+                              item.status === "failed" ? `Hata${item.failureCategory ? `: ${item.failureCategory}` : ""}` :
+                              item.status === "deleted" ? "Silinen" :
+                              item.status === "purged" ? "Kalıcı silinmiş" :
+                              item.status === "purge_failed" ? `Purge hatası${item.failureCategory ? `: ${item.failureCategory}` : ""}` :
+                              item.status === "purging" ? "Purge ediliyor" : "Üretiliyor"}
                           </Badge>
                         </TableCell>
                         <TableCell>{formatBytes(item.sizeBytes)}</TableCell>
                         <TableCell className="text-right">
-                          <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" disabled={!item.downloadable} onClick={() => downloadArchive(item)}>
-                            <Download className="h-3.5 w-3.5" /> İndir
-                          </Button>
+                          <div className="flex justify-end gap-1">
+                            <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" disabled={!item.downloadable} onClick={() => downloadArchive(item)}>
+                              <Download className="h-3.5 w-3.5" /> İndir
+                            </Button>
+                            {canMutateArchive && (item.status === "completed" || item.status === "failed") && (
+                              <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs text-destructive hover:text-destructive" disabled={archiveActionLoading === item.id || item.lifecycle?.deletionLocked === true} onClick={() => setDeleteCandidate(item)}>
+                                <Trash2 className="h-3.5 w-3.5" /> Sil
+                              </Button>
+                            )}
+                            {canMutateArchive && item.status === "deleted" && (
+                              <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" disabled={archiveActionLoading === item.id} onClick={() => restoreArchive(item)}>
+                                <RotateCcw className="h-3.5 w-3.5" /> Geri al
+                              </Button>
+                            )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))
@@ -461,6 +533,23 @@ export default function Reports() {
           </div>
         </CardContent>
       </Card>
+
+      <AlertDialog open={deleteCandidate !== null} onOpenChange={(open) => !open && setDeleteCandidate(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Raporu arşivden kaldır</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteCandidate ? `${deleteCandidate.title} (${REPORT_TYPE_LABELS[deleteCandidate.reportType] ?? deleteCandidate.reportType}, ${new Date(deleteCandidate.generatedAt).toLocaleDateString("tr-TR")}) soft-delete durumuna alınacak. Grace süresi bitene kadar operasyonel purge yapılmadan geri alınabilir.` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Vazgeç</AlertDialogCancel>
+            <AlertDialogAction disabled={!deleteCandidate || archiveActionLoading === deleteCandidate.id} onClick={() => deleteCandidate && softDeleteArchive(deleteCandidate)}>
+              Soft-delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Card>
         <CardHeader className="pb-2">

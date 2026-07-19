@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import {
   companiesTable,
   companyReportProfilesTable,
+  companyReportRetentionSettingsTable,
   companyReportSectionSettingsTable,
   companyReportTypeSettingsTable,
   db,
@@ -24,6 +25,11 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth } from "../middlewares/auth.js";
 import { writeAuditEvent } from "../lib/audit.js";
+import {
+  DEFAULT_REPORT_RETENTION_SETTINGS,
+  parseRetentionInteger,
+  serializeRetentionSettings,
+} from "../lib/report-retention.js";
 import {
   getReportTypeDefinition,
   resolveEffectiveCompanyReportSettings,
@@ -54,6 +60,13 @@ const PROFILE_FIELDS = [
 const profilePatchKeys = new Set<string>(["expectedProfileVersion", ...PROFILE_FIELDS]);
 const typePatchKeys = new Set<string>(["titleOverride", "subtitleOverride", "localeOverride", "coverStyleOverride", "sections", "expectedTypeSettingsVersion"]);
 const sectionPatchKeys = new Set<string>(["code", "isVisible", "displayOrder", "labelOverride"]);
+const retentionPatchKeys = new Set<string>([
+  "retentionEnabled",
+  "completedRetentionDays",
+  "failedRetentionDays",
+  "deletedGraceDays",
+  "expectedSettingsVersion",
+]);
 
 type ProfileField = typeof PROFILE_FIELDS[number];
 
@@ -312,6 +325,144 @@ function parseTypePatch(reportType: ReportTypeCode, body: unknown) {
     sections,
   };
 }
+
+function parseRetentionPatch(body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false as const, error: "Gecersiz saklama politikasi verisi" };
+  const input = body as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (!retentionPatchKeys.has(key)) return { ok: false as const, error: "Bilinmeyen saklama politikasi alani gonderildi" };
+  }
+  const expected = parseExpectedVersion(input.expectedSettingsVersion, "expectedSettingsVersion");
+  if (!expected.ok) return { ok: false as const, error: expected.error };
+  if (typeof input.retentionEnabled !== "boolean") return { ok: false as const, error: "retentionEnabled boolean olmalidir" };
+  const completedRetentionDays = parseRetentionInteger(input.completedRetentionDays, "completedRetentionDays");
+  const failedRetentionDays = parseRetentionInteger(input.failedRetentionDays, "failedRetentionDays");
+  const deletedGraceDays = parseRetentionInteger(input.deletedGraceDays, "deletedGraceDays");
+  if (completedRetentionDays === null) return { ok: false as const, error: "Tamamlanan rapor saklama suresi 365-36500 gun arasinda olmalidir" };
+  if (failedRetentionDays === null) return { ok: false as const, error: "Hatali rapor saklama suresi 30-3650 gun arasinda olmalidir" };
+  if (deletedGraceDays === null) return { ok: false as const, error: "Silinen rapor bekleme suresi 7-365 gun arasinda olmalidir" };
+  return {
+    ok: true as const,
+    expectedSettingsVersion: expected.value,
+    values: {
+      retentionEnabled: input.retentionEnabled,
+      completedRetentionDays,
+      failedRetentionDays,
+      deletedGraceDays,
+      automaticCleanupAllowed: false,
+    },
+  };
+}
+
+router.get("/company-report-settings/retention", requireAuth, async (req, res) => {
+  try {
+    const { role } = req.user!;
+    if (role === "user") {
+      res.status(403).json({ error: "Bu islem icin yetkiniz yok" });
+      return;
+    }
+    const companyId = resolveTargetCompanyId(req, res);
+    if (companyId === undefined) return;
+    if (!await ensureCompany(companyId)) {
+      res.status(404).json({ error: "Firma bulunamadi" });
+      return;
+    }
+    const [settings] = await db.select().from(companyReportRetentionSettingsTable).where(eq(companyReportRetentionSettingsTable.companyId, companyId)).limit(1);
+    res.json({
+      settings: serializeRetentionSettings(settings ? {
+        company_id: settings.companyId,
+        retention_enabled: settings.retentionEnabled,
+        completed_retention_days: settings.completedRetentionDays,
+        failed_retention_days: settings.failedRetentionDays,
+        deleted_grace_days: settings.deletedGraceDays,
+        automatic_cleanup_allowed: settings.automaticCleanupAllowed,
+        settings_version: settings.settingsVersion,
+        created_at: settings.createdAt,
+        updated_at: settings.updatedAt,
+      } : null, companyId),
+      permissions: { canEdit: role === "admin" || role === "superadmin" },
+      isDefault: !settings,
+    });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Saklama politikasi okunamadi" });
+  }
+});
+
+router.patch("/company-report-settings/retention", requireAuth, async (req, res) => {
+  try {
+    const { role, userId } = req.user!;
+    if (role !== "admin" && role !== "superadmin") {
+      res.status(403).json({ error: "Bu islem icin yetkiniz yok" });
+      return;
+    }
+    const companyId = resolveTargetCompanyId(req, res);
+    if (companyId === undefined) return;
+    const parsed = parseRetentionPatch(req.body);
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error });
+      return;
+    }
+    const result = await db.transaction(async (tx) => {
+      const [company] = await tx.select({ id: companiesTable.id }).from(companiesTable).where(eq(companiesTable.id, companyId)).limit(1).for("update");
+      if (!company) return { status: "not-found" as const };
+      const [existing] = await tx.select().from(companyReportRetentionSettingsTable).where(eq(companyReportRetentionSettingsTable.companyId, companyId)).limit(1).for("update");
+      const previous = existing ? serializeRetentionSettings({
+        company_id: existing.companyId,
+        retention_enabled: existing.retentionEnabled,
+        completed_retention_days: existing.completedRetentionDays,
+        failed_retention_days: existing.failedRetentionDays,
+        deleted_grace_days: existing.deletedGraceDays,
+        automatic_cleanup_allowed: existing.automaticCleanupAllowed,
+        settings_version: existing.settingsVersion,
+        created_at: existing.createdAt,
+        updated_at: existing.updatedAt,
+      }, companyId) : { companyId, ...DEFAULT_REPORT_RETENTION_SETTINGS, createdAt: null, updatedAt: null };
+      if (previous.settingsVersion !== parsed.expectedSettingsVersion) return { status: "conflict" as const, previous };
+      const nextVersion = previous.settingsVersion + 1;
+      const values = { ...parsed.values, settingsVersion: nextVersion, updatedAt: new Date(), updatedBy: userId };
+      const [saved] = existing
+        ? await tx.update(companyReportRetentionSettingsTable).set(values).where(eq(companyReportRetentionSettingsTable.companyId, companyId)).returning()
+        : await tx.insert(companyReportRetentionSettingsTable).values({ companyId, ...parsed.values, settingsVersion: 1, updatedBy: userId }).returning();
+      return { status: existing ? "updated" as const : "created" as const, previous, saved };
+    });
+    if (result.status === "not-found") {
+      res.status(404).json({ error: "Firma bulunamadi" });
+      return;
+    }
+    if (result.status === "conflict") {
+      res.status(409).json({ error: "Saklama politikasi baska bir islem tarafindan guncellendi", settings: result.previous });
+      return;
+    }
+    const saved = serializeRetentionSettings({
+      company_id: result.saved.companyId,
+      retention_enabled: result.saved.retentionEnabled,
+      completed_retention_days: result.saved.completedRetentionDays,
+      failed_retention_days: result.saved.failedRetentionDays,
+      deleted_grace_days: result.saved.deletedGraceDays,
+      automatic_cleanup_allowed: result.saved.automaticCleanupAllowed,
+      settings_version: result.saved.settingsVersion,
+      created_at: result.saved.createdAt,
+      updated_at: result.saved.updatedAt,
+    }, companyId);
+    await writeAuditEvent(db, {
+      request: req,
+      companyId,
+      action: result.status === "created" ? "report_retention_settings.created" : "report_retention_settings.updated",
+      entityType: "report_retention_settings",
+      entityId: companyId,
+      metadata: {
+        changedFields: ["retentionEnabled", "completedRetentionDays", "failedRetentionDays", "deletedGraceDays"],
+        previousVersion: result.previous.settingsVersion,
+        newVersion: saved.settingsVersion,
+      },
+    });
+    res.json({ settings: saved, permissions: { canEdit: true }, isDefault: false });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "Saklama politikasi kaydedilemedi" });
+  }
+});
 
 router.get("/company-report-settings/profile", requireAuth, async (req, res) => {
   try {

@@ -190,6 +190,33 @@ type ReportTypeForm = {
   sections: EffectiveReportSection[];
 };
 
+type ReportRetentionSettings = {
+  companyId: number;
+  retentionEnabled: boolean;
+  completedRetentionDays: number;
+  failedRetentionDays: number;
+  deletedGraceDays: number;
+  automaticCleanupAllowed: boolean;
+  settingsVersion: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+type ReportRetentionResponse = {
+  settings: ReportRetentionSettings;
+  permissions: { canEdit: boolean };
+  isDefault: boolean;
+};
+
+type ReportRetentionForm = Pick<ReportRetentionSettings, "retentionEnabled" | "completedRetentionDays" | "failedRetentionDays" | "deletedGraceDays">;
+
+const DEFAULT_REPORT_RETENTION_FORM: ReportRetentionForm = {
+  retentionEnabled: false,
+  completedRetentionDays: 3650,
+  failedRetentionDays: 90,
+  deletedGraceDays: 30,
+};
+
 const emptyProfileForm: CompanyProfileForm = {
   legalName: "",
   shortName: "",
@@ -351,6 +378,15 @@ function reportTypeFormFromResponse(response: ReportTypeSettingsResponse): Repor
   };
 }
 
+function reportRetentionFormFromResponse(settings: ReportRetentionSettings): ReportRetentionForm {
+  return {
+    retentionEnabled: settings.retentionEnabled,
+    completedRetentionDays: settings.completedRetentionDays,
+    failedRetentionDays: settings.failedRetentionDays,
+    deletedGraceDays: settings.deletedGraceDays,
+  };
+}
+
 function validateFileNamePattern(pattern: string): string | null {
   if (!pattern.trim()) return "Dosya adı kuralı boş olamaz.";
   if (pattern.length > REPORT_PROFILE_FIELD_LIMITS.fileNamePattern) return "Dosya adı kuralı çok uzun.";
@@ -382,6 +418,13 @@ function validateReportProfile(form: CompanyReportProfileValues): string | null 
     if ((value ?? "").trim().length > limit) return `${label} ${limit} karakteri aşamaz.`;
   }
   return validateFileNamePattern(form.fileNamePattern);
+}
+
+function validateReportRetention(form: ReportRetentionForm): string | null {
+  if (!Number.isSafeInteger(form.completedRetentionDays) || form.completedRetentionDays < 365 || form.completedRetentionDays > 36500) return "Tamamlanan rapor saklama suresi 365-36500 gun arasinda olmalidir.";
+  if (!Number.isSafeInteger(form.failedRetentionDays) || form.failedRetentionDays < 30 || form.failedRetentionDays > 3650) return "Hatali rapor saklama suresi 30-3650 gun arasinda olmalidir.";
+  if (!Number.isSafeInteger(form.deletedGraceDays) || form.deletedGraceDays < 7 || form.deletedGraceDays > 365) return "Silinen rapor bekleme suresi 7-365 gun arasinda olmalidir.";
+  return null;
 }
 
 function validateBrandForm(form: CompanyBrandSettingsValues): string | null {
@@ -566,6 +609,7 @@ export default function CompanySettings() {
   const logoQueryKey = ["company-brand-logo", user?.role, effectiveCompanyId];
   const reportProfileQueryKey = ["company-report-settings-profile", user?.role, effectiveCompanyId];
   const reportTypesQueryKey = ["company-report-settings-types", user?.role, effectiveCompanyId];
+  const reportRetentionQueryKey = ["company-report-settings-retention", user?.role, effectiveCompanyId];
   const [profileForm, setProfileForm] = useState<CompanyProfileForm>(emptyProfileForm);
   const [profileDirty, setProfileDirty] = useState(false);
   const [loadedProfileKey, setLoadedProfileKey] = useState<string | null>(null);
@@ -586,6 +630,10 @@ export default function CompanySettings() {
   const [reportProfileDirty, setReportProfileDirty] = useState(false);
   const [loadedReportProfileKey, setLoadedReportProfileKey] = useState<string | null>(null);
   const [reportProfileConflict, setReportProfileConflict] = useState(false);
+  const [reportRetentionForm, setReportRetentionForm] = useState<ReportRetentionForm>(DEFAULT_REPORT_RETENTION_FORM);
+  const [reportRetentionDirty, setReportRetentionDirty] = useState(false);
+  const [loadedReportRetentionKey, setLoadedReportRetentionKey] = useState<string | null>(null);
+  const [reportRetentionConflict, setReportRetentionConflict] = useState(false);
   const [selectedReportType, setSelectedReportType] = useState<ReportTypeCode | null>(null);
   const [reportTypeForms, setReportTypeForms] = useState<Partial<Record<ReportTypeCode, ReportTypeForm>>>({});
   const [reportTypeDirty, setReportTypeDirty] = useState<Partial<Record<ReportTypeCode, boolean>>>({});
@@ -636,6 +684,11 @@ export default function CompanySettings() {
     : isSuperAdmin
       ? `/api/company-report-settings/types?companyId=${effectiveCompanyId}`
       : "/api/company-report-settings/types";
+  const reportRetentionUrl = effectiveCompanyId === null
+    ? null
+    : isSuperAdmin
+      ? `/api/company-report-settings/retention?companyId=${effectiveCompanyId}`
+      : "/api/company-report-settings/retention";
   const selectedReportTypeQueryKey = ["company-report-settings-type", user?.role, effectiveCompanyId, selectedReportType];
   const selectedReportTypeUrl = effectiveCompanyId === null || !selectedReportType
     ? null
@@ -678,6 +731,12 @@ export default function CompanySettings() {
     queryKey: reportTypesQueryKey,
     queryFn: () => apiFetch<ReportTypesResponse>(reportTypesUrl!, token),
     enabled: !!token && reportTypesUrl !== null && selectedCompanyExists,
+  });
+
+  const reportRetentionQuery = useQuery<ReportRetentionResponse, ApiError>({
+    queryKey: reportRetentionQueryKey,
+    queryFn: () => apiFetch<ReportRetentionResponse>(reportRetentionUrl!, token),
+    enabled: !!token && reportRetentionUrl !== null && selectedCompanyExists,
   });
 
   const selectedReportTypeQuery = useQuery<ReportTypeSettingsResponse, ApiError>({
@@ -853,6 +912,29 @@ export default function CompanySettings() {
     },
   });
 
+  const reportRetentionMutation = useMutation<ReportRetentionResponse, ApiError, ReportRetentionForm>({
+    mutationFn: (nextForm) => apiFetch<ReportRetentionResponse>(reportRetentionUrl!, token, {
+      method: "PATCH",
+      body: JSON.stringify({
+        expectedSettingsVersion: reportRetentionQuery.data?.settings.settingsVersion,
+        ...nextForm,
+      }),
+    }),
+    onSuccess: async (data) => {
+      queryClient.setQueryData(reportRetentionQueryKey, data);
+      setReportRetentionForm(reportRetentionFormFromResponse(data.settings));
+      setReportRetentionDirty(false);
+      setReportRetentionConflict(false);
+      setLoadedReportRetentionKey(`${data.settings.companyId}:${data.settings.settingsVersion}`);
+      await reportRetentionQuery.refetch();
+      toast({ title: "Rapor saklama politikasi guncellendi." });
+    },
+    onError: (error) => {
+      if (error.status === 409) setReportRetentionConflict(true);
+      toast({ title: "Saklama politikasi kaydedilemedi", description: error.message, variant: "destructive" });
+    },
+  });
+
   function revokeFetchedLogoUrl() {
     if (fetchedLogoUrlRef.current) {
       URL.revokeObjectURL(fetchedLogoUrlRef.current);
@@ -938,6 +1020,19 @@ export default function CompanySettings() {
   }, [loadedReportTypeKeys, reportTypeDirty, selectedReportType, selectedReportTypeQuery.data]);
 
   useEffect(() => {
+    if (!reportRetentionQuery.data) return;
+    const key = `${reportRetentionQuery.data.settings.companyId}:${reportRetentionQuery.data.settings.settingsVersion}`;
+    if (key === loadedReportRetentionKey) return;
+    if (reportRetentionDirty && loadedReportRetentionKey !== null && reportRetentionQuery.data.settings.companyId !== Number(loadedReportRetentionKey.split(":")[0])) {
+      toast({ title: "Kaydedilmemis saklama politikasi sifirlandi", description: "Secili firma degistigi icin guncel politika yuklendi." });
+    }
+    setReportRetentionForm(reportRetentionFormFromResponse(reportRetentionQuery.data.settings));
+    setReportRetentionDirty(false);
+    setReportRetentionConflict(false);
+    setLoadedReportRetentionKey(key);
+  }, [loadedReportRetentionKey, reportRetentionDirty, reportRetentionQuery.data, toast]);
+
+  useEffect(() => {
     revokeFetchedLogoUrl();
     if (!logoQuery.data) return;
     const nextUrl = URL.createObjectURL(logoQuery.data);
@@ -951,31 +1046,33 @@ export default function CompanySettings() {
   }, []);
 
   useEffect(() => {
-    if (!profileDirty && !settingsDirty && !brandDirty && !pendingLogo && !reportProfileDirty && !Object.values(reportTypeDirty).some(Boolean)) return;
+    if (!profileDirty && !settingsDirty && !brandDirty && !pendingLogo && !reportProfileDirty && !reportRetentionDirty && !Object.values(reportTypeDirty).some(Boolean)) return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [brandDirty, pendingLogo, profileDirty, reportProfileDirty, reportTypeDirty, settingsDirty]);
+  }, [brandDirty, pendingLogo, profileDirty, reportProfileDirty, reportRetentionDirty, reportTypeDirty, settingsDirty]);
 
   const company = profileQuery.data?.company;
   const canEditProfile = profileQuery.data?.permissions.canEditGeneral === true;
   const canEditSettings = settingsQuery.data?.permissions.canEdit === true;
   const canEditBrand = brandQuery.data?.permissions.canEdit === true;
   const canManageLogo = brandQuery.data?.permissions.canManageLogo === true;
-  const canEditReports = reportProfileQuery.data?.permissions.canEdit === true;
+  const canEditReports = reportProfileQuery.data?.permissions.canEdit === true || reportRetentionQuery.data?.permissions.canEdit === true;
   const profileSaving = profileMutation.isPending;
   const settingsSaving = settingsMutation.isPending;
   const brandSaving = brandMutation.isPending;
   const reportProfileSaving = reportProfileMutation.isPending;
+  const reportRetentionSaving = reportRetentionMutation.isPending;
   const logoUploading = logoUploadMutation.isPending;
   const logoDeleting = logoDeleteMutation.isPending;
   const profileDisabled = !canEditProfile || profileSaving;
   const settingsDisabled = !canEditSettings || settingsSaving;
   const brandDisabled = !canEditBrand || brandSaving;
   const reportProfileDisabled = !canEditReports || reportProfileSaving;
+  const reportRetentionDisabled = !canEditReports || reportRetentionSaving;
   const displayName = company?.legalName?.trim() || company?.name || "-";
   const activeLogoUrl = pendingLogo?.previewUrl ?? fetchedLogoUrl;
   const selectedReportForm = selectedReportType ? reportTypeForms[selectedReportType] : undefined;
@@ -1083,6 +1180,12 @@ export default function CompanySettings() {
     setReportProfileConflict(false);
   }
 
+  function patchReportRetentionField<K extends keyof ReportRetentionForm>(field: K, value: ReportRetentionForm[K]) {
+    setReportRetentionForm((current) => ({ ...current, [field]: value }));
+    setReportRetentionDirty(true);
+    setReportRetentionConflict(false);
+  }
+
   function handleReportProfileSubmit(event: FormEvent) {
     event.preventDefault();
     const validationError = validateReportProfile(reportProfileForm);
@@ -1091,6 +1194,16 @@ export default function CompanySettings() {
       return;
     }
     reportProfileMutation.mutate(reportProfileForm);
+  }
+
+  function handleReportRetentionSubmit(event: FormEvent) {
+    event.preventDefault();
+    const validationError = validateReportRetention(reportRetentionForm);
+    if (validationError) {
+      toast({ title: "Saklama politikasi kaydedilemedi", description: validationError, variant: "destructive" });
+      return;
+    }
+    reportRetentionMutation.mutate(reportRetentionForm);
   }
 
   function patchReportTypeForm(reportType: ReportTypeCode, updater: (current: ReportTypeForm) => ReportTypeForm) {
@@ -1131,6 +1244,11 @@ export default function CompanySettings() {
     await reportProfileQuery.refetch();
   }
 
+  async function reloadReportRetention() {
+    setReportRetentionConflict(false);
+    await reportRetentionQuery.refetch();
+  }
+
   async function reloadReportType(reportType: ReportTypeCode) {
     setReportTypeConflict((current) => ({ ...current, [reportType]: false }));
     await selectedReportTypeQuery.refetch();
@@ -1166,7 +1284,7 @@ export default function CompanySettings() {
         </Alert>
       )}
 
-      {(profileQuery.data || settingsQuery.data || brandQuery.data || reportProfileQuery.data) && !canEditProfile && !canEditSettings && !canEditBrand && !canEditReports && (
+      {(profileQuery.data || settingsQuery.data || brandQuery.data || reportProfileQuery.data || reportRetentionQuery.data) && !canEditProfile && !canEditSettings && !canEditBrand && !canEditReports && (
         <Alert className="border-teal-600/30 bg-teal-600/10">
           <Info className="h-4 w-4" />
           <AlertTitle>Salt okunur bilgi</AlertTitle>
@@ -1174,11 +1292,11 @@ export default function CompanySettings() {
         </Alert>
       )}
 
-      {(profileQuery.isError || settingsQuery.isError || brandQuery.isError || reportProfileQuery.isError || reportTypesQuery.isError || selectedReportTypeQuery.isError) && (
+      {(profileQuery.isError || settingsQuery.isError || brandQuery.isError || reportProfileQuery.isError || reportTypesQuery.isError || reportRetentionQuery.isError || selectedReportTypeQuery.isError) && (
         <Alert data-testid="company-settings-error" variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Ayarlar yüklenemedi</AlertTitle>
-          <AlertDescription>{profileQuery.error?.message ?? settingsQuery.error?.message ?? brandQuery.error?.message ?? reportProfileQuery.error?.message ?? reportTypesQuery.error?.message ?? selectedReportTypeQuery.error?.message}</AlertDescription>
+          <AlertDescription>{profileQuery.error?.message ?? settingsQuery.error?.message ?? brandQuery.error?.message ?? reportProfileQuery.error?.message ?? reportTypesQuery.error?.message ?? reportRetentionQuery.error?.message ?? selectedReportTypeQuery.error?.message}</AlertDescription>
         </Alert>
       )}
 
@@ -1599,6 +1717,76 @@ export default function CompanySettings() {
               <AlertDescription>Rapor profili ve bölüm ayarlarını yalnız firma yöneticileri düzenleyebilir.</AlertDescription>
             </Alert>
           )}
+
+          {reportRetentionConflict && (
+            <Alert data-testid="company-report-retention-conflict" variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Saklama politikası güncel değil</AlertTitle>
+              <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <span>Saklama politikası başka bir oturum tarafından güncellendi. Kaydetmeden önce güncel bilgileri yükleyin.</span>
+                <Button type="button" variant="secondary" size="sm" onClick={reloadReportRetention}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Güncel bilgileri yükle
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          <Card className="overflow-hidden rounded-lg">
+            <CardHeader>
+              <CardTitle>Rapor Saklama Politikası</CardTitle>
+              <CardDescription>Bu politika otomatik scheduler çalıştırmaz; yalnız manuel veya operasyonel temizleme planlarında uygulanır.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {reportRetentionQuery.isLoading ? (
+                <div data-testid="company-report-retention-loading" className="space-y-4">
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                </div>
+              ) : reportRetentionQuery.data ? (
+                <form data-testid="company-report-retention-form" className="space-y-5" onSubmit={handleReportRetentionSubmit}>
+                  <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                    <div>
+                      <Label htmlFor="report-retention-enabled">Retention enabled</Label>
+                      <div className="text-xs text-muted-foreground">Kapalıyken tamamlanan veya hatalı arşivler retention nedeniyle purge adayı sayılmaz.</div>
+                    </div>
+                    <Switch id="report-retention-enabled" data-testid="report-retention-enabled-switch" checked={reportRetentionForm.retentionEnabled} disabled={reportRetentionDisabled} onCheckedChange={(checked) => patchReportRetentionField("retentionEnabled", checked)} />
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <Field id="report-completed-retention-days" label="Tamamlanan raporlar" help="365-36500 gün">
+                      <Input id="report-completed-retention-days" data-testid="report-completed-retention-days-input" type="number" min={365} max={36500} value={reportRetentionForm.completedRetentionDays} disabled={reportRetentionDisabled} onChange={(event) => patchReportRetentionField("completedRetentionDays", Number(event.target.value))} />
+                    </Field>
+                    <Field id="report-failed-retention-days" label="Hatalı raporlar" help="30-3650 gün">
+                      <Input id="report-failed-retention-days" data-testid="report-failed-retention-days-input" type="number" min={30} max={3650} value={reportRetentionForm.failedRetentionDays} disabled={reportRetentionDisabled} onChange={(event) => patchReportRetentionField("failedRetentionDays", Number(event.target.value))} />
+                    </Field>
+                    <Field id="report-deleted-grace-days" label="Soft-delete grace" help="7-365 gün">
+                      <Input id="report-deleted-grace-days" data-testid="report-deleted-grace-days-input" type="number" min={7} max={365} value={reportRetentionForm.deletedGraceDays} disabled={reportRetentionDisabled} onChange={(event) => patchReportRetentionField("deletedGraceDays", Number(event.target.value))} />
+                    </Field>
+                  </div>
+                  <Alert className="border-amber-500/30 bg-amber-500/10">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>Kalıcı silme kontrollü işlemdir</AlertTitle>
+                    <AlertDescription>Soft-delete storage nesnesini hemen silmez. Kalıcı purge için explicit ACK ve operasyonel cleanup gerekir.</AlertDescription>
+                  </Alert>
+                  <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm text-muted-foreground">
+                      <span data-testid="company-report-retention-version">Saklama politikası sürümü: {reportRetentionQuery.data.settings.settingsVersion}</span>
+                      {reportRetentionQuery.data.isDefault && <span className="ml-2 text-teal-300">Varsayılan ve kapalı.</span>}
+                      {reportRetentionDirty && <span className="ml-2 text-amber-400">Kaydedilmemiş politika var.</span>}
+                    </div>
+                    {canEditReports && (
+                      <Button data-testid="company-report-retention-save-button" type="submit" disabled={!reportRetentionDirty || reportRetentionSaving || reportRetentionConflict}>
+                        <Save className="mr-2 h-4 w-4" />
+                        {reportRetentionSaving ? "Kaydediliyor" : "Kaydet"}
+                      </Button>
+                    )}
+                  </div>
+                </form>
+              ) : (
+                <div className="py-8 text-sm text-muted-foreground">Görüntülenecek saklama politikası yok.</div>
+              )}
+            </CardContent>
+          </Card>
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
             <Card className="overflow-hidden rounded-lg">

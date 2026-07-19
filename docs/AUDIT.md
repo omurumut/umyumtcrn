@@ -4,7 +4,7 @@ Faz 3B.3 adds an append-only `audit_events` table for critical operational and I
 
 ## Scope
 
-Audited areas include authentication success/failure/logout, user create/update/delete, consumption create/update/delete/import, SEU assessment create/update/delete/acceptance decisions, targets, action plans, target progress, VAP projects, demo seed/reset, superadmin bootstrap, and MGM sync/import triggers.
+Audited areas include authentication success/failure/logout, user create/update/delete, consumption create/update/delete/import, SEU assessment create/update/delete/acceptance decisions, targets, action plans, target progress, VAP projects, report generation/archive lifecycle, report retention settings, report archive diagnostics, demo seed/reset, superadmin bootstrap, and MGM sync/import triggers.
 
 Audit is a traceability layer. Existing `createdByUserId`, `updatedByUserId`, and related actor fields remain part of the domain model.
 
@@ -17,6 +17,22 @@ Every API request gets an `X-Request-Id` response header. A client-supplied requ
 Audit payloads are bounded and recursively sanitized. Keys matching password, hash, token, authorization, cookie, secret, API key, database URL, connection string, raw file content, stack, or SQL are redacted. Large strings, arrays, object depth, and total JSON size are capped.
 
 Login failures store hashed username metadata only. Raw usernames, passwords, tokens, cookies, authorization headers, password hashes, and raw IP addresses must not be stored in audit events.
+
+Report archive audit events must not store storage keys, bucket names, endpoints, credentials, full object lists, raw report content, stack traces, or long user-entered reasons. Delete/restore/purge events store bounded identifiers such as `companyId`, `archiveId`, `reportType`, safe reason/failure category, policy/settings version, and summary counts.
+
+Faz 4C report archive actions include:
+
+- `report_archive.soft_deleted`
+- `report_archive.restored`
+- `report_archive.purge_started`
+- `report_archive.purged`
+- `report_archive.purge_failed`
+- `report_retention_settings.created`
+- `report_retention_settings.updated`
+- `report_archive.missing_diagnostics_run`
+- `report_archive.orphan_diagnostics_run`
+- `report_archive.cleanup_dry_run`
+- `report_archive.cleanup_executed`
 
 ## Roles
 
@@ -36,7 +52,7 @@ Critical mutations are designed to write the business mutation and audit event i
 
 ## Retention And Backup
 
-No audit deletion API exists. Audit retention is a product and compliance policy decision. Backups and restore procedures must include `audit_events`. Long-term partitioning or archive storage can be evaluated after production retention requirements are set.
+No audit deletion API exists. Audit retention is a product and compliance policy decision. Backups and restore procedures must include `audit_events`. DB restore does not restore object storage content by itself; after restore, run report archive missing-object diagnostics and a report archive smoke. Long-term partitioning or archive storage can be evaluated after production retention requirements are set.
 
 ## Incident Investigation
 

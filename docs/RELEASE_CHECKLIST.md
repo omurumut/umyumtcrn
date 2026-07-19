@@ -295,13 +295,21 @@ Belirsiz DB değişiklikleri release kapsamına alınmamalıdır. Önce migratio
 
 Rapor arşivi veya PDF/HTML rapor akışı değiştiyse şu kontroller ayrıca yapılmalıdır:
 
-- [ ] `report_archives` migration sırası `0028`, `0029`, `0030` olarak korunuyor.
+- [ ] `report_archives` migration sırası `0028`, `0029`, `0030`, `0031` olarak korunuyor.
 - [ ] Yeni rapor binary'si `reports.download_url` içinde data URL olarak persist edilmiyor.
 - [ ] Archive list endpoint'i storage key, bucket, local path veya tam snapshot JSON döndürmüyor.
 - [ ] Archive download endpoint'i auth, company ve unit scope kontrolü yapıyor.
 - [ ] Completed olmayan archive kayıtları indirilemiyor.
+- [ ] Varsayılan archive listesi `deleted`, `purging`, `purged` ve `purge_failed` kayıtları göstermiyor; explicit status filtresi gerekiyor.
+- [ ] Soft-delete yalnız admin/superadmin için açık; standard user ve kontrol_admin reddediliyor.
+- [ ] Restore yalnız `deleted` kayıt için ve storage object mevcutsa çalışıyor.
+- [ ] Tek kayıt purge explicit ACK istiyor, grace/retention eligibility ve `deletion_locked` kontrolü yapıyor.
+- [ ] Batch cleanup CLI varsayılan dry-run çalışıyor; execute için company, max count/bytes ve ACK guard'ları var.
+- [ ] Missing-object diagnostics bounded DB adayları üzerinde `exists` kontrolü yapıyor, key sızdırmıyor.
+- [ ] Orphan diagnostics bounded prefix listing kullanıyor, object identifier redacted/hash dönüyor ve default read-only.
 - [ ] Storage write sonrası size ve SHA-256 checksum doğrulanıyor.
 - [ ] Download audit metadata'sı secret, path veya storage key içermiyor.
+- [ ] Delete/restore/purge audit metadata'sı storage key, bucket, endpoint, credential veya stack trace içermiyor.
 - [ ] `REPORT_STORAGE_PROVIDER` ve ilgili storage env'leri staging/production için net kararlaştırıldı.
 - [ ] S3 kullaniliyorsa bucket private, endpoint/region/prefix/timeout degerleri operasyon tarafindan dogrulandi.
 - [ ] Explicit credential kullaniliyorsa access key ve secret birlikte set edildi; runtime credential chain kullaniliyorsa bu karar dokumante edildi.
