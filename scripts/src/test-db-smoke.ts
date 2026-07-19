@@ -28,6 +28,7 @@ const REQUIRED_TABLES = [
   "energy_baselines",
   "energy_performance_results",
   "energy_review_records",
+  "unit_technical_profiles",
 ] as const;
 const REQUIRED_INDEXES = [
   "wdd_station_key_year_month_official_idx",
@@ -54,6 +55,8 @@ const REQUIRED_INDEXES = [
   "audit_events_entity_idx",
   "audit_events_action_occurred_idx",
   "audit_events_request_id_idx",
+  "unit_technical_profiles_unit_id_unique",
+  "unit_technical_profiles_company_unit_idx",
 ] as const;
 
 interface JournalEntry {

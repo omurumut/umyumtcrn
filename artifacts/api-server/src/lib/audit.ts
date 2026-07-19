@@ -81,6 +81,9 @@ export const AUDIT_ACTIONS = [
   "report_archive.orphan_diagnostics_run",
   "report_archive.cleanup_dry_run",
   "report_archive.cleanup_executed",
+  "unit_technical_profile.created",
+  "unit_technical_profile.updated",
+  "unit_technical_profile.published",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;

@@ -370,6 +370,54 @@ export const insertSubUnitSchema = createInsertSchema(subUnitsTable).omit({ id: 
 export type InsertSubUnit = z.infer<typeof insertSubUnitSchema>;
 export type SubUnit = typeof subUnitsTable.$inferSelect;
 
+export const unitTechnicalProfilesTable = pgTable("unit_technical_profiles", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id).notNull(),
+  facilityUseType: text("facility_use_type"),
+  mainActivity: text("main_activity"),
+  buildingCount: integer("building_count"),
+  totalEnclosedAreaM2: real("total_enclosed_area_m2"),
+  heatedAreaM2: real("heated_area_m2"),
+  cooledAreaM2: real("cooled_area_m2"),
+  openAreaM2: real("open_area_m2"),
+  personnelCount: integer("personnel_count"),
+  averageDailyUsers: integer("average_daily_users"),
+  dailyOperatingHours: real("daily_operating_hours"),
+  weeklyOperatingDays: real("weekly_operating_days"),
+  annualOperatingDays: integer("annual_operating_days"),
+  shiftCount: integer("shift_count"),
+  shiftType: text("shift_type"),
+  seasonalOperationStatus: text("seasonal_operation_status"),
+  insulationStatus: text("insulation_status"),
+  heatingSystemType: text("heating_system_type"),
+  coolingSystemType: text("cooling_system_type"),
+  domesticHotWaterSystem: text("domestic_hot_water_system"),
+  buildingAutomationStatus: text("building_automation_status"),
+  compressedAirStatus: text("compressed_air_status"),
+  steamSystemStatus: text("steam_system_status"),
+  generatorStatus: text("generator_status"),
+  renewableEnergyStatus: text("renewable_energy_status"),
+  mainProcessDescription: text("main_process_description"),
+  energyInfrastructureDescription: text("energy_infrastructure_description"),
+  knownEnergyIssues: text("known_energy_issues"),
+  technicalImprovements: text("technical_improvements"),
+  plannedInfrastructureChanges: text("planned_infrastructure_changes"),
+  profileStatus: text("profile_status").notNull().default("draft"),
+  profileVersion: integer("profile_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdBy: integer("created_by").references(() => usersTable.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  unitUnique: uniqueIndex("unit_technical_profiles_unit_id_unique").on(table.unitId),
+  companyUnitIdx: index("unit_technical_profiles_company_unit_idx").on(table.companyId, table.unitId),
+}));
+
+export const insertUnitTechnicalProfileSchema = createInsertSchema(unitTechnicalProfilesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertUnitTechnicalProfile = z.infer<typeof insertUnitTechnicalProfileSchema>;
+export type UnitTechnicalProfile = typeof unitTechnicalProfilesTable.$inferSelect;
+
 // ── Energy Sources (Enerji Kaynakları) ────────────────────
 export const energySourcesTable = pgTable("energy_sources", {
   id: serial("id").primaryKey(),

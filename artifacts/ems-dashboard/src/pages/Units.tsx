@@ -25,6 +25,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import SubUnitsTab from "@/components/units/SubUnitsTab";
 import EnergySourcesTab from "@/components/units/EnergySourcesTab";
+import UnitTechnicalProfileTab from "@/components/units/UnitTechnicalProfileTab";
 import UsersTab from "@/components/units/UsersTab";
 import { parseIlIlce, buildCityValue } from "@/data/turkiyeIlIlce";
 import { IlIlceSelector } from "@/components/ui/IlIlceSelector";
@@ -479,6 +480,7 @@ export default function Units() {
       <Tabs defaultValue={isAdmin ? "birimler" : "alt-birimler"}>
         <TabsList>
           {isAdmin && <TabsTrigger value="birimler">Birimler</TabsTrigger>}
+          <TabsTrigger value="teknik-profil">Teknik Profil</TabsTrigger>
           <TabsTrigger value="alt-birimler">Alt Birimler / Lokasyonlar</TabsTrigger>
           <TabsTrigger value="enerji-kaynaklari">Enerji Kaynakları</TabsTrigger>
           {isAdmin && <TabsTrigger value="kullanicilar">Kullanıcılar</TabsTrigger>}
@@ -489,6 +491,10 @@ export default function Units() {
             <AdminUnitsTab />
           </TabsContent>
         )}
+
+        <TabsContent value="teknik-profil" className="mt-4">
+          <UnitTechnicalProfileTab unitId={tabUnitId} />
+        </TabsContent>
 
         <TabsContent value="alt-birimler" className="mt-4">
           <SubUnitsTab unitId={tabUnitId} />
