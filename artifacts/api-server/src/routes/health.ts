@@ -9,7 +9,7 @@ import { pool } from "@workspace/db";
 import { applicationLifecycleState } from "../lib/lifecycle-state.js";
 import { logger } from "../lib/logger.js";
 import { observeDbEvent } from "../lib/metrics.js";
-import { reportStorageReadinessStatus } from "../lib/report-storage.js";
+import { reportStorageReadinessDetails } from "../lib/report-storage.js";
 
 const router: IRouter = Router();
 const READINESS_TIMEOUT_MS = 2_000;
@@ -156,10 +156,10 @@ async function checkFrontendReadiness(): Promise<CheckStatus> {
 }
 
 async function checkReportStorageReadiness(): Promise<CheckStatus> {
-  const status = await reportStorageReadinessStatus();
+  const { status, category } = await reportStorageReadinessDetails();
   if (status === "pass") return "ok";
   if (status === "disabled") return "skip";
-  throw new Error("report_storage");
+  throw new Error(category ?? "report_storage");
 }
 
 async function safeCheck(name: string, operation: () => Promise<void | CheckStatus>): Promise<SafeCheck> {

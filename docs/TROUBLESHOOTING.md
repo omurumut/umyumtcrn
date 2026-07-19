@@ -1752,3 +1752,20 @@ pnpm run test:operational-readiness
 ```
 
 Production veya staging tanisinda `REPORT_STORAGE_PROVIDER`, provider'a ait env'ler ve `/api/readyz` icindeki `checks.reportStorage` sonucu birlikte incelenmelidir. Log, response veya audit metadata icine storage key, bucket, local path, token veya connection string yazilmamalidir.
+
+S3 uyumlu provider icin ek tanilar:
+
+- `storage_config_invalid`: Bucket/region eksik, partial credential, gecersiz boolean/timeout veya gecersiz prefix olabilir.
+- `storage_access_denied`: Credential yetkileri, bucket policy veya provider endpoint yetkisi incelenir; access key loglanmaz.
+- `storage_bucket_not_found`: Bucket adi veya endpoint/region eslesmesi operasyon tarafindan kontrol edilir.
+- `storage_object_not_found`: Archive DB kaydi tamamlanmis olsa da object silinmis veya yanlis prefix ile aranmis olabilir.
+- `storage_integrity_mismatch`: Size veya SHA-256 metadata DB kaydi ile uyusmamistir; ETag checksum kabul edilmez.
+- `storage_timeout` veya `storage_network_error`: Endpoint erisimi, request timeout ve platform network kurallari incelenir.
+
+Opsiyonel S3 smoke varsayilan olarak remote write yapmaz:
+
+```bash
+pnpm run test:report-storage-s3-smoke
+```
+
+`skipped: not_configured` beklenen guvenli varsayilandir. Remote test yalniz onayli test bucket ile `REPORT_STORAGE_PROVIDER=s3`, `REPORT_STORAGE_S3_SMOKE_ENABLE=true` ve `REPORT_STORAGE_S3_SMOKE_ACK=test-bucket` set edildiginde calistirilir.

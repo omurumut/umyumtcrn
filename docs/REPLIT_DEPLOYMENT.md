@@ -35,11 +35,27 @@ Optional PDF settings:
 Required report archive storage settings:
 
 - `REPORT_STORAGE_PROVIDER`: Must be set before production readiness is expected to pass. The checked-in local adapter is for development, tests, and disposable production-like smoke only.
+- `REPORT_STORAGE_PROVIDER=s3`: Enables the S3-compatible object storage adapter for AWS S3, Cloudflare R2, or another private S3 API compatible service.
+- `REPORT_STORAGE_BUCKET`: Required for `s3`. Keep the bucket private; the app does not set `public-read` ACLs or issue public/signed URLs.
+- `REPORT_STORAGE_REGION`: Required for `s3`. For S3-compatible services that use a synthetic region, set the provider-documented value.
+- `REPORT_STORAGE_ENDPOINT`: Optional custom S3-compatible endpoint. Leave unset for standard AWS S3 endpoint resolution.
+- `REPORT_STORAGE_ACCESS_KEY_ID` and `REPORT_STORAGE_SECRET_ACCESS_KEY`: Optional explicit credential pair. If one is set, both must be set. If neither is set, the runtime AWS credential chain is used.
+- `REPORT_STORAGE_SESSION_TOKEN`: Optional temporary credential token.
+- `REPORT_STORAGE_FORCE_PATH_STYLE=true|false`: Strict boolean. Use only when the S3-compatible provider requires path-style addressing.
+- `REPORT_STORAGE_PREFIX`: Optional server-controlled object key prefix. Leading/trailing slashes are normalized; `..`, backslashes, and control characters are rejected.
+- `REPORT_STORAGE_REQUEST_TIMEOUT_MS`: Optional bounded request timeout, default `5000`.
+- `REPORT_STORAGE_MAX_DOWNLOAD_BYTES`: Optional bounded max archive object size, default 50 MiB.
 - `REPORT_STORAGE_LOCAL_ROOT`: Required only when `REPORT_STORAGE_PROVIDER=local`. Do not point this at an ephemeral production path for real customer archives.
 - `REPORT_ARCHIVE_STORAGE_REQUIRED`: Defaults to required. Setting it to `false` makes readiness skip archive storage and should be limited to a documented temporary diagnostic window.
 - `REPORT_STORAGE_LOCAL_PRODUCTION_ACK=disposable-test`: Allows the local adapter only for disposable production-like tests that also set `TEST_DB_DISPOSABLE=true`; it is not a real production storage approval.
 
 Archive downloads are served through authenticated API endpoints. Responses never expose storage keys, bucket names, or local filesystem paths. The application verifies stored object size and SHA-256 checksum before completing archive metadata.
+
+Optional S3 write smoke:
+
+- `pnpm run test:report-storage-s3-smoke` is skipped by default.
+- It writes to remote storage only when `REPORT_STORAGE_PROVIDER=s3`, `REPORT_STORAGE_S3_SMOKE_ENABLE=true`, and `REPORT_STORAGE_S3_SMOKE_ACK=test-bucket` are all set.
+- Run it only against an explicitly approved non-production test bucket. The smoke uses a generated key, validates put/head/get/checksum/delete, and treats cleanup failure as failure.
 
 ## CORS and HTTP security policy
 

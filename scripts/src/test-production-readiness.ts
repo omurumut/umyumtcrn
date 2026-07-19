@@ -1,9 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import { chromium } from "playwright";
 import { Pool } from "pg";
 
@@ -49,6 +52,72 @@ async function assertBrowserExecutableAvailable(): Promise<void> {
   } catch {
     throw new Error("İzole Playwright Chromium executable bulunamadı; önce aynı PLAYWRIGHT_BROWSERS_PATH ile pnpm run install:browser çalıştırılmalı.");
   }
+}
+
+async function assertMockedS3ProviderReadiness(): Promise<void> {
+  const storageModule = await import(pathToFileURL(resolve(import.meta.dirname, "../../artifacts/api-server/src/lib/report-storage.ts")).href) as {
+    createS3ReportStorage(config: unknown, client: { send(command: { input: Record<string, unknown>; constructor: { name: string } }): Promise<unknown> }): {
+      checkReadinessDetails?(): Promise<{ status: string }>;
+      put(input: { key: string; content: Buffer; contentType: string }): Promise<{ contentLength: number; checksumSha256: string }>;
+      get(key: string): Promise<{ checksumSha256: string; stream: Readable }>;
+    };
+    parseS3ReportStorageConfig(env: NodeJS.ProcessEnv): unknown;
+  };
+  const content = Buffer.from("<!doctype html><html><body>s3 smoke</body></html>", "utf8");
+  const client = {
+    async send(command: { input: Record<string, unknown>; constructor: { name: string } }) {
+      if (command.constructor.name === "HeadBucketCommand") return {};
+      if (command.constructor.name === "PutObjectCommand") return {};
+      if (command.constructor.name === "HeadObjectCommand") {
+        return {
+          ContentLength: content.length,
+          ContentType: "text/html; charset=utf-8",
+          Metadata: command.input.Key === "ready-prefix/companies/1/reports/annual/2026/1/report.html"
+            ? { sha256: "PLACEHOLDER" }
+            : {},
+        };
+      }
+      if (command.constructor.name === "GetObjectCommand") {
+        return {
+          Body: Readable.from(content),
+          ContentLength: content.length,
+          ContentType: "text/html; charset=utf-8",
+          Metadata: { sha256: "PLACEHOLDER" },
+        };
+      }
+      if (command.constructor.name === "DeleteObjectCommand") return {};
+      throw new Error("unexpected command");
+    },
+  };
+  const config = storageModule.parseS3ReportStorageConfig({
+    REPORT_STORAGE_PROVIDER: "s3",
+    REPORT_STORAGE_BUCKET: "fake-private-bucket",
+    REPORT_STORAGE_REGION: "auto",
+    REPORT_STORAGE_ENDPOINT: "https://storage.example.invalid",
+    REPORT_STORAGE_ACCESS_KEY_ID: "fake-access-key",
+    REPORT_STORAGE_SECRET_ACCESS_KEY: "fake-secret-key",
+    REPORT_STORAGE_PREFIX: "ready-prefix",
+  });
+  const storage = storageModule.createS3ReportStorage(config, {
+    async send(command) {
+      const result = await client.send(command);
+      if (
+        (command.constructor.name === "HeadObjectCommand" || command.constructor.name === "GetObjectCommand")
+        && result
+        && typeof result === "object"
+        && "Metadata" in result
+      ) {
+        return { ...result, Metadata: { sha256: createHash("sha256").update(content).digest("hex") } };
+      }
+      return result;
+    },
+  });
+  assert((await storage.checkReadinessDetails?.())?.status === "pass", "Mocked S3 readiness failed.");
+  const key = "companies/1/reports/annual/2026/1/report.html";
+  const put = await storage.put({ key, content, contentType: "text/html; charset=utf-8" });
+  const get = await storage.get(key);
+  assert(put.contentLength === content.length && get.checksumSha256 === put.checksumSha256, "Mocked S3 archive lifecycle failed.");
+  get.stream.destroy();
 }
 
 async function reservePort(): Promise<number> {
@@ -688,6 +757,7 @@ async function assertInvalidStartupConfig(browserPath: string, overrides: NodeJS
 async function main(): Promise<void> {
   assertDisposableEnvironment();
   await assertBrowserExecutableAvailable();
+  await assertMockedS3ProviderReadiness();
   let running: RunningProduction | null = null;
   let missingBrowserDirectory: string | null = null;
   try {

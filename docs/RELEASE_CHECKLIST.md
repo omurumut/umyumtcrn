@@ -303,6 +303,10 @@ Rapor arşivi veya PDF/HTML rapor akışı değiştiyse şu kontroller ayrıca y
 - [ ] Storage write sonrası size ve SHA-256 checksum doğrulanıyor.
 - [ ] Download audit metadata'sı secret, path veya storage key içermiyor.
 - [ ] `REPORT_STORAGE_PROVIDER` ve ilgili storage env'leri staging/production için net kararlaştırıldı.
+- [ ] S3 kullaniliyorsa bucket private, endpoint/region/prefix/timeout degerleri operasyon tarafindan dogrulandi.
+- [ ] Explicit credential kullaniliyorsa access key ve secret birlikte set edildi; runtime credential chain kullaniliyorsa bu karar dokumante edildi.
+- [ ] Public ACL, signed URL veya public redirect yok; download backend auth endpoint'i uzerinden yapiliyor.
+- [ ] S3 write smoke sadece onayli test bucket ve `REPORT_STORAGE_S3_SMOKE_ACK=test-bucket` ile calistirildi.
 - [ ] Local adapter yalnız development/test/disposable smoke için kullanılıyor.
 - [ ] `pnpm run test:operational-readiness` storage smoke sonucunu da doğruladı.
 

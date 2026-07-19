@@ -101,8 +101,28 @@ Faz 4A ile yeni rapor ciktisi once immutable snapshot'a, sonra storage-backed ar
 Zorunlu production env sozlesmesi:
 
 - `REPORT_STORAGE_PROVIDER`: Production icin acikca tanimli olmalidir. Desteklenen local adapter yalniz development/test ve disposable production-like smoke icindir.
+- `REPORT_STORAGE_PROVIDER=s3`: S3 uyumlu kalici object storage adapter'ini acar.
+- `REPORT_STORAGE_BUCKET`: `s3` icin zorunludur. Bucket private kalmali; uygulama public ACL veya signed/public URL uretmez.
+- `REPORT_STORAGE_REGION`: `s3` icin zorunludur. S3 uyumlu servis sentetik region istiyorsa operasyon tarafindan acikca set edilir.
+- `REPORT_STORAGE_ENDPOINT`: Standart AWS S3 disindaki S3 uyumlu servisler icin opsiyonel custom endpoint.
+- `REPORT_STORAGE_ACCESS_KEY_ID` / `REPORT_STORAGE_SECRET_ACCESS_KEY`: Birlikte set edilirse explicit static credential kullanilir; yalniz biri varsa config gecersizdir. Ikisi de yoksa runtime AWS credential chain kullanilir.
+- `REPORT_STORAGE_SESSION_TOKEN`: Gecici credential icin opsiyoneldir.
+- `REPORT_STORAGE_FORCE_PATH_STYLE`: Yalniz `true` veya `false` kabul edilir.
+- `REPORT_STORAGE_PREFIX`: Server kontrollu opsiyonel prefix; leading/trailing slash normalize edilir, `..`, backslash ve kontrol karakterleri reddedilir.
+- `REPORT_STORAGE_REQUEST_TIMEOUT_MS`: Bounded timeout, varsayilan 5000 ms.
+- `REPORT_STORAGE_MAX_DOWNLOAD_BYTES`: Bounded archive boyutu, varsayilan 50 MiB.
 - `REPORT_STORAGE_LOCAL_ROOT`: Local adapter kullaniliyorsa kok klasor. Production'da kalici object storage adapter'i hazir olmadan local adapter kullanilmaz.
 - `REPORT_ARCHIVE_STORAGE_REQUIRED`: Varsayilan davranis storage readiness fail-closed. Sadece gecici operasyonel tanida `false` yapilabilir.
+
+S3 adapter guvenlik sinirlari:
+
+- Storage key uygulama tarafindan uretilir ve `companies/...` tenant yapisini korur; request ile provider veya key secilemez.
+- Upload `Content-Type`, `Content-Length` ve SHA-256 metadata yazar; basarili upload sonrasi `HeadObject` ile size/checksum dogrular.
+- Download `GetObject` stream'i kullanir; object tamamen memory'ye alinmaz ve endpoint public/signed URL redirect yapmaz.
+- `HeadBucket` readiness read-only'dir; her readiness request'inde put/delete yapilmaz.
+- Hata kategorileri `storage_config_invalid`, `storage_access_denied`, `storage_object_not_found`, `storage_timeout` gibi guvenli degerlere indirgenir.
+- Bucket, endpoint, access key, secret, session token, raw SDK error, full key veya header response/audit metadata icine yazilmaz.
+- Provider-managed encryption yeterli kabul edilir; customer-managed key ve multipart upload bu fazda zorunlu degildir.
 
 Local adapter guvenlik sinirlari:
 
@@ -110,6 +130,14 @@ Local adapter guvenlik sinirlari:
 - `..`, backslash, root disina cikis ve symlink escape denemeleri reddedilir.
 - Yazimdan sonra size ve SHA-256 checksum DB metadata'siyle dogrulanir.
 - Indirme endpoint'i auth, tenant scope ve archive status kontrolu yapar.
+
+Opsiyonel S3 smoke:
+
+```powershell
+pnpm.cmd run test:report-storage-s3-smoke
+```
+
+Bu komut varsayilan `skipped: not_configured` sonucuyla cikar. Remote write yalniz `REPORT_STORAGE_S3_SMOKE_ENABLE=true` ve `REPORT_STORAGE_S3_SMOKE_ACK=test-bucket` ile, ayrica `REPORT_STORAGE_PROVIDER=s3` ve test bucket env'leri set edildiginde yapilir.
 
 Legacy `reports.download_url` icinde daha once saklanmis data URL kayitlari destructive migration ile tasinmadi. Eski kayitlar eski history ekraninda kalabilir; yeni raporlar archive tablosundan indirilir.
 
@@ -153,4 +181,4 @@ Faz 3D itibariyla operasyonel, read-only diagnostics icin `GET /api/admin/report
 - Otomatik stale-generating cleanup/retry yok.
 - Renderer crash ve completed update failure icin daha hedefli fault-injection testleri eklenebilir.
 - Snapshot JSON boyutu icin DB check constraint yok; helper'lar buyuk binary/HTML saklamayacak sekilde sinirli veri yazar.
-- Kalici object storage adapter'i ve retention policy sonraki operasyonel faz kapsamidir; Faz 4A local adapter'i production-like disposable smoke icindir.
+- Retention policy, orphan cleanup job, multipart upload esigi, scheduled deletion ve customer-managed encryption key sonraki operasyonel faz kapsamidir.

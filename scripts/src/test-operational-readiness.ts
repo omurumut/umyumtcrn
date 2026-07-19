@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { chromium, type Browser } from "playwright";
 import { pool } from "@workspace/db";
 
@@ -59,23 +59,17 @@ async function checkBrowserDeepSmoke(): Promise<void> {
 async function checkReportStorageSmoke(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "iso50001-report-storage-"));
   try {
-    const absoluteRoot = resolve(root);
-    const content = Buffer.from("operational report storage smoke", "utf8");
-    const key = "companies/1/reports/operational/2026/smoke/report.txt";
-    const targetPath = resolve(absoluteRoot, key);
-    assert(targetPath.startsWith(`${absoluteRoot}${process.platform === "win32" ? "\\" : "/"}`), "Report storage path confinement failed.");
-    await mkdir(dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, content, { mode: 0o600 });
-    const stored = await readFile(targetPath);
-    assert(stored.length === content.length, "Report storage get size mismatch.");
-    assert(createHash("sha256").update(stored).digest("hex") === createHash("sha256").update(content).digest("hex"), "Report storage checksum mismatch.");
-    await rm(targetPath);
-    await access(targetPath).then(
-      () => {
-        throw new Error("Report storage delete failed.");
-      },
-      () => undefined,
-    );
+    const storageModule = await import(pathToFileURL(resolve(import.meta.dirname, "../../artifacts/api-server/src/lib/report-storage.ts")).href) as {
+      createReportStorage(env: NodeJS.ProcessEnv): unknown;
+      runReportStorageWriteSmoke(storage: unknown, acknowledged: boolean): Promise<"passed" | "skipped" | "failed">;
+    };
+    const storage = storageModule.createReportStorage({
+      ...process.env,
+      REPORT_STORAGE_PROVIDER: "local",
+      REPORT_STORAGE_LOCAL_ROOT: resolve(root),
+    });
+    const smoke = await storageModule.runReportStorageWriteSmoke(storage, true);
+    assert(smoke === "passed", "Report storage provider smoke failed.");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { pipeline } from "node:stream/promises";
 import { db, companiesTable, reportsTable, reportGenerationSnapshotsTable, reportArchivesTable, usersTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
 import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc, count, ilike } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
@@ -30,7 +31,7 @@ import {
   type AnnualEnergyReportSnapshot,
 } from "../lib/annual-energy-report-snapshot.js";
 import { createReportArchiveRecord, completeReportArchive, failReportArchive, sanitizeArchiveFilename, type ArchiveReportType } from "../lib/report-archive.js";
-import { reportStorage } from "../lib/report-storage.js";
+import { ReportStorageError, reportStorage } from "../lib/report-storage.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -52,6 +53,10 @@ function isCompanyAdmin(role: string) {
 
 function isSuperAdmin(role: string) {
   return role === "superadmin";
+}
+
+function reportStorageFailureCategory(error: unknown, fallback: string): string {
+  return error instanceof ReportStorageError ? error.category : fallback;
 }
 
 function escapeHtml(value: unknown): string {
@@ -444,6 +449,14 @@ router.get("/reports/archive/:id/download", requireAuth, async (req, res) => {
     const stored = await reportStorage.get(archive.storageKey);
     if (archive.sizeBytes !== null && stored.contentLength !== archive.sizeBytes) throw new Error("archive_size_mismatch");
     if (archive.checksumSha256 && stored.checksumSha256 !== archive.checksumSha256) throw new Error("archive_checksum_mismatch");
+    res.set({
+      "Content-Type": archive.contentType,
+      "Content-Disposition": safeContentDisposition(archive.outputName),
+      "Cache-Control": "no-store",
+      "Content-Length": String(stored.contentLength),
+    });
+    req.on("aborted", () => stored.stream.destroy());
+    await pipeline(stored.stream, res);
     await writeBestEffortAudit(db, {
       request: req,
       companyId: archive.companyId,
@@ -458,21 +471,11 @@ router.get("/reports/archive/:id/download", requireAuth, async (req, res) => {
         sizeBytes: archive.sizeBytes,
       },
     });
-    res.set({
-      "Content-Type": archive.contentType,
-      "Content-Disposition": safeContentDisposition(archive.outputName),
-      "Cache-Control": "no-store",
-      "Content-Length": String(stored.contentLength),
-    });
-    stored.stream.on("error", (error) => {
-      req.log.error({ error }, "Report archive stream failed");
-      res.destroy(error);
-    });
-    stored.stream.pipe(res);
   } catch (err) {
     if (handleReportScopeError(res, err)) return;
     req.log.error(err);
-    res.status(500).json({ error: "Rapor indirilemedi" });
+    if (!res.headersSent) res.status(500).json({ error: "Rapor indirilemedi" });
+    else res.destroy();
   }
 });
 
@@ -784,7 +787,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
         reportType: ANNUAL_ENERGY_REPORT_TYPE,
         snapshotId: snapshotRecordId,
         outputName: snapshotForFailure?.outputName ?? null,
-        failureCategory: err instanceof AnnualEnergyReportSnapshotError ? "settings_snapshot" : "render_or_storage",
+        failureCategory: err instanceof AnnualEnergyReportSnapshotError ? "settings_snapshot" : reportStorageFailureCategory(err, "render_or_storage"),
       });
     }
     if (snapshotRecordId !== null) {
@@ -793,7 +796,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
           status: "failed",
           storageStatus: "storage_failed",
           failedAt: new Date(),
-          failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
+          failureReason: reportStorageFailureCategory(err, err instanceof AnnualEnergyReportSnapshotError ? "settings_snapshot" : "render_or_storage"),
         })
         .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
       await writeBestEffortAudit(db, {
@@ -814,7 +817,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
           outputName: snapshotForFailure?.outputName ?? null,
           sectionCodes: snapshotForFailure?.sections.filter((section) => section.finalVisibility).map((section) => section.code) ?? [],
           legacyOverrides: snapshotForFailure ? Object.values(snapshotForFailure.legacyOverrides).map((override) => override.param) : [],
-          failureCategory: err instanceof AnnualEnergyReportSnapshotError ? "settings_snapshot" : "render_or_update",
+          failureCategory: err instanceof AnnualEnergyReportSnapshotError ? "settings_snapshot" : reportStorageFailureCategory(err, "render_or_update"),
         },
       });
     }
@@ -1325,7 +1328,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
         reportType: ENERGY_TARGETS_REPORT_TYPE,
         snapshotId: snapshotRecordId,
         outputName: snapshotForFailure?.filename ?? null,
-        failureCategory: err instanceof ReportSettingsSnapshotError ? "settings_snapshot" : "render_or_storage",
+        failureCategory: err instanceof ReportSettingsSnapshotError ? "settings_snapshot" : reportStorageFailureCategory(err, "render_or_storage"),
       });
     }
     if (snapshotRecordId !== null) {
@@ -1334,7 +1337,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
           status: "failed",
           storageStatus: "storage_failed",
           failedAt: new Date(),
-          failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
+          failureReason: reportStorageFailureCategory(err, err instanceof ReportSettingsSnapshotError ? "settings_snapshot" : "render_or_storage"),
         })
         .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
       await writeBestEffortAudit(db, {
@@ -1806,7 +1809,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
         reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
         snapshotId: snapshotRecordId,
         outputName: snapshotForFailure?.filename ?? null,
-        failureCategory: err instanceof EnergyPerformanceReportSnapshotError ? "settings_snapshot" : "render_or_storage",
+        failureCategory: err instanceof EnergyPerformanceReportSnapshotError ? "settings_snapshot" : reportStorageFailureCategory(err, "render_or_storage"),
       });
     }
     if (snapshotRecordId !== null) {
@@ -1815,7 +1818,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
           status: "failed",
           storageStatus: "storage_failed",
           failedAt: new Date(),
-          failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
+          failureReason: reportStorageFailureCategory(err, err instanceof EnergyPerformanceReportSnapshotError ? "settings_snapshot" : "render_or_storage"),
         })
         .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
       await writeBestEffortAudit(db, {
@@ -1838,7 +1841,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
           modelType: snapshotForFailure?.modelType ?? null,
           sectionCodes: snapshotForFailure?.sections.filter((section) => section.visibilityResult).map((section) => section.code) ?? [],
           requestOverrideUsed: false,
-          failureCategory: err instanceof EnergyPerformanceReportSnapshotError ? "settings_snapshot" : "render_or_update",
+          failureCategory: err instanceof EnergyPerformanceReportSnapshotError ? "settings_snapshot" : reportStorageFailureCategory(err, "render_or_update"),
         },
       });
     }

@@ -29,6 +29,8 @@
     "test:audit": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-audit.ts",
     "test:audit-restore": "tsx ./src/test-db.ts --with-child -- node ./node_modules/tsx/dist/cli.mjs ./src/test-audit-restore.ts",
     "test:report-migration-readiness": "tsx ./src/test-db.ts --with-child -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-migration-readiness.ts",
+    "test:report-storage-s3": "tsx ./src/test-report-storage-s3.ts",
+    "test:report-storage-s3-smoke": "tsx ./src/test-report-storage-s3-smoke.ts",
     "auth:cleanup": "tsx ./src/cleanup-auth-state.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
