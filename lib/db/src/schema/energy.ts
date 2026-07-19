@@ -210,6 +210,41 @@ export const insertReportGenerationSnapshotSchema = createInsertSchema(reportGen
 export type InsertReportGenerationSnapshot = z.infer<typeof insertReportGenerationSnapshotSchema>;
 export type ReportGenerationSnapshot = typeof reportGenerationSnapshotsTable.$inferSelect;
 
+export const reportArchivesTable = pgTable("report_archives", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "set null" }),
+  reportType: text("report_type").notNull(),
+  reportYear: integer("report_year"),
+  periodLabel: text("period_label"),
+  title: text("title").notNull(),
+  outputName: text("output_name").notNull(),
+  contentType: text("content_type").notNull(),
+  sizeBytes: integer("size_bytes"),
+  checksumSha256: text("checksum_sha256"),
+  storageProvider: text("storage_provider"),
+  storageKey: text("storage_key"),
+  status: text("status").notNull().default("generating"),
+  generatedBy: integer("generated_by").references(() => usersTable.id, { onDelete: "set null" }),
+  generatedAt: timestamp("generated_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+  failedAt: timestamp("failed_at"),
+  failureCategory: text("failure_category"),
+  snapshotId: integer("snapshot_id").references(() => reportGenerationSnapshotsTable.id, { onDelete: "set null" }),
+  legacyReportId: integer("legacy_report_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  companyGeneratedIndex: index("report_archives_company_generated_idx").on(table.companyId, table.generatedAt),
+  companyReportStatusIndex: index("report_archives_company_report_status_idx").on(table.companyId, table.reportType, table.status, table.generatedAt),
+  snapshotIndex: index("report_archives_snapshot_idx").on(table.snapshotId),
+  storageKeyUnique: uniqueIndex("report_archives_storage_key_unique").on(table.storageKey),
+}));
+
+export const insertReportArchiveSchema = createInsertSchema(reportArchivesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertReportArchive = z.infer<typeof insertReportArchiveSchema>;
+export type ReportArchive = typeof reportArchivesTable.$inferSelect;
+
 // Shared authentication state.
 export const authSessionsTable = pgTable("auth_sessions", {
   id: serial("id").primaryKey(),

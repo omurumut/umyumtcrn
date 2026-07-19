@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { db, companiesTable, reportsTable, reportGenerationSnapshotsTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
-import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc } from "drizzle-orm";
+import { db, companiesTable, reportsTable, reportGenerationSnapshotsTable, reportArchivesTable, usersTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
+import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc, count, ilike } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { renderHtmlToPdf, safePdfFilename } from "../lib/pdf-render.js";
 import { resolveEffectiveCompanyReportSettings } from "../lib/company-report-settings-resolver.js";
@@ -29,6 +29,8 @@ import {
   visibleAnnualEnergySections,
   type AnnualEnergyReportSnapshot,
 } from "../lib/annual-energy-report-snapshot.js";
+import { createReportArchiveRecord, completeReportArchive, failReportArchive, sanitizeArchiveFilename, type ArchiveReportType } from "../lib/report-archive.js";
+import { reportStorage } from "../lib/report-storage.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -90,6 +92,60 @@ function parseReportYear(value: unknown): number {
   const year = parseRequiredId(value, "year");
   if (year < 1900 || year > 3000) throw new ReportScopeError(400, "Geçersiz year");
   return year;
+}
+
+function parseOptionalReportYear(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return parseReportYear(value);
+}
+
+function parseArchiveLimit(value: unknown): number {
+  if (value === undefined || value === null || value === "") return 20;
+  const parsed = parsePositiveInteger(value, "limit");
+  if (parsed === undefined) return 20;
+  return Math.min(parsed, 50);
+}
+
+function parseArchiveOffset(value: unknown): number {
+  if (value === undefined || value === null || value === "") return 0;
+  if (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+  }
+  throw new ReportScopeError(400, "Gecersiz offset");
+}
+
+const ARCHIVE_REPORT_TYPES: ReadonlySet<ArchiveReportType> = new Set([ANNUAL_ENERGY_REPORT_TYPE, ENERGY_TARGETS_REPORT_TYPE, ENERGY_PERFORMANCE_REPORT_TYPE]);
+const ARCHIVE_STATUSES = new Set(["generating", "completed", "failed", "deleted"]);
+
+function isArchiveReportType(value: string): value is ArchiveReportType {
+  return ARCHIVE_REPORT_TYPES.has(value as ArchiveReportType);
+}
+
+function parseArchiveReportType(value: unknown): ArchiveReportType | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !isArchiveReportType(value)) throw new ReportScopeError(400, "Gecersiz reportType");
+  return value;
+}
+
+function parseArchiveStatus(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !ARCHIVE_STATUSES.has(value)) throw new ReportScopeError(400, "Gecersiz status");
+  return value;
+}
+
+function parseArchiveDate(value: unknown, field: string): Date | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new ReportScopeError(400, `Gecersiz ${field}`);
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) throw new ReportScopeError(400, `Gecersiz ${field}`);
+  return parsed;
+}
+
+function safeContentDisposition(filename: string): string {
+  const safe = sanitizeArchiveFilename(filename).replace(/"/g, "");
+  const ascii = safe.replace(/[^\x20-\x7E]/g, "_");
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(safe)}`;
 }
 
 async function getOfficialSeuReportSection({
@@ -273,10 +329,158 @@ router.get("/reports", requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/reports/archive
+router.get("/reports/archive", requireAuth, async (req, res) => {
+  try {
+    const user = req.user!;
+    if (!isCompanyAdmin(user.role) && !isSuperAdmin(user.role) && user.unitId === null) {
+      res.json({ items: [], total: 0, limit: 20, offset: 0, hasNext: false });
+      return;
+    }
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    const limit = parseArchiveLimit(req.query.limit);
+    const offset = parseArchiveOffset(req.query.offset);
+    const reportType = parseArchiveReportType(req.query.reportType);
+    const status = parseArchiveStatus(req.query.status);
+    const year = parseOptionalReportYear(req.query.year);
+    const generatedBy = parsePositiveInteger(req.query.generatedBy, "generatedBy");
+    const dateFrom = parseArchiveDate(req.query.dateFrom, "dateFrom");
+    const dateTo = parseArchiveDate(req.query.dateTo, "dateTo");
+    const search = typeof req.query.search === "string" && req.query.search.trim().length > 0
+      ? req.query.search.trim().slice(0, 80)
+      : undefined;
+
+    const conditions: SQL[] = [eq(reportArchivesTable.companyId, scope.companyId)];
+    if (scope.unitId !== null) conditions.push(eq(reportArchivesTable.unitId, scope.unitId));
+    if (reportType) conditions.push(eq(reportArchivesTable.reportType, reportType));
+    if (status) conditions.push(eq(reportArchivesTable.status, status));
+    if (year !== undefined) conditions.push(eq(reportArchivesTable.reportYear, year));
+    if (generatedBy !== undefined) conditions.push(eq(reportArchivesTable.generatedBy, generatedBy));
+    if (dateFrom) conditions.push(gte(reportArchivesTable.generatedAt, dateFrom));
+    if (dateTo) {
+      const until = new Date(dateTo);
+      until.setUTCDate(until.getUTCDate() + 1);
+      conditions.push(lte(reportArchivesTable.generatedAt, until));
+    }
+    if (search) {
+      const pattern = `%${search.replace(/[%_]/g, "\\$&")}%`;
+      conditions.push(or(ilike(reportArchivesTable.title, pattern), ilike(reportArchivesTable.outputName, pattern))!);
+    }
+    const where = and(...conditions);
+    const [{ total }] = await db.select({ total: count() }).from(reportArchivesTable).where(where);
+    const items = await db.select({
+      id: reportArchivesTable.id,
+      reportType: reportArchivesTable.reportType,
+      title: reportArchivesTable.title,
+      outputName: reportArchivesTable.outputName,
+      status: reportArchivesTable.status,
+      sizeBytes: reportArchivesTable.sizeBytes,
+      generatedBy: reportArchivesTable.generatedBy,
+      generatedByName: usersTable.name,
+      generatedAt: reportArchivesTable.generatedAt,
+      completedAt: reportArchivesTable.completedAt,
+      reportYear: reportArchivesTable.reportYear,
+      periodLabel: reportArchivesTable.periodLabel,
+      snapshotId: reportArchivesTable.snapshotId,
+      failureCategory: reportArchivesTable.failureCategory,
+    })
+      .from(reportArchivesTable)
+      .leftJoin(usersTable, eq(reportArchivesTable.generatedBy, usersTable.id))
+      .where(where)
+      .orderBy(desc(reportArchivesTable.generatedAt), desc(reportArchivesTable.id))
+      .limit(limit)
+      .offset(offset);
+
+    res.json({
+      items: items.map((item) => ({
+        id: item.id,
+        reportType: item.reportType,
+        title: item.title,
+        outputName: item.outputName,
+        status: item.status,
+        sizeBytes: item.sizeBytes,
+        generatedBy: item.generatedByName ? { id: item.generatedBy, name: item.generatedByName } : null,
+        generatedAt: item.generatedAt,
+        completedAt: item.completedAt,
+        year: item.reportYear,
+        periodLabel: item.periodLabel,
+        downloadable: item.status === "completed",
+        snapshot: item.snapshotId ? { id: item.snapshotId } : null,
+        failureCategory: item.status === "failed" ? item.failureCategory : null,
+      })),
+      total,
+      limit,
+      offset,
+      hasNext: offset + items.length < total,
+    });
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Rapor arsivi listelenemedi" });
+  }
+});
+
+// GET /api/reports/archive/:id/download
+router.get("/reports/archive/:id/download", requireAuth, async (req, res) => {
+  try {
+    const archiveId = parseRequiredId(req.params.id, "id");
+    const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+    if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+    const conditions: SQL[] = [
+      eq(reportArchivesTable.id, archiveId),
+      eq(reportArchivesTable.companyId, scope.companyId),
+    ];
+    if (scope.unitId !== null) conditions.push(eq(reportArchivesTable.unitId, scope.unitId));
+    const [archive] = await db.select().from(reportArchivesTable).where(and(...conditions)).limit(1);
+    if (!archive) {
+      res.status(404).json({ error: "Rapor bulunamadi" });
+      return;
+    }
+    if (archive.status !== "completed" || !archive.storageKey || !archive.storageProvider) {
+      res.status(409).json({ error: "Rapor indirilebilir durumda degil" });
+      return;
+    }
+    const stored = await reportStorage.get(archive.storageKey);
+    if (archive.sizeBytes !== null && stored.contentLength !== archive.sizeBytes) throw new Error("archive_size_mismatch");
+    if (archive.checksumSha256 && stored.checksumSha256 !== archive.checksumSha256) throw new Error("archive_checksum_mismatch");
+    await writeBestEffortAudit(db, {
+      request: req,
+      companyId: archive.companyId,
+      unitId: archive.unitId,
+      action: "report_archive.downloaded",
+      entityType: "report_archive",
+      entityId: archive.id,
+      metadata: {
+        archiveId: archive.id,
+        reportType: archive.reportType,
+        outputName: archive.outputName,
+        sizeBytes: archive.sizeBytes,
+      },
+    });
+    res.set({
+      "Content-Type": archive.contentType,
+      "Content-Disposition": safeContentDisposition(archive.outputName),
+      "Cache-Control": "no-store",
+      "Content-Length": String(stored.contentLength),
+    });
+    stored.stream.on("error", (error) => {
+      req.log.error({ error }, "Report archive stream failed");
+      res.destroy(error);
+    });
+    stored.stream.pipe(res);
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Rapor indirilemedi" });
+  }
+});
+
 // POST /api/reports/generate
 router.post("/reports/generate", requireAuth, async (req, res) => {
   let reportId: number | null = null;
   let snapshotRecordId: number | null = null;
+  let archiveRecordId: number | null = null;
   let snapshotForFailure: AnnualEnergyReportSnapshot | null = null;
   try {
     const { year, unitId: bodyUnitId, includeSwot, includeRisks, includeSeu, includeRegression } = req.body;
@@ -387,12 +591,26 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       generatedBy: req.user?.userId ?? null,
     }).returning({ id: reportGenerationSnapshotsTable.id });
     snapshotRecordId = snapshotRecord.id;
+    archiveRecordId = await createReportArchiveRecord({
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      reportType: ANNUAL_ENERGY_REPORT_TYPE,
+      reportYear: yr,
+      periodLabel: String(yr),
+      title: snapshot.title,
+      outputName: snapshot.outputName,
+      contentType: "text/html; charset=utf-8",
+      snapshotId: snapshotRecordId,
+      legacyReportId: report.id,
+    });
 
     const auditMetadata = {
       companyId: effectiveCompanyId,
       reportType: ANNUAL_ENERGY_REPORT_TYPE,
       reportId: report.id,
       snapshotId: snapshotRecordId,
+      archiveId: archiveRecordId,
       year: yr,
       profileVersion: snapshot.profileVersion,
       typeSettingsVersion: snapshot.typeSettingsVersion,
@@ -516,17 +734,25 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
 </body>
 </html>`;
 
-    const b64 = Buffer.from(htmlContent).toString("base64");
-    const dataUrl = `data:text/html;base64,${b64}`;
+    const htmlBuffer = Buffer.from(htmlContent, "utf8");
+    const archiveResult = await completeReportArchive({
+      request: req,
+      archiveId: archiveRecordId,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      reportType: ANNUAL_ENERGY_REPORT_TYPE,
+      reportYear: yr,
+      outputName: snapshot.outputName,
+      contentType: "text/html; charset=utf-8",
+      content: htmlBuffer,
+      snapshotId: snapshotRecordId,
+    });
 
     const [updated] = await db.update(reportsTable)
-      .set({ status: "complete", downloadUrl: dataUrl })
+      .set({ status: "complete", downloadUrl: null })
       .where(and(eq(reportsTable.id, report.id), eq(reportsTable.companyId, effectiveCompanyId)))
       .returning();
 
-    await db.update(reportGenerationSnapshotsTable)
-      .set({ status: "completed", completedAt: new Date(), filename: snapshot.outputName })
-      .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
     await writeBestEffortAudit(db, {
       request: req,
       companyId: effectiveCompanyId,
@@ -541,14 +767,31 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       id: updated.id,
       year: updated.year,
       status: updated.status,
-      downloadUrl: updated.downloadUrl,
+      downloadUrl: `/api/reports/archive/${archiveRecordId}/download`,
+      dataUrl: `data:text/html;base64,${htmlBuffer.toString("base64")}`,
+      archiveId: archiveRecordId,
+      sizeBytes: archiveResult.sizeBytes,
+      checksumSha256: archiveResult.checksumSha256,
       createdAt: updated.createdAt,
     });
   } catch (err) {
+    if (archiveRecordId !== null) {
+      await failReportArchive({
+        request: req,
+        archiveId: archiveRecordId,
+        companyId: snapshotForFailure?.companyId ?? req.user?.companyId ?? null,
+        unitId: snapshotForFailure?.unitId ?? req.user?.unitId ?? null,
+        reportType: ANNUAL_ENERGY_REPORT_TYPE,
+        snapshotId: snapshotRecordId,
+        outputName: snapshotForFailure?.outputName ?? null,
+        failureCategory: err instanceof AnnualEnergyReportSnapshotError ? "settings_snapshot" : "render_or_storage",
+      });
+    }
     if (snapshotRecordId !== null) {
       await db.update(reportGenerationSnapshotsTable)
         .set({
           status: "failed",
+          storageStatus: "storage_failed",
           failedAt: new Date(),
           failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
         })
@@ -606,6 +849,7 @@ const FEASIBILITY_STATUS_LABELS: Record<string, string> = {
 // GET /api/reports/energy-targets/pdf
 router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
   let snapshotRecordId: number | null = null;
+  let archiveRecordId: number | null = null;
   let snapshotForFailure: EnergyTargetsReportSnapshot | null = null;
   try {
     const statusParam = parseTargetReportStatus(req.query.status);
@@ -781,11 +1025,24 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       generatedBy: req.user?.userId ?? null,
     }).returning({ id: reportGenerationSnapshotsTable.id });
     snapshotRecordId = snapshotRecord.id;
+    archiveRecordId = await createReportArchiveRecord({
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      reportType: ENERGY_TARGETS_REPORT_TYPE,
+      reportYear: yearParam,
+      periodLabel: String(yearParam),
+      title: snapshot.title,
+      outputName: snapshot.filename,
+      contentType: "application/pdf",
+      snapshotId: snapshotRecordId,
+    });
 
     const auditMetadata = {
       companyId: effectiveCompanyId,
       reportType: ENERGY_TARGETS_REPORT_TYPE,
       snapshotId: snapshotRecordId,
+      archiveId: archiveRecordId,
       profileVersion: snapshot.profileVersion,
       typeSettingsVersion: snapshot.typeSettingsVersion,
       filename: snapshot.filename,
@@ -1029,9 +1286,18 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       title: `Enerji Hedefleri ${yearParam}`,
       landscape: true,
     });
-    await db.update(reportGenerationSnapshotsTable)
-      .set({ status: "completed", completedAt: new Date(), filename: snapshot.filename })
-      .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
+    await completeReportArchive({
+      request: req,
+      archiveId: archiveRecordId,
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      reportType: ENERGY_TARGETS_REPORT_TYPE,
+      reportYear: yearParam,
+      outputName: snapshot.filename,
+      contentType: "application/pdf",
+      content: pdf,
+      snapshotId: snapshotRecordId,
+    });
     await writeBestEffortAudit(db, {
       request: req,
       companyId: effectiveCompanyId,
@@ -1050,10 +1316,23 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     });
     res.status(200).send(pdf);
   } catch (err) {
+    if (archiveRecordId !== null) {
+      await failReportArchive({
+        request: req,
+        archiveId: archiveRecordId,
+        companyId: snapshotForFailure?.companyId ?? req.user?.companyId ?? null,
+        unitId: snapshotForFailure?.unitId ?? req.user?.unitId ?? null,
+        reportType: ENERGY_TARGETS_REPORT_TYPE,
+        snapshotId: snapshotRecordId,
+        outputName: snapshotForFailure?.filename ?? null,
+        failureCategory: err instanceof ReportSettingsSnapshotError ? "settings_snapshot" : "render_or_storage",
+      });
+    }
     if (snapshotRecordId !== null) {
       await db.update(reportGenerationSnapshotsTable)
         .set({
           status: "failed",
+          storageStatus: "storage_failed",
           failedAt: new Date(),
           failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
         })
@@ -1089,6 +1368,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
 
 router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   let snapshotRecordId: number | null = null;
+  let archiveRecordId: number | null = null;
   let snapshotForFailure: EnergyPerformanceReportSnapshot | null = null;
   try {
     const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
@@ -1217,11 +1497,24 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       generatedBy: req.user?.userId ?? null,
     }).returning({ id: reportGenerationSnapshotsTable.id });
     snapshotRecordId = snapshotRecord.id;
+    archiveRecordId = await createReportArchiveRecord({
+      request: req,
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
+      reportYear: year,
+      periodLabel: String(year),
+      title: snapshot.title,
+      outputName: snapshot.filename,
+      contentType: "application/pdf",
+      snapshotId: snapshotRecordId,
+    });
 
     const auditMetadata = {
       companyId: effectiveCompanyId,
       reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
       snapshotId: snapshotRecordId,
+      archiveId: archiveRecordId,
       profileVersion: snapshot.profileVersion,
       typeSettingsVersion: snapshot.typeSettingsVersion,
       outputName: snapshot.filename,
@@ -1474,9 +1767,18 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       title: `Enerji Performansi ${year}`,
       landscape: true,
     });
-    await db.update(reportGenerationSnapshotsTable)
-      .set({ status: "completed", completedAt: new Date(), filename: snapshot.filename })
-      .where(eq(reportGenerationSnapshotsTable.id, snapshotRecordId));
+    await completeReportArchive({
+      request: req,
+      archiveId: archiveRecordId,
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
+      reportYear: year,
+      outputName: snapshot.filename,
+      contentType: "application/pdf",
+      content: pdf,
+      snapshotId: snapshotRecordId,
+    });
     await writeBestEffortAudit(db, {
       request: req,
       companyId: effectiveCompanyId,
@@ -1495,10 +1797,23 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
     });
     res.status(200).send(pdf);
   } catch (err) {
+    if (archiveRecordId !== null) {
+      await failReportArchive({
+        request: req,
+        archiveId: archiveRecordId,
+        companyId: snapshotForFailure?.companyId ?? req.user?.companyId ?? null,
+        unitId: snapshotForFailure?.unitId ?? req.user?.unitId ?? null,
+        reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
+        snapshotId: snapshotRecordId,
+        outputName: snapshotForFailure?.filename ?? null,
+        failureCategory: err instanceof EnergyPerformanceReportSnapshotError ? "settings_snapshot" : "render_or_storage",
+      });
+    }
     if (snapshotRecordId !== null) {
       await db.update(reportGenerationSnapshotsTable)
         .set({
           status: "failed",
+          storageStatus: "storage_failed",
           failedAt: new Date(),
           failureReason: err instanceof Error ? err.message.slice(0, 500) : "unknown",
         })

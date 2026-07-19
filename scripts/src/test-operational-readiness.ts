@@ -1,14 +1,18 @@
-import { access } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { chromium, type Browser } from "playwright";
 import { pool } from "@workspace/db";
 
-const REQUIRED_MIGRATIONS = 29;
+const REQUIRED_MIGRATIONS = 30;
 const REQUIRED_TABLES = [
   "audit_events",
   "companies",
   "users",
   "report_generation_snapshots",
+  "report_archives",
   "company_report_profiles",
   "company_report_type_settings",
   "company_report_section_settings",
@@ -52,6 +56,31 @@ async function checkBrowserDeepSmoke(): Promise<void> {
   }
 }
 
+async function checkReportStorageSmoke(): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), "iso50001-report-storage-"));
+  try {
+    const absoluteRoot = resolve(root);
+    const content = Buffer.from("operational report storage smoke", "utf8");
+    const key = "companies/1/reports/operational/2026/smoke/report.txt";
+    const targetPath = resolve(absoluteRoot, key);
+    assert(targetPath.startsWith(`${absoluteRoot}${process.platform === "win32" ? "\\" : "/"}`), "Report storage path confinement failed.");
+    await mkdir(dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, content, { mode: 0o600 });
+    const stored = await readFile(targetPath);
+    assert(stored.length === content.length, "Report storage get size mismatch.");
+    assert(createHash("sha256").update(stored).digest("hex") === createHash("sha256").update(content).digest("hex"), "Report storage checksum mismatch.");
+    await rm(targetPath);
+    await access(targetPath).then(
+      () => {
+        throw new Error("Report storage delete failed.");
+      },
+      () => undefined,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   assertReadOnlyEnvironment();
   const started = Date.now();
@@ -80,9 +109,25 @@ async function main(): Promise<void> {
       FROM report_generation_snapshots
     `,
   );
+  const archiveSummary = await pool.query<{
+    generating: string;
+    stale_generating: string;
+    failed_recent: string;
+    completed_recent: string;
+  }>(
+    `
+      SELECT
+        count(*) FILTER (WHERE status = 'generating')::text AS generating,
+        count(*) FILTER (WHERE status = 'generating' AND generated_at < now() - interval '30 minutes')::text AS stale_generating,
+        count(*) FILTER (WHERE status = 'failed' AND coalesce(failed_at, generated_at) > now() - interval '24 hours')::text AS failed_recent,
+        count(*) FILTER (WHERE status = 'completed' AND completed_at > now() - interval '24 hours')::text AS completed_recent
+      FROM report_archives
+    `,
+  );
 
   await pool.query("SELECT 1 FROM audit_events LIMIT 1");
   await checkBrowserDeepSmoke();
+  await checkReportStorageSmoke();
 
   console.log(JSON.stringify({
     status: "ready",
@@ -93,7 +138,14 @@ async function main(): Promise<void> {
       staleGenerating: Number(snapshotSummary.rows[0]?.stale_generating ?? 0),
       failedRecent: Number(snapshotSummary.rows[0]?.failed_recent ?? 0),
     },
+    archives: {
+      generating: Number(archiveSummary.rows[0]?.generating ?? 0),
+      staleGenerating: Number(archiveSummary.rows[0]?.stale_generating ?? 0),
+      failedRecent: Number(archiveSummary.rows[0]?.failed_recent ?? 0),
+      completedRecent: Number(archiveSummary.rows[0]?.completed_recent ?? 0),
+    },
     browserDeepSmoke: "passed",
+    reportStorageSmoke: "passed",
     elapsedMs: Date.now() - started,
   }));
 }

@@ -1725,3 +1725,30 @@ MGM Excel file-path import endpointleri varsayilan kapali gelir. Kontrollu stagi
 - Absolute path, `..`, root disi symlink, `.xlsx/.xls` disi extension ve `MGM_FILE_IMPORT_MAX_BYTES` ustu dosyalar reddedilir.
 - Response ve audit metadata tam local path dondurmez; yalniz guvenli dosya adi ve ozet sayilar kullanilir.
 - Startup sirasinda otomatik file-path import yoktur. `drizzle-kit push` veya `push-force` import runbook'unun parcasi degildir.
+
+## Report archive storage operasyon notu
+
+Faz 4A sonrasi yeni annual HTML ve PDF raporlari `report_archives` metadata'si ve storage provider uzerinden indirilir. Sorun giderirken once su ayrimi yapin:
+
+- Rapor uretimi 500 donuyorsa render, snapshot veya storage write asamasina bakilir.
+- Rapor listede yoksa `GET /api/reports/archive` tenant/company/unit filtreleri ve `report_archives.status` kontrol edilir.
+- Indirme 404 donuyorsa kullanici scope'u veya archive id/company eslesmesi kontrol edilir.
+- Indirme 409 donuyorsa archive `completed` degildir veya storage metadata eksiktir.
+- Indirme 500 donuyorsa storage object eksik, size mismatch veya checksum mismatch olasiligi incelenir.
+
+Guvenli kontroller:
+
+```sql
+SELECT id, company_id, unit_id, report_type, report_year, status, storage_provider, size_bytes, generated_at, completed_at, failed_at, failure_category
+FROM report_archives
+ORDER BY generated_at DESC
+LIMIT 20;
+```
+
+Readiness icin:
+
+```bash
+pnpm run test:operational-readiness
+```
+
+Production veya staging tanisinda `REPORT_STORAGE_PROVIDER`, provider'a ait env'ler ve `/api/readyz` icindeki `checks.reportStorage` sonucu birlikte incelenmelidir. Log, response veya audit metadata icine storage key, bucket, local path, token veya connection string yazilmamalidir.

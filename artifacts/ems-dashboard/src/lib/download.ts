@@ -43,3 +43,20 @@ export async function downloadPdfResponse(response: Response, fallbackFilename: 
     URL.revokeObjectURL(objectUrl);
   }
 }
+
+export async function downloadBlobResponse(response: Response, fallbackFilename: string): Promise<void> {
+  const blob = await response.blob();
+  if (blob.size === 0) throw new Error("Dosya içeriği boş veya geçersiz.");
+  const contentType = response.headers.get("Content-Type") ?? "application/octet-stream";
+  const objectUrl = URL.createObjectURL(new Blob([blob], { type: contentType }));
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = responseFilename(response, fallbackFilename);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}

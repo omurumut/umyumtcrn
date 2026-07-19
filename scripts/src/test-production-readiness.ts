@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -110,6 +110,8 @@ async function spawnProduction(browserPath: string, overrides: NodeJS.ProcessEnv
   const port = await reservePort();
   let captured = "";
   const browserExecutablePath = browserPath.includes("iso50001-missing-browser-") ? undefined : chromium.executablePath();
+  const reportStorageLocalRoot = resolve(repoRoot, "tmp", "f4a-production-readiness-report-storage");
+  await mkdir(reportStorageLocalRoot, { recursive: true });
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_ENV: "production",
@@ -117,6 +119,9 @@ async function spawnProduction(browserPath: string, overrides: NodeJS.ProcessEnv
     PLAYWRIGHT_BROWSERS_PATH: browserPath,
     PDF_CHROMIUM_EXECUTABLE_PATH: browserExecutablePath,
     PDF_CHROMIUM_NO_SANDBOX: "false",
+    REPORT_STORAGE_PROVIDER: "local",
+    REPORT_STORAGE_LOCAL_ROOT: reportStorageLocalRoot,
+    REPORT_STORAGE_LOCAL_PRODUCTION_ACK: "disposable-test",
     ENABLE_MGM_BOOTSTRAP: "false",
     ENABLE_MGM_SCHEDULER: "false",
     MGM_SCHEDULER_INSTANCE_MODE: undefined,
@@ -443,12 +448,18 @@ async function assertProductionReportSmokes(baseUrl: string, token: string): Pro
   const annualHtml = await generateAnnualHtml(baseUrl, token, ALLOWED_ORIGIN);
   assert(annualHtml.status === 200, `Annual HTML beklenen 200 yerine ${annualHtml.status} döndü.`);
   assertSecurityHeaders(annualHtml);
-  const annualBody = await annualHtml.json() as { downloadUrl?: unknown };
-  assert(typeof annualBody.downloadUrl === "string" && annualBody.downloadUrl.startsWith("data:text/html;base64,"), "Annual HTML downloadUrl oluşmadı.");
+  const annualBody = await annualHtml.json() as { archiveId?: unknown; downloadUrl?: unknown };
+  assert(typeof annualBody.archiveId === "number", "Annual archive kaydı oluşmadı.");
+  assert(typeof annualBody.downloadUrl === "string" && /^\/api\/reports\/archive\/\d+\/download$/.test(annualBody.downloadUrl), "Annual archive download endpoint oluşmadı.");
+  const annualDownload = await fetch(`${baseUrl}${annualBody.downloadUrl}`, { headers: { Authorization: `Bearer ${token}`, Origin: ALLOWED_ORIGIN } });
+  assert(annualDownload.status === 200, "Annual archive download başarısız.");
+  assert((await annualDownload.text()).includes("<!DOCTYPE html>"), "Annual archive HTML gövdesi beklenen formatta değil.");
 
   assert(await snapshotCount("energy_targets_management", "completed", snapshotBoundary) >= 1, "Energy targets completed snapshot oluşmadı.");
   assert(await snapshotCount("energy_performance_monitoring", "completed", snapshotBoundary) >= 1, "Energy performance completed snapshot oluşmadı.");
   assert(await snapshotCount("annual_energy_performance", "completed", snapshotBoundary) >= 1, "Annual completed snapshot oluşmadı.");
+  const archiveCount = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM report_archives WHERE status='completed'");
+  assert(Number(archiveCount.rows[0]?.count ?? 0) >= 3, "Completed archive kayıtları oluşmadı.");
   assert(await auditCount("energy_targets_report.generation_completed", auditBoundary) >= 1, "Energy targets completed audit oluşmadı.");
   assert(await auditCount("energy_performance_report.generation_completed", auditBoundary) >= 1, "Energy performance completed audit oluşmadı.");
   assert(await auditCount("annual_energy_performance_report.generation_completed", auditBoundary) >= 1, "Annual completed audit oluşmadı.");

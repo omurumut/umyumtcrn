@@ -291,6 +291,21 @@ DB veya package etkisi olan değişikliklerde şu sorular net cevaplanmalıdır:
 
 Belirsiz DB değişiklikleri release kapsamına alınmamalıdır. Önce migration, schema ve veri sahipliği etkisi ayrı analiz edilmelidir.
 
+### Rapor Arşivi ve Storage Kontrolü
+
+Rapor arşivi veya PDF/HTML rapor akışı değiştiyse şu kontroller ayrıca yapılmalıdır:
+
+- [ ] `report_archives` migration sırası `0028`, `0029`, `0030` olarak korunuyor.
+- [ ] Yeni rapor binary'si `reports.download_url` içinde data URL olarak persist edilmiyor.
+- [ ] Archive list endpoint'i storage key, bucket, local path veya tam snapshot JSON döndürmüyor.
+- [ ] Archive download endpoint'i auth, company ve unit scope kontrolü yapıyor.
+- [ ] Completed olmayan archive kayıtları indirilemiyor.
+- [ ] Storage write sonrası size ve SHA-256 checksum doğrulanıyor.
+- [ ] Download audit metadata'sı secret, path veya storage key içermiyor.
+- [ ] `REPORT_STORAGE_PROVIDER` ve ilgili storage env'leri staging/production için net kararlaştırıldı.
+- [ ] Local adapter yalnız development/test/disposable smoke için kullanılıyor.
+- [ ] `pnpm run test:operational-readiness` storage smoke sonucunu da doğruladı.
+
 ## 8. OpenAPI Kontrolü
 
 OpenAPI kaynağı:
@@ -613,7 +628,8 @@ Release öncesi manuel karar listesi:
 12. Dashboard açıldı.
 13. Audit event üretimi ve audit listeleme kontrol edildi.
 14. PDF/export smoke kontrol edildi.
-15. Rollback ihtiyacı tekrar değerlendirildi.
+15. Rapor arşivi listeleme ve auth'lu indirme smoke kontrol edildi.
+16. Rollback ihtiyacı tekrar değerlendirildi.
 
 Production DB migration preflight:
 

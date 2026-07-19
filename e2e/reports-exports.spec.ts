@@ -52,6 +52,7 @@ let ids: Ids;
 let sessions: Record<string, Login>;
 let initialReportMaxId = 0;
 let initialSnapshotMaxId = 0;
+let initialArchiveMaxId = 0;
 
 async function login(request: APIRequestContext, username: string): Promise<Login> {
   const response = await request.post("/api/auth/login", { data: { username, password: credentials.password } });
@@ -123,6 +124,8 @@ test.beforeAll(async ({ request }) => {
   initialReportMaxId = reportBoundary.rows[0]?.max_id ?? 0;
   const snapshotBoundary = await pool.query<{ max_id: number | null }>("SELECT max(id) max_id FROM report_generation_snapshots");
   initialSnapshotMaxId = snapshotBoundary.rows[0]?.max_id ?? 0;
+  const archiveBoundary = await pool.query<{ max_id: number | null }>("SELECT max(id) max_id FROM report_archives");
+  initialArchiveMaxId = archiveBoundary.rows[0]?.max_id ?? 0;
   const fixture = await pool.query<Record<string, number>>(`
     SELECT
       (SELECT id FROM companies WHERE subdomain='e2e-tenant-a') company_a,
@@ -188,8 +191,10 @@ test.beforeAll(async ({ request }) => {
 
 test.afterAll(async () => {
   if (ids) {
+    await pool.query("DELETE FROM report_archives WHERE id > $1", [initialArchiveMaxId]);
     await pool.query("DELETE FROM reports WHERE id > $1", [initialReportMaxId]);
     await pool.query("DELETE FROM report_generation_snapshots WHERE id > $1", [initialSnapshotMaxId]);
+    await pool.query("DELETE FROM audit_events WHERE action LIKE 'report_archive.%'");
     await pool.query("DELETE FROM audit_events WHERE action LIKE 'annual_energy_performance_report.%'");
     await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_targets_report.%'");
     await pool.query("DELETE FROM audit_events WHERE action LIKE 'energy_performance_report.%'");
@@ -488,9 +493,11 @@ test("ANNUAL report creates an immutable settings snapshot with default registry
   await pool.query("DELETE FROM company_report_profiles WHERE company_id=$1", [ids.companyA]);
 
   const response = await createReport(request, sessions.adminA.token, { year: 2025, unitId: ids.unitA1 });
-  const body = await response.json() as { id: number; downloadUrl: string };
+  const body = await response.json() as { id: number; downloadUrl: string; archiveId: number; dataUrl: string };
   expect(response.status()).toBe(200);
-  expect(body.downloadUrl).toMatch(/^data:text\/html;base64,/);
+  expect(body.downloadUrl).toMatch(/^\/api\/reports\/archive\/\d+\/download$/);
+  expect(body.archiveId).toBeGreaterThan(0);
+  expect(body.dataUrl).toMatch(/^data:text\/html;base64,/);
 
   const snapshotRows = await pool.query<{ status: string; filename: string; settings_snapshot_json: {
     reportType: string;
@@ -521,6 +528,44 @@ test("ANNUAL report creates an immutable settings snapshot with default registry
   expect(snapshot.settings_snapshot_json.outputName).toBe(snapshot.filename);
   expect(snapshot.settings_snapshot_json.sections.find((section) => section.code === "cover")?.finalVisibility).toBe(true);
   expect(snapshot.settings_snapshot_json.sections.find((section) => section.code === "swot")?.evaluatorResult.applies).toBe(true);
+  const archiveRows = await pool.query<{ status: string; content_type: string; size_bytes: number; checksum_sha256: string }>(
+    "SELECT status, content_type, size_bytes, checksum_sha256 FROM report_archives WHERE id=$1 AND company_id=$2",
+    [body.archiveId, ids.companyA],
+  );
+  expect(archiveRows.rows[0]).toMatchObject({ status: "completed", content_type: "text/html; charset=utf-8" });
+  expect(archiveRows.rows[0]!.size_bytes).toBeGreaterThan(1024);
+  expect(archiveRows.rows[0]!.checksum_sha256).toMatch(/^[a-f0-9]{64}$/);
+
+  const archiveListResponse = await request.get("/api/reports/archive?reportType=annual_energy_performance&year=2025", { headers: auth(sessions.adminA.token) });
+  expect(archiveListResponse.status()).toBe(200);
+  const archiveList = await archiveListResponse.json() as { total: number; items: Array<Record<string, unknown>> };
+  const listed = archiveList.items.find((item) => item.id === body.archiveId);
+  expect(archiveList.total).toBeGreaterThan(0);
+  expect(listed).toMatchObject({
+    id: body.archiveId,
+    reportType: "annual_energy_performance",
+    status: "completed",
+    downloadable: true,
+  });
+  expect(JSON.stringify(listed)).not.toContain("storageKey");
+  expect(JSON.stringify(listed)).not.toContain("settingsSnapshot");
+
+  const download = await request.get(body.downloadUrl, { headers: auth(sessions.adminA.token) });
+  expect(download.status()).toBe(200);
+  expect(download.headers()["content-type"]).toContain("text/html; charset=utf-8");
+  expect(download.headers()["content-disposition"]).toContain("attachment");
+  expect((await download.text())).toContain("<!DOCTYPE html>");
+
+  expect((await request.get(body.downloadUrl, { headers: auth(sessions.standardB1.token) })).status()).toBe(404);
+  expect((await request.get("/api/reports/archive", { headers: auth(sessions.superadmin.token) })).status()).toBe(400);
+
+  const failedArchive = await pool.query<{ id: number }>(
+    `INSERT INTO report_archives(company_id, unit_id, report_type, report_year, title, output_name, content_type, status)
+     VALUES($1,$2,'annual_energy_performance',2025,'Failed archive','failed.html','text/html; charset=utf-8','failed')
+     RETURNING id`,
+    [ids.companyA, ids.unitA1],
+  );
+  expect((await request.get(`/api/reports/archive/${failedArchive.rows[0]!.id}/download`, { headers: auth(sessions.adminA.token) })).status()).toBe(409);
 
   const audit = await pool.query<{ action: string; metadata_json: { outputName?: string; sectionCodes?: string[]; reportId?: number } }>(`
     SELECT action, metadata_json
@@ -615,6 +660,7 @@ test("ANNUAL report hides conditional sections when report data is absent", asyn
       evaluatorResult: { applies: true, dataAvailable: false, reason: "renderer_not_implemented" },
     });
   } finally {
+    await pool.query("DELETE FROM report_archives WHERE company_id=$1", [companyId]);
     await pool.query("DELETE FROM reports WHERE company_id=$1", [companyId]);
     await pool.query("DELETE FROM report_generation_snapshots WHERE company_id=$1", [companyId]);
     await pool.query("DELETE FROM audit_events WHERE company_id=$1", [companyId]);

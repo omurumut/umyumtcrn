@@ -32,6 +32,15 @@ Optional PDF settings:
 - `PDF_CHROMIUM_EXECUTABLE_PATH`: Explicit executable override. Leave unset to use the provisioned Playwright Chromium. Invalid or non-executable paths fail safely.
 - `PDF_CHROMIUM_NO_SANDBOX=true`: Adds Chromium no-sandbox flags. It is disabled by default. Enable only when the deployment runtime demonstrably cannot launch the sandbox, because it weakens browser process isolation.
 
+Required report archive storage settings:
+
+- `REPORT_STORAGE_PROVIDER`: Must be set before production readiness is expected to pass. The checked-in local adapter is for development, tests, and disposable production-like smoke only.
+- `REPORT_STORAGE_LOCAL_ROOT`: Required only when `REPORT_STORAGE_PROVIDER=local`. Do not point this at an ephemeral production path for real customer archives.
+- `REPORT_ARCHIVE_STORAGE_REQUIRED`: Defaults to required. Setting it to `false` makes readiness skip archive storage and should be limited to a documented temporary diagnostic window.
+- `REPORT_STORAGE_LOCAL_PRODUCTION_ACK=disposable-test`: Allows the local adapter only for disposable production-like tests that also set `TEST_DB_DISPOSABLE=true`; it is not a real production storage approval.
+
+Archive downloads are served through authenticated API endpoints. Responses never expose storage keys, bucket names, or local filesystem paths. The application verifies stored object size and SHA-256 checksum before completing archive metadata.
+
 ## CORS and HTTP security policy
 
 Production uses an exact CORS allowlist from `CORS_ALLOWED_ORIGINS`. The value is a comma-separated list of canonical `http://` or `https://` origins without paths, query strings, fragments, credentials, trailing slashes, or wildcards:
@@ -88,7 +97,7 @@ For Autoscale deployments, keep the in-process scheduler disabled. Use an extern
 ## Liveness, readiness, and shutdown
 
 - `GET /api/healthz` is process liveness. It returns `200 {"status":"ok"}` during normal operation and `503 {"status":"draining"}` after shutdown begins when the listener is still reachable.
-- `GET /api/readyz` checks completed startup state plus bounded DB, schema, browser executable, and production frontend artifact readiness. It returns a safe summary with `status`, `service`, `timestamp`, `checks.*`, and elapsed time. It never returns `DATABASE_URL`, DB host/user, SQL, stack traces, tenant data, or local executable paths. Readiness failures return `503`.
+- `GET /api/readyz` checks completed startup state plus bounded DB, schema, browser executable, report archive storage, and production frontend artifact readiness. It returns a safe summary with `status`, `service`, `timestamp`, `checks.*`, and elapsed time. It never returns `DATABASE_URL`, DB host/user, SQL, stack traces, tenant data, storage key, bucket name, or local executable/storage paths. Readiness failures return `503`.
 - Migrations finish before the listener opens and before readiness becomes true.
 - `SIGTERM` and `SIGINT` mark the process not ready, stop the scheduler, stop accepting new HTTP connections, wait for active requests, and close the PostgreSQL pool.
 - Graceful shutdown is bounded to 15 seconds. A second signal or timeout forces a non-zero exit.
@@ -117,8 +126,9 @@ For Autoscale deployments, keep the in-process scheduler disabled. Use an extern
 10. Verify login.
 11. Verify dashboard and SPA route refresh.
 12. Generate a real PDF and check logs for errors.
-13. Confirm MGM bootstrap/scheduler flags match the intended autoscale policy; do not enable the in-process scheduler on ordinary Autoscale instances.
-14. Send `SIGTERM` in a controlled smoke environment and confirm the listener, database pool, scheduler timers, and browser children close.
+13. Confirm the report archive list shows the generated report and the authenticated download succeeds.
+14. Confirm MGM bootstrap/scheduler flags match the intended autoscale policy; do not enable the in-process scheduler on ordinary Autoscale instances.
+15. Send `SIGTERM` in a controlled smoke environment and confirm the listener, database pool, scheduler timers, and browser children close.
 
 ## Development
 

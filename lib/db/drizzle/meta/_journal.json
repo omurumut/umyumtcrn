@@ -204,6 +204,13 @@
       "when": 1784600000000,
       "tag": "0029_report_generation_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1784700000000,
+      "tag": "0030_report_archives",
+      "breakpoints": true
     }
   ]
 }

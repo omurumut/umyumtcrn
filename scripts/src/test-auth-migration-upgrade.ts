@@ -9,8 +9,8 @@ type Journal = { entries: Array<{ tag: string }> };
 
 const BACKUP_BASELINE_MIGRATION = 22;
 const BACKUP_BASELINE_TABLE_COUNT = 32;
-const CURRENT_MIGRATION_COUNT = 29;
-const CURRENT_TABLE_COUNT = 42;
+const CURRENT_MIGRATION_COUNT = 30;
+const CURRENT_TABLE_COUNT = 43;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
     await runMigrations(resolve(migrationsFolder));
     assert(await migrationCount() === CURRENT_MIGRATION_COUNT, "Restore üzerine güncel migration seti uygulanmadı.");
     const newTableCount = await tableCount();
-    assert(newTableCount === CURRENT_TABLE_COUNT, `Upgrade şema tablo sayısı 42 değil: ${newTableCount}`);
+    assert(newTableCount === CURRENT_TABLE_COUNT, `Upgrade şema tablo sayısı 43 değil: ${newTableCount}`);
     const authTables = await pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('auth_sessions','auth_rate_limits')",
     );
