@@ -131,6 +131,14 @@ async function patchProfile(baseUrl: string, token: string, unitId: number, body
   });
 }
 
+async function publishProfile(baseUrl: string, token: string, unitId: number, body: Record<string, unknown>, companyId?: number) {
+  const query = companyId === undefined ? "" : `?companyId=${companyId}`;
+  return api(baseUrl, token, `/api/unit-technical-profiles/${unitId}/publish${query}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 function definitionPath(companyId?: number) {
   const query = companyId === undefined ? "?includeInactive=true" : `?companyId=${companyId}&includeInactive=true`;
   return `/api/unit-technical-profile-field-definitions${query}`;
@@ -528,6 +536,108 @@ async function main() {
     assert(crossTenantCustomCode.status === 400, "Tenant B, tenant A custom kodunu yazabildi.");
     assertions += 6;
 
+    const draftSnapshotCount = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM unit_technical_profile_snapshots WHERE unit_id=$1",
+      [unitA1.id],
+    );
+    assert(draftSnapshotCount.rows[0]?.count === "0", "Draft save snapshot olusturdu.");
+    const firstPublish = await publishProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: 4,
+      validFrom: "2026-01-01",
+      changeSummary: "Initial technical profile baseline",
+    });
+    assert(firstPublish.status === 200, `Explicit publish 200 yerine ${firstPublish.status}`);
+    const firstPublishBody = await json(firstPublish);
+    assert(firstPublishBody.snapshot.snapshotNumber === 1, "Ilk snapshot number 1 degil.");
+    assert(firstPublishBody.snapshot.validFrom === "2026-01-01" && firstPublishBody.snapshot.validTo === null, "Ilk snapshot valid range bozuk.");
+    assert(firstPublishBody.profile.profileVersion === 5 && firstPublishBody.profile.profileStatus === "published", "Publish profile version/status bozuk.");
+    assertions += 4;
+
+    const sameDatePublish = await publishProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: 5,
+      validFrom: "2026-01-01",
+      changeSummary: "Duplicate date",
+    });
+    assert(sameDatePublish.status === 409, "Ayni validFrom reddedilmedi.");
+    const stalePublish = await publishProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: 4,
+      validFrom: "2026-02-01",
+    });
+    assert(stalePublish.status === 409, "Stale publish version 409 donmedi.");
+    const backdatedPublish = await publishProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: 5,
+      validFrom: "2025-12-31",
+    });
+    assert(backdatedPublish.status === 409, "Backdated publish reddedilmedi.");
+    assertions += 3;
+
+    const firstSnapshotDetail = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/history/${firstPublishBody.snapshot.id}`);
+    assert(firstSnapshotDetail.status === 200, "Snapshot detail okunamadi.");
+    const firstSnapshotBody = await json(firstSnapshotDetail);
+    assert(firstSnapshotBody.snapshot.standardValues.mainActivity === "Assembly and packaging", "Standart snapshot degeri korunmadi.");
+    assert(firstSnapshotBody.snapshot.customFieldValues.phase3c3_line_type === "assembly", "Custom snapshot degeri korunmadi.");
+    assert(firstSnapshotBody.snapshot.customFieldDefinitions.some((definition: any) => definition.code === "phase3c3_line_type" && definition.label === "Line type"), "Custom definition snapshot label korunmadi.");
+    assertions += 3;
+
+    const definitionLabelUpdate = await patchDefinition(server.baseUrl, adminToken, selectDefinition.id, {
+      expectedDefinitionVersion: selectDefinition.definitionVersion,
+      label: "Line type changed later",
+    });
+    assert(definitionLabelUpdate.status === 200, "Definition label update basarisiz.");
+    const firstSnapshotAfterDefinitionUpdate = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/history/${firstPublishBody.snapshot.id}`);
+    const firstSnapshotAfterDefinitionUpdateBody = await json(firstSnapshotAfterDefinitionUpdate);
+    assert(firstSnapshotAfterDefinitionUpdateBody.snapshot.customFieldDefinitions.some((definition: any) => definition.code === "phase3c3_line_type" && definition.label === "Line type"), "Snapshot definition metadata sonradan degisti.");
+    assertions += 2;
+
+    const profileBeforeSecondPublish = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}`);
+    const profileBeforeSecondPublishBody = await json(profileBeforeSecondPublish);
+    const secondDraft = await patchProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: profileBeforeSecondPublishBody.profile.profileVersion,
+      mainActivity: "Assembly snapshot v2",
+    });
+    assert(secondDraft.status === 200, "Ikinci snapshot oncesi current profile guncellenemedi.");
+    const secondDraftBody = await json(secondDraft);
+    const secondPublish = await publishProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: secondDraftBody.profile.profileVersion,
+      validFrom: "2026-06-01",
+      changeSummary: "Second technical profile baseline",
+    });
+    assert(secondPublish.status === 200, `Ikinci publish 200 yerine ${secondPublish.status}`);
+    const secondPublishBody = await json(secondPublish);
+    assert(secondPublishBody.snapshot.snapshotNumber === 2, "Ikinci snapshot number 2 degil.");
+    const history = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/history`);
+    assert(history.status === 200, "History list okunamadi.");
+    const historyBody = await json(history);
+    assert(historyBody.items.length >= 2 && historyBody.items[0].snapshotNumber === 2 && historyBody.items[1].snapshotNumber === 1, "History siralamasi bozuk.");
+    assert(historyBody.items[1].validTo === "2026-06-01", "Onceki snapshot validTo kapanmadi.");
+    assertions += 5;
+
+    const effectiveBefore = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?date=2025-12-31`);
+    assert(effectiveBefore.status === 404, "Ilk snapshot oncesi effective kayit dondu.");
+    const effectiveFirst = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?date=2026-01-01`);
+    assert(effectiveFirst.status === 200, "validFrom boundary effective snapshot donmedi.");
+    const effectiveFirstBody = await json(effectiveFirst);
+    assert(effectiveFirstBody.snapshot.snapshotNumber === 1, "[from,to) ilk boundary bozuk.");
+    const effectiveSecondBoundary = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?date=2026-06-01`);
+    const effectiveSecondBoundaryBody = await json(effectiveSecondBoundary);
+    assert(effectiveSecondBoundary.status === 200 && effectiveSecondBoundaryBody.snapshot.snapshotNumber === 2, "[from,to) to boundary bozuk.");
+    const invalidEffectiveDate = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?date=2026-13-01`);
+    assert(invalidEffectiveDate.status === 400, "Gecersiz effective date reddedilmedi.");
+    const crossTenantSnapshotDetail = await api(server.baseUrl, standardBToken, `/api/unit-technical-profiles/${unitB1.id}/history/${firstPublishBody.snapshot.id}`);
+    assert(crossTenantSnapshotDetail.status === 404, "Baska tenant snapshot detail sizdi.");
+    assertions += 6;
+
+    const standardExplicitPublish = await publishProfile(server.baseUrl, standardToken, unitA1.id, {
+      expectedProfileVersion: secondPublishBody.profile.profileVersion,
+      validFrom: "2026-07-01",
+    });
+    assert(standardExplicitPublish.status === 403, "Standard explicit publish yapabildi.");
+    const superHistoryNoContext = await api(server.baseUrl, superadminToken, `/api/unit-technical-profiles/${unitA1.id}/history`);
+    assert(superHistoryNoContext.status === 400, "Superadmin history context olmadan basarili oldu.");
+    const superEffectiveWithContext = await api(server.baseUrl, superadminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?companyId=${adminUser.company_id}&date=2026-07-01`);
+    assert(superEffectiveWithContext.status === 200, "Superadmin explicit context effective okuyamadi.");
+    assertions += 3;
+
     const audits = await pool.query<{
       action: string;
       changes_text: string | null;
@@ -559,7 +669,15 @@ async function main() {
     );
     assert(definitionAudit.rows.some((row) => row.action === "unit_technical_profile_field.created"), "Definition create audit yok.");
     assert(definitionAudit.rows.some((row) => row.action === "unit_technical_profile_field.archived"), "Definition archive audit yok.");
-    assertions += 8;
+    const snapshotAudit = await pool.query<{ action: string; metadata_json: any }>(
+      `SELECT action, metadata_json
+       FROM audit_events
+       WHERE entity_type='unit_technical_profile_snapshot' AND unit_id=$1
+       ORDER BY id`,
+      [unitA1.id],
+    );
+    assert(snapshotAudit.rows.some((row) => row.action === "unit_technical_profile.snapshot_created" && row.metadata_json?.snapshotNumber === 1), "Snapshot create audit yok.");
+    assertions += 9;
 
     console.log(JSON.stringify({ ok: true, assertions }, null, 2));
   } finally {

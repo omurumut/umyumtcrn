@@ -231,6 +231,66 @@ export const unitTechnicalProfileGetResponseSchema = z.strictObject({
 
 export const unitTechnicalProfilePatchResponseSchema = unitTechnicalProfileGetResponseSchema;
 
+export const unitTechnicalProfilePublishRequestSchema = z.strictObject({
+  expectedProfileVersion: z.number().int().min(0),
+  validFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  changeSummary: nullableTrimmedString(1000).optional(),
+});
+
+export const unitTechnicalProfileSnapshotSummarySchema = z.strictObject({
+  id: z.number().int().positive(),
+  companyId: z.number().int().positive(),
+  unitId: z.number().int().positive(),
+  sourceProfileId: z.number().int().positive().nullable(),
+  snapshotNumber: z.number().int().min(1),
+  profileVersion: z.number().int().min(1),
+  profileStatus: z.literal("published"),
+  validFrom: z.string(),
+  validTo: z.string().nullable(),
+  publishedAt: z.string(),
+  publishedBy: z.number().int().positive().nullable(),
+  publishedByName: z.string().nullable().optional(),
+  completionPercentage: z.number().int().min(0).max(100),
+  changeSummary: z.string().nullable(),
+  isCurrent: z.boolean().optional(),
+  isEffectiveToday: z.boolean().optional(),
+});
+
+export const unitTechnicalProfileSnapshotDetailSchema = unitTechnicalProfileSnapshotSummarySchema.extend({
+  standardValues: z.record(z.string(), z.unknown()),
+  customFieldValues: unitTechnicalProfileCustomFieldValuesSchema,
+  customFieldDefinitions: z.array(unitTechnicalProfileCustomFieldDefinitionSchema),
+});
+
+export const unitTechnicalProfileHistoryResponseSchema = z.strictObject({
+  items: z.array(unitTechnicalProfileSnapshotSummarySchema),
+  total: z.number().int().min(0),
+  limit: z.number().int().min(1),
+  offset: z.number().int().min(0),
+  hasNext: z.boolean(),
+  permissions: z.strictObject({
+    canEdit: z.boolean(),
+    canPublish: z.boolean(),
+  }),
+});
+
+export const unitTechnicalProfileSnapshotDetailResponseSchema = z.strictObject({
+  snapshot: unitTechnicalProfileSnapshotDetailSchema,
+  permissions: z.strictObject({
+    canEdit: z.boolean(),
+    canPublish: z.boolean(),
+  }),
+});
+
+export const unitTechnicalProfileEffectiveResponseSchema = z.strictObject({
+  date: z.string(),
+  snapshot: unitTechnicalProfileSnapshotDetailSchema,
+});
+
+export const unitTechnicalProfilePublishResponseSchema = unitTechnicalProfileGetResponseSchema.extend({
+  snapshot: unitTechnicalProfileSnapshotSummarySchema,
+});
+
 export const unitTechnicalProfileConflictResponseSchema = z.strictObject({
   error: z.string(),
   profile: unitTechnicalProfileSchema,
@@ -252,6 +312,13 @@ export const unitTechnicalProfilePublishValidationResponseSchema = z.strictObjec
 export type UnitTechnicalProfileDto = z.infer<typeof unitTechnicalProfileSchema>;
 export type UnitTechnicalProfileGetResponse = z.infer<typeof unitTechnicalProfileGetResponseSchema>;
 export type UnitTechnicalProfilePatchResponse = z.infer<typeof unitTechnicalProfilePatchResponseSchema>;
+export type UnitTechnicalProfilePublishRequest = z.infer<typeof unitTechnicalProfilePublishRequestSchema>;
+export type UnitTechnicalProfilePublishResponse = z.infer<typeof unitTechnicalProfilePublishResponseSchema>;
+export type UnitTechnicalProfileSnapshotSummary = z.infer<typeof unitTechnicalProfileSnapshotSummarySchema>;
+export type UnitTechnicalProfileSnapshotDetail = z.infer<typeof unitTechnicalProfileSnapshotDetailSchema>;
+export type UnitTechnicalProfileHistoryResponse = z.infer<typeof unitTechnicalProfileHistoryResponseSchema>;
+export type UnitTechnicalProfileSnapshotDetailResponse = z.infer<typeof unitTechnicalProfileSnapshotDetailResponseSchema>;
+export type UnitTechnicalProfileEffectiveResponse = z.infer<typeof unitTechnicalProfileEffectiveResponseSchema>;
 export type UnitTechnicalProfileConflictResponse = z.infer<typeof unitTechnicalProfileConflictResponseSchema>;
 export type UnitTechnicalProfilePublishValidationResponse = z.infer<typeof unitTechnicalProfilePublishValidationResponseSchema>;
 

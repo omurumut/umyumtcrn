@@ -72,6 +72,7 @@ async function useSession(page: Page, session: LoginResult): Promise<void> {
 
 async function resetProfile(unitId: number): Promise<void> {
   await pool.query("DELETE FROM audit_events WHERE action LIKE 'unit_technical_profile.%' AND unit_id=$1", [unitId]);
+  await pool.query("DELETE FROM unit_technical_profile_snapshots WHERE unit_id=$1", [unitId]);
   await pool.query("DELETE FROM unit_technical_profiles WHERE unit_id=$1", [unitId]);
   await pool.query(
     `DELETE FROM unit_technical_profile_field_definitions
@@ -123,7 +124,7 @@ test("UNIT-TECH-PROFILE-UI standard taslak kaydeder ve client validasyon uygular
   await expect(page.getByTestId("unit-technical-profile-section-operation")).toContainText("Kismen tamamlandi");
   await page.getByTestId("unit-technical-profile-save").click();
 
-  await expect(page.getByText("Formu kontrol edin")).toBeVisible();
+  await expect(page.getByText("Formu kontrol edin", { exact: true })).toBeVisible();
   await expect(page.getByText("0-24 araliginda olmali")).toBeVisible();
 
   await page.getByTestId("utp-field-dailyOperatingHours").fill("12");
@@ -227,7 +228,7 @@ test("UNIT-TECH-PROFILE-UI 409 cakis masinda editleri korur ve yeni versiyonla k
   expect(body.profile.profileVersion).toBe(2);
 });
 
-test("UNIT-TECH-PROFILE-UI admin publish minimum alanlari gosterir ve tamamlaninca yayinlar", async ({ page, request }) => {
+test("UNIT-TECH-PROFILE-UI admin publish paneli snapshot ve tarihce olusturur", async ({ page, request }) => {
   const admin = await login(request, credentials.adminA);
   const standard = await login(request, credentials.standardA1);
   expect(standard.user.unitId).not.toBeNull();
@@ -240,9 +241,10 @@ test("UNIT-TECH-PROFILE-UI admin publish minimum alanlari gosterir ve tamamlanin
   await page.getByRole("tab", { name: "Teknik Profil" }).click();
   await expect(page.getByTestId("unit-technical-profile-tab")).toBeVisible();
   await page.getByTestId("utp-field-facilityUseType").fill("Uretim tesisi");
-  await page.getByTestId("unit-technical-profile-status").click();
-  await page.getByRole("option", { name: "Published" }).click();
-  await page.getByTestId("unit-technical-profile-save").click();
+  await page.getByTestId("unit-technical-profile-open-publish").click();
+  await page.getByTestId("unit-technical-profile-valid-from").fill("2026-01-15");
+  await page.getByTestId("unit-technical-profile-change-summary").fill("Initial UI publish");
+  await page.getByTestId("unit-technical-profile-publish").click();
 
   await expect(page.getByTestId("unit-technical-profile-publish-missing")).toContainText("Ana faaliyet");
   await expect(page.getByTestId("unit-technical-profile-publish-missing")).toContainText("Toplam kapali alan");
@@ -253,9 +255,13 @@ test("UNIT-TECH-PROFILE-UI admin publish minimum alanlari gosterir ve tamamlanin
   await page.getByTestId("utp-field-dailyOperatingHours").fill("8");
   await page.getByTestId("utp-field-heatingSystemType").fill("Dogalgaz kazan");
   await page.getByTestId("utp-field-coolingSystemType").fill("Chiller");
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByTestId("unit-technical-profile-save").click();
-  await expect(page.getByText("Teknik profil kaydedildi", { exact: true })).toBeVisible();
+  await page.getByTestId("unit-technical-profile-publish").click();
+  await expect(page.getByText("Snapshot #1 olusturuldu.", { exact: true })).toBeVisible();
+  await page.getByTestId("unit-technical-profile-history-tab").click();
+  await expect(page.getByTestId("unit-technical-profile-history-row-1")).toContainText("2026-01-15");
+  await page.getByTestId("unit-technical-profile-history-row-1").click();
+  await expect(page.getByTestId("unit-technical-profile-snapshot-detail")).toContainText("Initial UI publish");
+  await expect(page.getByTestId("unit-technical-profile-snapshot-detail")).toContainText("Montaj");
 
   const apiResponse = await request.get(`/api/unit-technical-profiles/${standard.user.unitId}`, {
     headers: authorization(admin.token),
@@ -263,7 +269,12 @@ test("UNIT-TECH-PROFILE-UI admin publish minimum alanlari gosterir ve tamamlanin
   expect(apiResponse.status()).toBe(200);
   const body = await apiResponse.json();
   expect(body.profile.profileStatus).toBe("published");
-  expect(body.profile.profileVersion).toBe(1);
+  expect(body.profile.profileVersion).toBe(2);
+  const history = await request.get(`/api/unit-technical-profiles/${standard.user.unitId}/history`, {
+    headers: authorization(admin.token),
+  });
+  expect(history.status()).toBe(200);
+  expect((await history.json()).items[0]).toMatchObject({ snapshotNumber: 1, validFrom: "2026-01-15" });
 });
 
 test("UNIT-TECH-PROFILE-UI salt okunur ozet ve responsive yatay tasma kontrolu", async ({ page, request }) => {

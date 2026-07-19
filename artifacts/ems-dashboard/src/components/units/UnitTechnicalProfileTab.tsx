@@ -16,9 +16,13 @@ import {
   type UnitTechnicalProfileDto,
   type UnitTechnicalProfileFieldCode,
   type UnitTechnicalProfileGetResponse,
+  type UnitTechnicalProfileHistoryResponse,
   type UnitTechnicalProfilePatchRequest,
   type UnitTechnicalProfilePatchResponse,
+  type UnitTechnicalProfilePublishResponse,
   type UnitTechnicalProfileSectionId,
+  type UnitTechnicalProfileSnapshotDetailResponse,
+  type UnitTechnicalProfileSnapshotSummary,
   type UnitTechnicalProfileStatus,
   type UnitTechnicalProfileTechnicalStatus,
   type UnitTechnicalProfileValues,
@@ -35,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 
@@ -165,6 +170,21 @@ function buildUrl(unitId: number, companyId: number | null, isSuperAdmin: boolea
   if (isSuperAdmin && companyId !== null) params.set("companyId", companyId.toString());
   const qs = params.toString();
   return `/api/unit-technical-profiles/${unitId}${qs ? `?${qs}` : ""}`;
+}
+
+function buildChildUrl(unitId: number, childPath: string, companyId: number | null, isSuperAdmin: boolean) {
+  const params = new URLSearchParams();
+  if (isSuperAdmin && companyId !== null) params.set("companyId", companyId.toString());
+  const qs = params.toString();
+  return `/api/unit-technical-profiles/${unitId}/${childPath}${qs ? `?${qs}` : ""}`;
+}
+
+function localToday() {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 async function apiFetch<T>(token: string | null, url: string, init?: RequestInit): Promise<T> {
@@ -717,6 +737,144 @@ function ProfileSummary({
   );
 }
 
+function SnapshotField({ label, value }: { label: string; value: unknown }) {
+  if (value === null || value === undefined || value === "") return null;
+  return (
+    <div className="space-y-0.5">
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      <div className="break-words text-sm">{String(value)}</div>
+    </div>
+  );
+}
+
+function HistoryPanel({
+  history,
+  isLoading,
+  selectedSnapshot,
+  selectedSnapshotId,
+  canEdit,
+  onRefresh,
+  onSelectSnapshot,
+}: {
+  history?: UnitTechnicalProfileHistoryResponse;
+  isLoading: boolean;
+  selectedSnapshot: UnitTechnicalProfileSnapshotDetailResponse["snapshot"] | null;
+  selectedSnapshotId: number | null;
+  canEdit: boolean;
+  onRefresh: () => void;
+  onSelectSnapshot: (id: number) => void;
+}) {
+  const items = history?.items ?? [];
+  return (
+    <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]" data-testid="unit-technical-profile-history">
+      <Card className="overflow-hidden rounded-lg">
+        <CardHeader className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-base">Surum Gecmisi</CardTitle>
+            <Button type="button" variant="outline" size="sm" onClick={onRefresh} className="gap-2">
+              <RefreshCw className="h-4 w-4" /> Yenile
+            </Button>
+          </div>
+          <p className="text-sm text-muted-foreground">Yayimlanmis immutable teknik profil snapshotlari.</p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {isLoading ? (
+            <div className="space-y-3">
+              <Skeleton className="h-20" />
+              <Skeleton className="h-20" />
+            </div>
+          ) : items.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">Henuz yayimlanmis teknik profil snapshot'i yok.</div>
+          ) : items.map((item: UnitTechnicalProfileSnapshotSummary) => (
+            <button
+              key={item.id}
+              type="button"
+              data-testid={`unit-technical-profile-history-row-${item.snapshotNumber}`}
+              className={`w-full rounded-lg border p-3 text-left transition ${selectedSnapshotId === item.id ? "border-teal-500 bg-teal-500/10" : "border-border hover:bg-muted/40"}`}
+              onClick={() => onSelectSnapshot(item.id)}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-medium">Snapshot #{item.snapshotNumber}</div>
+                <div className="flex flex-wrap gap-1">
+                  {item.isCurrent && <Badge variant="outline">Acik uclu</Badge>}
+                  {item.isEffectiveToday && <Badge className="border-emerald-500/30 text-emerald-400" variant="outline">Bugun gecerli</Badge>}
+                </div>
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                {item.validFrom} - {item.validTo ?? "devam ediyor"} · {item.completionPercentage}% · v{item.profileVersion}
+              </div>
+              {item.changeSummary && <div className="mt-2 text-sm">{item.changeSummary}</div>}
+              <div className="mt-1 text-xs text-muted-foreground">
+                {item.publishedByName ?? `Kullanici #${item.publishedBy ?? "-"}`} · {new Date(item.publishedAt).toLocaleString("tr-TR")}
+              </div>
+            </button>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card className="overflow-hidden rounded-lg" data-testid="unit-technical-profile-snapshot-detail">
+        <CardHeader>
+          <CardTitle className="text-base">Snapshot Detayi</CardTitle>
+          <p className="text-sm text-muted-foreground">Detaylar guncel firma alan tanimlarindan degil, snapshot metadata'sindan okunur.</p>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {!selectedSnapshot ? (
+            <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">Detay icin bir surum secin.</div>
+          ) : (
+            <>
+              <div className="grid gap-3 md:grid-cols-3">
+                <SnapshotField label="Snapshot" value={`#${selectedSnapshot.snapshotNumber}`} />
+                <SnapshotField label="Gecerlilik" value={`${selectedSnapshot.validFrom} - ${selectedSnapshot.validTo ?? "devam ediyor"}`} />
+                <SnapshotField label="Yayin" value={new Date(selectedSnapshot.publishedAt).toLocaleString("tr-TR")} />
+                <SnapshotField label="Yayinlayan" value={selectedSnapshot.publishedByName ?? selectedSnapshot.publishedBy} />
+                <SnapshotField label="Profil version" value={selectedSnapshot.profileVersion} />
+                <SnapshotField label="Doluluk" value={`${selectedSnapshot.completionPercentage}%`} />
+              </div>
+              <SnapshotField label="Degisiklik aciklamasi" value={selectedSnapshot.changeSummary} />
+
+              <div className="space-y-3">
+                <div className="text-sm font-semibold">Standart teknik alanlar</div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {Object.entries(UNIT_TECHNICAL_PROFILE_FIELD_LABELS)
+                    .filter(([code]) => code !== "profileStatus")
+                    .map(([code, label]) => (
+                      <SnapshotField
+                        key={code}
+                        label={label}
+                        value={displayValue(selectedSnapshot.standardValues[code], UNIT_TECHNICAL_PROFILE_FIELD_UNITS[code as UnitTechnicalProfileFieldCode])}
+                      />
+                    ))}
+                </div>
+              </div>
+
+              {selectedSnapshot.customFieldDefinitions.length > 0 && (
+                <div className="space-y-3">
+                  <div className="text-sm font-semibold">Firma ozel alanlar</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {selectedSnapshot.customFieldDefinitions.map((definition) => (
+                      <SnapshotField
+                        key={`${definition.id}-${definition.code}`}
+                        label={`${definition.label}${definition.isActive ? "" : " (pasif)"}`}
+                        value={displayCustomValue(definition, selectedSnapshot.customFieldValues[definition.code])}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {canEdit && (
+                <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+                  Bu surumden yeni taslak olusturma V1 kapsaminda salt-okunur bir sonraki alt pakete birakildi.
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number }) {
   const { token, user } = useAuth();
   const { companyId } = useCompany();
@@ -732,6 +890,12 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
   const [conflictCustomValues, setConflictCustomValues] = useState<Record<string, unknown> | null>(null);
   const [publishMissingFields, setPublishMissingFields] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<"summary" | "form">("form");
+  const [activeTab, setActiveTab] = useState<"profile" | "history">("profile");
+  const [publishPanelOpen, setPublishPanelOpen] = useState(false);
+  const [publishValidFrom, setPublishValidFrom] = useState(localToday);
+  const [publishChangeSummary, setPublishChangeSummary] = useState("");
+  const [publishDateError, setPublishDateError] = useState<string | null>(null);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
 
   const queryEnabled = !!token && !!activeUnitId && (!isSuperAdmin || companyId !== null);
   const queryKey = ["unit-technical-profile", activeUnitId, isSuperAdmin ? companyId : "own"];
@@ -742,6 +906,25 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
     queryFn: () => apiFetch<UnitTechnicalProfileGetResponse>(
       token,
       buildUrl(activeUnitId!, companyId, !!isSuperAdmin),
+    ),
+  });
+
+  const historyQueryKey = ["unit-technical-profile-history", activeUnitId, isSuperAdmin ? companyId : "own"];
+  const historyQuery = useQuery<UnitTechnicalProfileHistoryResponse>({
+    queryKey: historyQueryKey,
+    enabled: queryEnabled,
+    queryFn: () => apiFetch<UnitTechnicalProfileHistoryResponse>(
+      token,
+      buildChildUrl(activeUnitId!, "history", companyId, !!isSuperAdmin),
+    ),
+  });
+
+  const snapshotDetailQuery = useQuery<UnitTechnicalProfileSnapshotDetailResponse>({
+    queryKey: ["unit-technical-profile-snapshot", activeUnitId, selectedSnapshotId, isSuperAdmin ? companyId : "own"],
+    enabled: queryEnabled && selectedSnapshotId !== null,
+    queryFn: () => apiFetch<UnitTechnicalProfileSnapshotDetailResponse>(
+      token,
+      buildChildUrl(activeUnitId!, `history/${selectedSnapshotId}`, companyId, !!isSuperAdmin),
     ),
   });
 
@@ -863,7 +1046,57 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
     },
   });
 
-  const disabled = !canEdit || saveMutation.isPending;
+  const publishMutation = useMutation({
+    mutationFn: (payload: { expectedProfileVersion: number; validFrom: string; changeSummary: string | null }) => apiFetch<UnitTechnicalProfilePublishResponse>(
+      token,
+      buildChildUrl(activeUnitId!, "publish", companyId, !!isSuperAdmin),
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+    onSuccess: async (data) => {
+      const nextForm = profileToForm(data.profile, data.customFieldValues);
+      setForm(nextForm);
+      setLoadedForm(nextForm);
+      setServerProfile(data.profile);
+      setConflictProfile(null);
+      setConflictCustomValues(null);
+      setPublishMissingFields([]);
+      setPublishPanelOpen(false);
+      setPublishDateError(null);
+      setErrors({});
+      queryClient.setQueryData(queryKey, data);
+      await queryClient.invalidateQueries({ queryKey: historyQueryKey });
+      toast({ title: `Teknik profil yayimlandi`, description: `Snapshot #${data.snapshot.snapshotNumber} olusturuldu.` });
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        const body = error.body as { code?: unknown; profile?: UnitTechnicalProfileDto; customFieldValues?: Record<string, unknown> };
+        if (body.code === "valid_from_conflict") {
+          setPublishDateError(error.message);
+          toast({ title: "Gecerlilik tarihi uygun degil", description: error.message, variant: "destructive" });
+          return;
+        }
+        if (body.profile) {
+          setConflictProfile(body.profile);
+          setConflictCustomValues(body.customFieldValues ?? null);
+          toast({ title: "Versiyon cakismasi", description: "Sunucuda daha guncel veri var. Duzenlemeleriniz korunuyor.", variant: "destructive" });
+          return;
+        }
+      }
+      if (error instanceof ApiError && error.status === 422 && typeof error.body === "object" && error.body !== null && "missingFields" in error.body) {
+        const missingFields = (error.body as { missingFields?: unknown }).missingFields;
+        if (Array.isArray(missingFields)) {
+          setPublishMissingFields(missingFields.map(String));
+          setActiveTab("profile");
+          setViewMode("form");
+          toast({ title: "Yayin icin alanlar tamamlanmali", description: "Minimum alanlari kontrol edin.", variant: "destructive" });
+          return;
+        }
+      }
+      toast({ title: "Yayimlanamadi", description: error instanceof Error ? error.message : "Sunucu hatasi", variant: "destructive" });
+    },
+  });
+
+  const disabled = !canEdit || saveMutation.isPending || publishMutation.isPending;
   const superAdminNeedsCompany = isSuperAdmin && companyId === null;
 
   function setText(field: TextField, value: string) {
@@ -936,6 +1169,46 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
       if (!ok) return;
     }
     saveMutation.mutate(buildPatchPayload(form, serverProfile.profileVersion, canPublish));
+  }
+
+  async function handlePublish() {
+    if (!serverProfile || !activeUnitId) return;
+    setPublishDateError(null);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(publishValidFrom)) {
+      setPublishDateError("Gecerli bir baslangic tarihi girin.");
+      return;
+    }
+    const nextErrors = validateForm(form, canPublish);
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      toast({ title: "Formu kontrol edin", description: "Bazi alanlar beklenen aralikta degil.", variant: "destructive" });
+      return;
+    }
+    const missingFields = validateUnitTechnicalProfilePublishMinimum(formToProfileValues(form));
+    const missingCustomFields = missingRequiredUnitTechnicalProfileCustomFieldsForPublish(customFieldDefinitions, form.customValues);
+    const combinedMissingFields = [...missingFields, ...missingCustomFields.map((field) => field.code)];
+    if (combinedMissingFields.length > 0) {
+      setPublishMissingFields(combinedMissingFields);
+      setActiveTab("profile");
+      setViewMode("form");
+      goToFirstMissingField(combinedMissingFields);
+      return;
+    }
+
+    try {
+      let expectedProfileVersion = serverProfile.profileVersion;
+      if (isDirty) {
+        const saved = await saveMutation.mutateAsync(buildPatchPayload(form, serverProfile.profileVersion, canPublish));
+        expectedProfileVersion = saved.profile.profileVersion;
+      }
+      await publishMutation.mutateAsync({
+        expectedProfileVersion,
+        validFrom: publishValidFrom,
+        changeSummary: publishChangeSummary.trim() || null,
+      });
+    } catch {
+      // Mutation handlers keep form state and user feedback in sync.
+    }
   }
 
   function handleReset() {
@@ -1054,10 +1327,67 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
                 {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                 Kaydet
               </Button>
+              {canPublish && (
+                <Button type="button" variant="secondary" onClick={() => setPublishPanelOpen((open) => !open)} disabled={publishMutation.isPending} className="gap-2" data-testid="unit-technical-profile-open-publish">
+                  <CheckCircle2 className="h-4 w-4" /> Yayimla
+                </Button>
+              )}
             </>
           )}
         </div>
       </div>
+
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "profile" | "history")}>
+        <TabsList>
+          <TabsTrigger value="profile">Profil</TabsTrigger>
+          <TabsTrigger value="history" data-testid="unit-technical-profile-history-tab">Tarihce</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {activeTab === "profile" && (
+      <>
+      {publishPanelOpen && canPublish && viewMode === "form" && (
+        <Card className="border-teal-500/30" data-testid="unit-technical-profile-publish-panel">
+          <CardHeader>
+            <CardTitle className="text-base">Kaydet ve yayimla</CardTitle>
+            <p className="text-sm text-muted-foreground">Guncel profil once kaydedilir, ardindan bu tarih ile immutable snapshot olusturulur.</p>
+          </CardHeader>
+          <CardContent className="grid gap-4 md:grid-cols-[220px_1fr_auto] md:items-start">
+            <div className="space-y-1.5">
+              <Label htmlFor="unit-technical-profile-valid-from">Gecerlilik baslangici</Label>
+              <Input
+                id="unit-technical-profile-valid-from"
+                data-testid="unit-technical-profile-valid-from"
+                type="date"
+                value={publishValidFrom}
+                disabled={disabled}
+                onChange={(event) => {
+                  setPublishValidFrom(event.target.value);
+                  setPublishDateError(null);
+                }}
+              />
+              <FieldError message={publishDateError ?? undefined} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="unit-technical-profile-change-summary">Degisiklik aciklamasi</Label>
+              <Textarea
+                id="unit-technical-profile-change-summary"
+                data-testid="unit-technical-profile-change-summary"
+                rows={2}
+                maxLength={1000}
+                value={publishChangeSummary}
+                disabled={disabled}
+                onChange={(event) => setPublishChangeSummary(event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">Mevcut profile version: {serverProfile.profileVersion}</p>
+            </div>
+            <Button type="button" onClick={handlePublish} disabled={disabled || publishMutation.isPending} className="gap-2" data-testid="unit-technical-profile-publish">
+              {publishMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Kaydet ve yayimla
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {viewMode === "summary" && (
         <ProfileSummary
@@ -1213,6 +1543,20 @@ export default function UnitTechnicalProfileTab({ unitId }: { unitId?: number })
           </SectionCard>
         )}
       </div>
+      )}
+      </>
+      )}
+
+      {activeTab === "history" && (
+        <HistoryPanel
+          history={historyQuery.data}
+          isLoading={historyQuery.isLoading}
+          selectedSnapshot={snapshotDetailQuery.data?.snapshot ?? null}
+          selectedSnapshotId={selectedSnapshotId}
+          canEdit={canEdit}
+          onRefresh={() => historyQuery.refetch()}
+          onSelectSnapshot={setSelectedSnapshotId}
+        />
       )}
     </div>
   );

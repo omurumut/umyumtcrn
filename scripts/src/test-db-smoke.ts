@@ -30,6 +30,7 @@ const REQUIRED_TABLES = [
   "energy_review_records",
   "unit_technical_profiles",
   "unit_technical_profile_field_definitions",
+  "unit_technical_profile_snapshots",
 ] as const;
 const REQUIRED_INDEXES = [
   "wdd_station_key_year_month_official_idx",
@@ -60,6 +61,10 @@ const REQUIRED_INDEXES = [
   "unit_technical_profiles_company_unit_idx",
   "utp_field_definitions_company_code_unique",
   "utp_field_definitions_company_active_sort_idx",
+  "utp_snapshots_unit_snapshot_number_unique",
+  "utp_snapshots_unit_valid_from_unique",
+  "utp_snapshots_company_unit_valid_from_idx",
+  "utp_snapshots_company_unit_valid_to_idx",
 ] as const;
 
 interface JournalEntry {

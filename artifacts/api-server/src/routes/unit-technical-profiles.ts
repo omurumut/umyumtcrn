@@ -1,20 +1,26 @@
 import { Router, type Request, type Response } from "express";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, or } from "drizzle-orm";
 import {
   companiesTable,
   db,
   unitTechnicalProfileFieldDefinitionsTable,
   unitTechnicalProfilesTable,
+  unitTechnicalProfileSnapshotsTable,
   unitsTable,
+  usersTable,
 } from "@workspace/db";
 import {
+  calculateUnitTechnicalProfileCompletion,
   createDefaultUnitTechnicalProfile,
   missingRequiredUnitTechnicalProfileCustomFieldsForPublish,
   unitTechnicalProfilePatchRequestSchema,
+  unitTechnicalProfilePublishRequestSchema,
   validateUnitTechnicalProfileCustomFieldValues,
   validateUnitTechnicalProfilePublishMinimum,
   type UnitTechnicalProfileCustomFieldDefinitionDto,
   type UnitTechnicalProfileDto,
+  type UnitTechnicalProfileSnapshotDetail,
+  type UnitTechnicalProfileSnapshotSummary,
   type UnitTechnicalProfileValues,
 } from "@workspace/api-zod";
 import { requireAuth } from "../middlewares/auth.js";
@@ -55,10 +61,14 @@ const PROFILE_FIELDS = [
   "profileStatus",
 ] as const;
 
+const STANDARD_SNAPSHOT_FIELDS = PROFILE_FIELDS.filter((field) => field !== "profileStatus");
+
 type ProfileField = typeof PROFILE_FIELDS[number];
 type ProfilePatch = Partial<Pick<typeof unitTechnicalProfilesTable.$inferInsert, ProfileField>>;
 type CustomFieldValues = Record<string, unknown>;
 type DefinitionRow = typeof unitTechnicalProfileFieldDefinitionsTable.$inferSelect;
+type ProfileRow = typeof unitTechnicalProfilesTable.$inferSelect;
+type SnapshotRow = typeof unitTechnicalProfileSnapshotsTable.$inferSelect;
 
 class UnitTechnicalProfileScopeError extends Error {
   status: number;
@@ -93,6 +103,21 @@ function parsePositiveInteger(value: unknown, field: string): number {
 function parseOptionalPositiveInteger(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   return parsePositiveInteger(value, field);
+}
+
+function parseIsoDate(value: unknown, field: string): string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new UnitTechnicalProfileScopeError(400, `Gecersiz ${field}`);
+  }
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+    throw new UnitTechnicalProfileScopeError(400, `Gecersiz ${field}`);
+  }
+  return value;
+}
+
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function handleScopeError(res: Response, error: unknown) {
@@ -139,7 +164,7 @@ async function resolveScope(req: Request, unitId: number) {
   };
 }
 
-function serializeProfile(profile: typeof unitTechnicalProfilesTable.$inferSelect | null, companyId: number, unitId: number): UnitTechnicalProfileDto {
+function serializeProfile(profile: ProfileRow | null, companyId: number, unitId: number): UnitTechnicalProfileDto {
   if (!profile) return createDefaultUnitTechnicalProfile(companyId, unitId);
   return {
     id: profile.id,
@@ -206,7 +231,7 @@ function serializeDefinition(row: DefinitionRow): UnitTechnicalProfileCustomFiel
   };
 }
 
-function profileCustomValues(profile: typeof unitTechnicalProfilesTable.$inferSelect | null): CustomFieldValues {
+function profileCustomValues(profile: ProfileRow | null): CustomFieldValues {
   const values = profile?.customValues;
   return values && typeof values === "object" && !Array.isArray(values) ? values : {};
 }
@@ -224,7 +249,7 @@ async function getDefinitionsForProfile(companyId: number, customValues: CustomF
     .map(serializeDefinition);
 }
 
-async function responseFor(profile: typeof unitTechnicalProfilesTable.$inferSelect | null, scope: Awaited<ReturnType<typeof resolveScope>>) {
+async function responseFor(profile: ProfileRow | null, scope: Awaited<ReturnType<typeof resolveScope>>) {
   const customFieldValues = profileCustomValues(profile);
   return {
     profile: serializeProfile(profile, scope.companyId, scope.unitId),
@@ -235,6 +260,139 @@ async function responseFor(profile: typeof unitTechnicalProfilesTable.$inferSele
       canPublish: scope.canPublish,
     },
   };
+}
+
+function standardSnapshotValues(profile: ProfileRow) {
+  const values: Record<string, unknown> = {};
+  for (const field of STANDARD_SNAPSHOT_FIELDS) values[field] = profile[field];
+  values.profileStatus = "published";
+  return values;
+}
+
+function definitionSnapshot(definitions: DefinitionRow[]) {
+  return definitions.map((definition) => ({
+    id: definition.id,
+    code: definition.code,
+    label: definition.label,
+    description: definition.description,
+    fieldType: definition.fieldType,
+    unitLabel: definition.unitLabel,
+    options: definition.options ?? [],
+    isActive: definition.isActive,
+    isRequiredForPublish: definition.isRequiredForPublish,
+    sortOrder: definition.sortOrder,
+    definitionVersion: definition.definitionVersion,
+  }));
+}
+
+function snapshotToSummary(
+  snapshot: SnapshotRow,
+  publishedByName?: string | null,
+): UnitTechnicalProfileSnapshotSummary {
+  const today = todayIsoDate();
+  return {
+    id: snapshot.id,
+    companyId: snapshot.companyId,
+    unitId: snapshot.unitId,
+    sourceProfileId: snapshot.sourceProfileId,
+    snapshotNumber: snapshot.snapshotNumber,
+    profileVersion: snapshot.profileVersion,
+    profileStatus: "published",
+    validFrom: snapshot.validFrom,
+    validTo: snapshot.validTo,
+    publishedAt: snapshot.publishedAt.toISOString(),
+    publishedBy: snapshot.publishedBy,
+    publishedByName: publishedByName ?? null,
+    completionPercentage: snapshot.completionPercentage,
+    changeSummary: snapshot.changeSummary,
+    isCurrent: snapshot.validTo === null,
+    isEffectiveToday: snapshot.validFrom <= today && (snapshot.validTo === null || snapshot.validTo > today),
+  };
+}
+
+function snapshotToDetail(snapshot: SnapshotRow, publishedByName?: string | null): UnitTechnicalProfileSnapshotDetail {
+  return {
+    ...snapshotToSummary(snapshot, publishedByName),
+    standardValues: snapshot.standardValues,
+    customFieldValues: snapshot.customValues,
+    customFieldDefinitions: (snapshot.customDefinitionSnapshot ?? []) as UnitTechnicalProfileCustomFieldDefinitionDto[],
+  };
+}
+
+function missingPublishDetails(profile: UnitTechnicalProfileValues, definitions: DefinitionRow[], customValues: CustomFieldValues) {
+  const missingFields = validateUnitTechnicalProfilePublishMinimum(profile);
+  const missingCustomFields = missingRequiredUnitTechnicalProfileCustomFieldsForPublish(
+    definitions.map(serializeDefinition),
+    customValues,
+  );
+  return { missingFields, missingCustomFields };
+}
+
+async function createPublishSnapshot(
+  tx: typeof db,
+  req: Request,
+  scope: Awaited<ReturnType<typeof resolveScope>>,
+  profile: ProfileRow,
+  definitions: DefinitionRow[],
+  validFrom: string,
+  changeSummary: string | null,
+) {
+  const [latestSnapshot] = await tx.select()
+    .from(unitTechnicalProfileSnapshotsTable)
+    .where(and(
+      eq(unitTechnicalProfileSnapshotsTable.companyId, scope.companyId),
+      eq(unitTechnicalProfileSnapshotsTable.unitId, scope.unitId),
+    ))
+    .orderBy(desc(unitTechnicalProfileSnapshotsTable.snapshotNumber))
+    .limit(1)
+    .for("update");
+
+  if (latestSnapshot && validFrom <= latestSnapshot.validFrom) {
+    return { status: "date-conflict" as const, latestSnapshot };
+  }
+
+  if (latestSnapshot && latestSnapshot.validTo === null) {
+    await tx.update(unitTechnicalProfileSnapshotsTable)
+      .set({ validTo: validFrom })
+      .where(eq(unitTechnicalProfileSnapshotsTable.id, latestSnapshot.id));
+  }
+
+  const completion = calculateUnitTechnicalProfileCompletion(serializeProfile(profile, scope.companyId, scope.unitId));
+  const [snapshot] = await tx.insert(unitTechnicalProfileSnapshotsTable)
+    .values({
+      companyId: scope.companyId,
+      unitId: scope.unitId,
+      sourceProfileId: profile.id,
+      snapshotNumber: (latestSnapshot?.snapshotNumber ?? 0) + 1,
+      profileVersion: profile.profileVersion,
+      profileStatus: "published",
+      validFrom,
+      validTo: null,
+      publishedAt: new Date(),
+      publishedBy: scope.userId,
+      standardValues: standardSnapshotValues(profile),
+      customValues: profileCustomValues(profile),
+      customDefinitionSnapshot: definitionSnapshot(definitions),
+      completionPercentage: completion.ratio,
+      changeSummary,
+    })
+    .returning();
+
+  await writeAuditEvent(tx, {
+    request: req,
+    companyId: scope.companyId,
+    unitId: scope.unitId,
+    action: "unit_technical_profile.snapshot_created",
+    entityType: "unit_technical_profile_snapshot",
+    entityId: snapshot.id,
+    changes: {
+      previousSnapshotNumber: latestSnapshot?.snapshotNumber ?? null,
+      snapshotNumber: snapshot.snapshotNumber,
+      profileVersion: profile.profileVersion,
+    },
+    metadata: { validFrom, changeSummary, snapshotNumber: snapshot.snapshotNumber },
+  });
+  return { status: "ok" as const, snapshot };
 }
 
 function changedCustomValueCodes(before: CustomFieldValues, after: CustomFieldValues) {
@@ -311,6 +469,242 @@ router.get("/unit-technical-profiles/:unitId", requireAuth, async (req, res) => 
     if (handleScopeError(res, error)) return;
     req.log.error(error);
     res.status(500).json({ error: "Sunucu hatasi" });
+  }
+});
+
+router.get("/unit-technical-profiles/:unitId/history", requireAuth, async (req, res) => {
+  try {
+    const unitId = parsePositiveInteger(req.params.unitId, "unitId");
+    const scope = await resolveScope(req, unitId);
+    const limit = Math.min(parseOptionalPositiveInteger(req.query.limit, "limit") ?? 20, 100);
+    const offset = parseOptionalPositiveInteger(req.query.offset, "offset") ?? 0;
+    const rows = await db.select({
+      snapshot: unitTechnicalProfileSnapshotsTable,
+      publishedByName: usersTable.name,
+    })
+      .from(unitTechnicalProfileSnapshotsTable)
+      .leftJoin(usersTable, eq(usersTable.id, unitTechnicalProfileSnapshotsTable.publishedBy))
+      .where(and(
+        eq(unitTechnicalProfileSnapshotsTable.companyId, scope.companyId),
+        eq(unitTechnicalProfileSnapshotsTable.unitId, scope.unitId),
+      ))
+      .orderBy(desc(unitTechnicalProfileSnapshotsTable.snapshotNumber))
+      .limit(limit + 1)
+      .offset(offset);
+    const items = rows.slice(0, limit).map((row) => snapshotToSummary(row.snapshot, row.publishedByName));
+    res.json({
+      items,
+      total: offset + items.length + (rows.length > limit ? 1 : 0),
+      limit,
+      offset,
+      hasNext: rows.length > limit,
+      permissions: { canEdit: scope.canEdit, canPublish: scope.canPublish },
+    });
+  } catch (error) {
+    if (handleScopeError(res, error)) return;
+    req.log.error(error);
+    res.status(500).json({ error: "Teknik profil tarihcesi alinamadi" });
+  }
+});
+
+router.get("/unit-technical-profiles/:unitId/effective", requireAuth, async (req, res) => {
+  try {
+    const unitId = parsePositiveInteger(req.params.unitId, "unitId");
+    const scope = await resolveScope(req, unitId);
+    const date = parseIsoDate(req.query.date, "date");
+    const [row] = await db.select({
+      snapshot: unitTechnicalProfileSnapshotsTable,
+      publishedByName: usersTable.name,
+    })
+      .from(unitTechnicalProfileSnapshotsTable)
+      .leftJoin(usersTable, eq(usersTable.id, unitTechnicalProfileSnapshotsTable.publishedBy))
+      .where(and(
+        eq(unitTechnicalProfileSnapshotsTable.companyId, scope.companyId),
+        eq(unitTechnicalProfileSnapshotsTable.unitId, scope.unitId),
+        lte(unitTechnicalProfileSnapshotsTable.validFrom, date),
+        or(isNull(unitTechnicalProfileSnapshotsTable.validTo), gt(unitTechnicalProfileSnapshotsTable.validTo, date)),
+      ))
+      .orderBy(desc(unitTechnicalProfileSnapshotsTable.validFrom))
+      .limit(1);
+    if (!row) {
+      res.status(404).json({ error: "Bu tarih icin yayimlanmis teknik profil snapshot'i yok", code: "not_found" });
+      return;
+    }
+    res.json({ date, snapshot: snapshotToDetail(row.snapshot, row.publishedByName) });
+  } catch (error) {
+    if (handleScopeError(res, error)) return;
+    req.log.error(error);
+    res.status(500).json({ error: "Gecerli teknik profil alinamadi" });
+  }
+});
+
+router.get("/unit-technical-profiles/:unitId/history/:snapshotId", requireAuth, async (req, res) => {
+  try {
+    const unitId = parsePositiveInteger(req.params.unitId, "unitId");
+    const snapshotId = parsePositiveInteger(req.params.snapshotId, "snapshotId");
+    const scope = await resolveScope(req, unitId);
+    const [row] = await db.select({
+      snapshot: unitTechnicalProfileSnapshotsTable,
+      publishedByName: usersTable.name,
+    })
+      .from(unitTechnicalProfileSnapshotsTable)
+      .leftJoin(usersTable, eq(usersTable.id, unitTechnicalProfileSnapshotsTable.publishedBy))
+      .where(and(
+        eq(unitTechnicalProfileSnapshotsTable.id, snapshotId),
+        eq(unitTechnicalProfileSnapshotsTable.companyId, scope.companyId),
+        eq(unitTechnicalProfileSnapshotsTable.unitId, scope.unitId),
+      ))
+      .limit(1);
+    if (!row) {
+      res.status(404).json({ error: "Snapshot bulunamadi" });
+      return;
+    }
+    res.json({
+      snapshot: snapshotToDetail(row.snapshot, row.publishedByName),
+      permissions: { canEdit: scope.canEdit, canPublish: scope.canPublish },
+    });
+  } catch (error) {
+    if (handleScopeError(res, error)) return;
+    req.log.error(error);
+    res.status(500).json({ error: "Snapshot detayi alinamadi" });
+  }
+});
+
+router.post("/unit-technical-profiles/:unitId/publish", requireAuth, async (req, res) => {
+  try {
+    const unitId = parsePositiveInteger(req.params.unitId, "unitId");
+    const scope = await resolveScope(req, unitId);
+    if (!scope.canPublish) {
+      res.status(403).json({ error: "Teknik profili yayimlama yetkiniz yok" });
+      return;
+    }
+    const parsed = unitTechnicalProfilePublishRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Gecersiz yayinlama verisi" });
+      return;
+    }
+
+    const result = await db.transaction(async (tx) => {
+      const [profile] = await tx.select()
+        .from(unitTechnicalProfilesTable)
+        .where(and(
+          eq(unitTechnicalProfilesTable.companyId, scope.companyId),
+          eq(unitTechnicalProfilesTable.unitId, scope.unitId),
+        ))
+        .limit(1)
+        .for("update");
+      if (!profile) return { status: "not-found" as const };
+      if (profile.profileVersion !== parsed.data.expectedProfileVersion) {
+        return { status: "conflict" as const, profile };
+      }
+
+      const definitions = await tx.select()
+        .from(unitTechnicalProfileFieldDefinitionsTable)
+        .where(eq(unitTechnicalProfileFieldDefinitionsTable.companyId, scope.companyId))
+        .orderBy(
+          asc(unitTechnicalProfileFieldDefinitionsTable.sortOrder),
+          asc(unitTechnicalProfileFieldDefinitionsTable.label),
+        );
+      const merged = mergedProfileValues(serializeProfile(profile, scope.companyId, scope.unitId), { profileStatus: "published" });
+      const missing = missingPublishDetails(merged, definitions, profileCustomValues(profile));
+      if (missing.missingFields.length > 0 || missing.missingCustomFields.length > 0) {
+        return { status: "publish-validation" as const, ...missing };
+      }
+
+      const now = new Date();
+      const [updated] = await tx.update(unitTechnicalProfilesTable)
+        .set({
+          profileStatus: "published",
+          profileVersion: profile.profileVersion + 1,
+          updatedAt: now,
+          updatedBy: scope.userId,
+        })
+        .where(and(
+          eq(unitTechnicalProfilesTable.id, profile.id),
+          eq(unitTechnicalProfilesTable.profileVersion, parsed.data.expectedProfileVersion),
+        ))
+        .returning();
+      if (!updated) return { status: "conflict" as const, profile };
+
+      const snapshotResult = await createPublishSnapshot(
+        tx as unknown as typeof db,
+        req,
+        scope,
+        updated,
+        definitions,
+        parsed.data.validFrom,
+        parsed.data.changeSummary ?? null,
+      );
+      if (snapshotResult.status !== "ok") return snapshotResult;
+
+      await writeAuditEvent(tx, {
+        request: req,
+        companyId: scope.companyId,
+        unitId: scope.unitId,
+        action: "unit_technical_profile.published",
+        entityType: "unit_technical_profile",
+        entityId: updated.id,
+        changes: {
+          changedFields: profile.profileStatus === "published" ? [] : ["profileStatus"],
+          previousVersion: profile.profileVersion,
+          newVersion: updated.profileVersion,
+        },
+        metadata: {
+          validFrom: parsed.data.validFrom,
+          changeSummary: parsed.data.changeSummary ?? null,
+          snapshotNumber: snapshotResult.snapshot.snapshotNumber,
+          snapshotId: snapshotResult.snapshot.id,
+        },
+      });
+
+      return { status: "ok" as const, profile: updated, snapshot: snapshotResult.snapshot };
+    });
+
+    if (result.status === "not-found") {
+      res.status(404).json({ error: "Yayimlanacak teknik profil bulunamadi" });
+      return;
+    }
+    if (result.status === "conflict") {
+      res.status(409).json({
+        error: "Birim teknik profili baska bir oturum tarafindan guncellendi. Guncel bilgileri yeniden yukleyin.",
+        profile: serializeProfile(result.profile, scope.companyId, scope.unitId),
+        customFieldDefinitions: await getDefinitionsForProfile(scope.companyId, profileCustomValues(result.profile)),
+        customFieldValues: profileCustomValues(result.profile),
+      });
+      return;
+    }
+    if (result.status === "date-conflict") {
+      res.status(409).json({
+        error: `validFrom son yayim tarihinden buyuk olmalidir (${result.latestSnapshot.validFrom}).`,
+        code: "valid_from_conflict",
+        latestSnapshot: snapshotToSummary(result.latestSnapshot),
+      });
+      return;
+    }
+    if (result.status === "publish-validation") {
+      const missingCustomFields = result.missingCustomFields ?? [];
+      res.status(422).json({
+        error: "Teknik profil yayinlamak icin minimum alanlar tamamlanmalidir.",
+        missingFields: [
+          ...result.missingFields,
+          ...missingCustomFields.map((field) => field.code),
+        ],
+        missingFieldDetails: [
+          ...result.missingFields.map((code) => ({ kind: "standard" as const, code })),
+          ...missingCustomFields,
+        ],
+      });
+      return;
+    }
+
+    res.json({
+      ...(await responseFor(result.profile, scope)),
+      snapshot: snapshotToSummary(result.snapshot, req.user?.name ?? null),
+    });
+  } catch (error) {
+    if (handleScopeError(res, error)) return;
+    req.log.error(error);
+    res.status(500).json({ error: "Teknik profil yayimlanamadi" });
   }
 });
 

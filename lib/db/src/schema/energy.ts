@@ -446,6 +446,35 @@ export const insertUnitTechnicalProfileFieldDefinitionSchema = createInsertSchem
 export type InsertUnitTechnicalProfileFieldDefinition = z.infer<typeof insertUnitTechnicalProfileFieldDefinitionSchema>;
 export type UnitTechnicalProfileFieldDefinition = typeof unitTechnicalProfileFieldDefinitionsTable.$inferSelect;
 
+export const unitTechnicalProfileSnapshotsTable = pgTable("unit_technical_profile_snapshots", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id).notNull(),
+  sourceProfileId: integer("source_profile_id").references(() => unitTechnicalProfilesTable.id, { onDelete: "set null" }),
+  snapshotNumber: integer("snapshot_number").notNull(),
+  profileVersion: integer("profile_version").notNull(),
+  profileStatus: text("profile_status").notNull().default("published"),
+  validFrom: text("valid_from").notNull(),
+  validTo: text("valid_to"),
+  publishedAt: timestamp("published_at").defaultNow().notNull(),
+  publishedBy: integer("published_by").references(() => usersTable.id, { onDelete: "set null" }),
+  standardValues: jsonb("standard_values_json").$type<Record<string, unknown>>().notNull(),
+  customValues: jsonb("custom_values_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  customDefinitionSnapshot: jsonb("custom_definition_snapshot_json").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  completionPercentage: integer("completion_percentage").notNull().default(0),
+  changeSummary: text("change_summary"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  unitSnapshotNumberUnique: uniqueIndex("utp_snapshots_unit_snapshot_number_unique").on(table.unitId, table.snapshotNumber),
+  unitValidFromUnique: uniqueIndex("utp_snapshots_unit_valid_from_unique").on(table.unitId, table.validFrom),
+  companyUnitValidFromIdx: index("utp_snapshots_company_unit_valid_from_idx").on(table.companyId, table.unitId, table.validFrom),
+  companyUnitValidToIdx: index("utp_snapshots_company_unit_valid_to_idx").on(table.companyId, table.unitId, table.validTo),
+}));
+
+export const insertUnitTechnicalProfileSnapshotSchema = createInsertSchema(unitTechnicalProfileSnapshotsTable).omit({ id: true, createdAt: true });
+export type InsertUnitTechnicalProfileSnapshot = z.infer<typeof insertUnitTechnicalProfileSnapshotSchema>;
+export type UnitTechnicalProfileSnapshot = typeof unitTechnicalProfileSnapshotsTable.$inferSelect;
+
 // ── Energy Sources (Enerji Kaynakları) ────────────────────
 export const energySourcesTable = pgTable("energy_sources", {
   id: serial("id").primaryKey(),
