@@ -527,6 +527,22 @@ async function assertProductionReportSmokes(baseUrl: string, token: string): Pro
   assert(await snapshotCount("energy_targets_management", "completed", snapshotBoundary) >= 1, "Energy targets completed snapshot oluşmadı.");
   assert(await snapshotCount("energy_performance_monitoring", "completed", snapshotBoundary) >= 1, "Energy performance completed snapshot oluşmadı.");
   assert(await snapshotCount("annual_energy_performance", "completed", snapshotBoundary) >= 1, "Annual completed snapshot oluşmadı.");
+  const energyPerformanceSnapshot = await pool.query<{ settings_snapshot_json: any }>(
+    `SELECT settings_snapshot_json
+     FROM report_generation_snapshots
+     WHERE id > $1 AND report_type='energy_performance_monitoring' AND status='completed'
+     ORDER BY id DESC
+     LIMIT 1`,
+    [snapshotBoundary],
+  );
+  assert(
+    energyPerformanceSnapshot.rows[0]?.settings_snapshot_json?.technicalProfile?.effectiveDate === "2026-12-31",
+    "Energy performance snapshot teknik profil etki tarihini saklamadi.",
+  );
+  assert(
+    ["resolved", "no_published_snapshot", "no_snapshot_for_date", "not_applicable"].includes(energyPerformanceSnapshot.rows[0]?.settings_snapshot_json?.technicalProfile?.status),
+    "Energy performance snapshot teknik profil durumunu saklamadi.",
+  );
   const archiveCount = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM report_archives WHERE status='completed'");
   assert(Number(archiveCount.rows[0]?.count ?? 0) >= 3, "Completed archive kayıtları oluşmadı.");
   assert(await auditCount("energy_targets_report.generation_completed", auditBoundary) >= 1, "Energy targets completed audit oluşmadı.");

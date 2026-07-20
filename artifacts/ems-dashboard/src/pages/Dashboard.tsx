@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import { useLocation } from "wouter";
 
 // ── Yardımcı ─────────────────────────────────────────────────────────────────
@@ -115,32 +116,147 @@ interface OverviewData {
   activeVapCount: number;
 }
 
+type TechnicalProfileDashboardContext =
+  | {
+      mode: "unit";
+      status: "resolved" | "no_published_snapshot" | "no_snapshot_for_date" | "not_applicable";
+      effectiveDate: string;
+      unitId: number | null;
+      unitName: string | null;
+      snapshotNumber: number | null;
+      validFrom: string | null;
+      validTo: string | null;
+      publishedAt: string | null;
+      completionPercentage: number | null;
+      facilityUseType: string | null;
+      mainActivity: string | null;
+      totalEnclosedAreaM2: number | null;
+      heatingSystemType: string | null;
+      coolingSystemType: string | null;
+      warning: string | null;
+    }
+  | {
+      mode: "company";
+      status: "aggregate";
+      effectiveDate: string;
+      totalUnits: number;
+      unitsWithResolvedProfile: number;
+      unitsWithoutPublishedProfile: number;
+      unitsWithoutProfileForDate: number;
+      averageCompletionPercentage: number | null;
+      warning: string | null;
+    };
+
+function TechnicalProfileDashboardCard({
+  context,
+  isLoading,
+  onOpen,
+}: {
+  context: TechnicalProfileDashboardContext | undefined;
+  isLoading: boolean;
+  onOpen: () => void;
+}) {
+  if (isLoading) return <Skeleton className="h-40 w-full" />;
+  if (!context) return null;
+
+  if (context.mode === "company") {
+    return (
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Tesis Teknik Profilleri</CardTitle>
+              <CardDescription className="text-xs">Etki tarihi: {context.effectiveDate}</CardDescription>
+            </div>
+            <Badge variant="outline">{context.unitsWithResolvedProfile}/{context.totalUnits}</Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatBox label="Yayimlanmis" value={context.unitsWithResolvedProfile} sub="birim" color="text-teal-400" />
+            <StatBox label="Eksik Profil" value={context.unitsWithoutPublishedProfile} sub="birim" color="text-amber-400" warn={context.unitsWithoutPublishedProfile > 0} />
+            <StatBox label="Tarih Uyumsuz" value={context.unitsWithoutProfileForDate} sub="birim" color="text-red-400" warn={context.unitsWithoutProfileForDate > 0} />
+            <StatBox label="Ortalama Doluluk" value={context.averageCompletionPercentage !== null ? `%${context.averageCompletionPercentage}` : "-"} sub="resolved" color="text-blue-400" />
+          </div>
+          {context.warning && <p className="text-xs text-amber-400">{context.warning}</p>}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const resolved = context.status === "resolved";
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Tesis Teknik Profili</CardTitle>
+            <CardDescription className="text-xs">Kaynak: Birim Teknik Profili · Etki tarihi: {context.effectiveDate}</CardDescription>
+          </div>
+          <Badge variant="outline" className={resolved ? "border-teal-600/30 text-teal-400" : "border-amber-600/30 text-amber-400"}>
+            {resolved ? `Snapshot #${context.snapshotNumber}` : "Hazir degil"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {context.warning && <p className="text-xs text-amber-400">{context.warning}</p>}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <StatBox label="Doluluk" value={context.completionPercentage !== null ? `%${context.completionPercentage}` : "-"} sub={context.validFrom ?? "-"} color="text-teal-400" />
+          <StatBox label="Kullanim" value={context.facilityUseType ?? "-"} sub="tesis" color="text-blue-400" />
+          <StatBox label="Kapali Alan" value={context.totalEnclosedAreaM2 !== null ? fmt(context.totalEnclosedAreaM2, 0) : "-"} sub="m2" color="text-amber-400" />
+          <StatBox label="HVAC" value={context.heatingSystemType || context.coolingSystemType || "-"} sub="ozet" color="text-purple-400" />
+        </div>
+        {context.mainActivity && <p className="text-xs text-muted-foreground">{context.mainActivity}</p>}
+        <button
+          type="button"
+          onClick={onOpen}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Teknik profile git <ArrowRight className="inline h-3 w-3 ml-0.5" />
+        </button>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const { year } = useYear();
   const { unitId } = useUnit();
   const { companyId } = useCompany();
-  const { token } = useAuth();
+  const { user, token } = useAuth();
   const [, navigate] = useLocation();
+  const dashboardQueriesEnabled = token !== null && (user?.role !== "superadmin" || companyId !== null);
 
   // KPI ve trend için Orval hook parametreleri
   const params = unitId !== null ? { year, unitId } : companyId !== null ? { year, companyId } : { year };
 
   const { data: kpi, isLoading: kpiLoading } = useGetDashboardKpi(params, {
-    query: { queryKey: getGetDashboardKpiQueryKey(params) },
+    query: { queryKey: getGetDashboardKpiQueryKey(params), enabled: dashboardQueriesEnabled },
   });
   const { data: trend, isLoading: trendLoading, isFetching: trendFetching } = useGetMonthlyTrend(params, {
-    query: { queryKey: getGetMonthlyTrendQueryKey(params) },
+    query: { queryKey: getGetMonthlyTrendQueryKey(params), enabled: dashboardQueriesEnabled },
   });
 
   // Enerji Gözden Geçirme özet verisi — energy-review/overview endpoint
   const ovParams = new URLSearchParams({ year: String(year) });
+  if (companyId !== null) ovParams.set("companyId", String(companyId));
   if (unitId !== null) ovParams.set("unitId", String(unitId));
+  const overviewEnabled = dashboardQueriesEnabled;
 
   const { data: overview, isLoading: ovLoading } = useQuery<OverviewData>({
     queryKey: ["energy-review-overview-dashboard", year, unitId, companyId],
     queryFn: () => apiFetch(`${API_BASE}/energy-review/overview?${ovParams}`, token),
-    enabled: token !== null,
+    enabled: overviewEnabled,
+  });
+
+  const profileParams = new URLSearchParams({ year: String(year) });
+  if (companyId !== null) profileParams.set("companyId", String(companyId));
+  if (unitId !== null) profileParams.set("unitId", String(unitId));
+  const { data: technicalProfileContext, isLoading: technicalProfileLoading } = useQuery<TechnicalProfileDashboardContext>({
+    queryKey: ["dashboard-technical-profile-context", year, unitId, companyId],
+    queryFn: () => apiFetch(`${API_BASE}/dashboard/technical-profile-context?${profileParams}`, token),
+    enabled: overviewEnabled,
   });
 
   return (
@@ -249,6 +365,12 @@ export default function Dashboard() {
       </div>
 
       {/* ── Aylık TEP Trendi ── */}
+      <TechnicalProfileDashboardCard
+        context={technicalProfileContext}
+        isLoading={technicalProfileLoading}
+        onOpen={() => navigate("/birimler")}
+      />
+
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Aylık Enerji Tüketim Trendi</CardTitle>

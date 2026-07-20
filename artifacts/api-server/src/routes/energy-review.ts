@@ -19,6 +19,10 @@ import {
 import { eq, and, inArray, desc, asc, SQL, sql } from "drizzle-orm";
 import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 import { calcProgress } from "./targets.js";
+import {
+  buildTechnicalProfileReportContext,
+  endOfYearEffectiveDate,
+} from "../lib/unit-technical-profile-effective.js";
 
 const router = Router();
 
@@ -54,6 +58,9 @@ async function resolveEnergyReviewReadScope(req: any) {
   const requestedCompanyId = parsePositiveInteger(req.query.companyId, "companyId");
   const requestedUnitId = parsePositiveInteger(req.query.unitId, "unitId");
   const standardUser = !isCompanyAdmin(role) && !isSuperAdmin(role);
+  if (isSuperAdmin(role) && requestedCompanyId === undefined) {
+    throw new EnergyReviewScopeError(400, "companyId zorunludur");
+  }
   const companyId = isSuperAdmin(role) ? (requestedCompanyId ?? sessionCompanyId) : sessionCompanyId;
 
   if (isSuperAdmin(role) && requestedCompanyId !== undefined) {
@@ -199,6 +206,11 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
   try {
     const year = parseYear(req.query.year);
     const { companyId: effectiveCompanyId, unitId: effectiveUnitId, standardUnitMissing } = await resolveEnergyReviewReadScope(req);
+    const technicalProfileContext = await buildTechnicalProfileReportContext({
+      companyId: effectiveCompanyId,
+      unitId: effectiveUnitId,
+      effectiveDate: endOfYearEffectiveDate(year),
+    });
     if (standardUnitMissing) {
       res.json({
         year,
@@ -212,6 +224,7 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
         openActionsCount: 0,
         overdueActionsCount: 0,
         activeVapCount: 0,
+        technicalProfileContext,
       });
       return;
     }
@@ -328,6 +341,7 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
       openActionsCount,
       overdueActionsCount,
       activeVapCount,
+      technicalProfileContext,
     });
   } catch (err) {
     if (handleEnergyReviewScopeError(res, err)) return;

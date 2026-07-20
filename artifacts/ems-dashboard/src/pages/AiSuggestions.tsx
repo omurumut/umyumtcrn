@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { AlertCircle, Lightbulb, Zap, RefreshCw, TrendingDown, Timer } from "lucide-react";
+import { AlertCircle, CheckCircle2, Info, Lightbulb, Zap, RefreshCw, TrendingDown, Timer } from "lucide-react";
 
 const FOCUS_OPTIONS = [
   { value: "genel", label: "Genel Analiz" },
@@ -22,6 +22,70 @@ const PRIORITY_CONFIG: Record<string, { label: string; color: string }> = {
   orta: { label: "Orta Öncelik", color: "bg-amber-500/10 text-amber-400 border-amber-500/20" },
   dusuk: { label: "Düşük Öncelik", color: "bg-green-500/10 text-green-400 border-green-500/20" },
 };
+
+interface TechnicalProfileReadiness {
+  status: "resolved" | "no_published_snapshot" | "no_snapshot_for_date" | "not_applicable";
+  ready: boolean;
+  effectiveDate: string;
+  source: {
+    type: string | null;
+    snapshotId: number | null;
+    snapshotNumber: number | null;
+    profileVersion: number | null;
+    validFrom: string | null;
+    validTo: string | null;
+    publishedAt: string | null;
+  };
+  unit: { id: number | null; name: string | null };
+  completeness: { percentage: number | null; missingGroups: string[] };
+  warnings: string[];
+  note: string;
+}
+
+function TechnicalProfileReadinessCard({ readiness }: { readiness: TechnicalProfileReadiness | undefined }) {
+  if (!readiness) return null;
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 ${readiness.ready ? "bg-teal-500/10" : "bg-amber-500/10"}`}>
+              {readiness.ready ? <CheckCircle2 className="h-4 w-4 text-teal-400" /> : <Info className="h-4 w-4 text-amber-400" />}
+            </div>
+            <div>
+              <p className="text-sm font-medium">Teknik Profil AI Baglami</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{readiness.note}</p>
+            </div>
+          </div>
+          <Badge variant="outline" className={readiness.ready ? "border-teal-600/30 text-teal-400" : "border-amber-600/30 text-amber-400"}>
+            {readiness.ready ? `Snapshot #${readiness.source.snapshotNumber}` : "Hazir degil"}
+          </Badge>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-xs">
+          <div>
+            <p className="text-muted-foreground">Etki tarihi</p>
+            <p className="font-medium">{readiness.effectiveDate}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Birim</p>
+            <p className="font-medium">{readiness.unit.name ?? "Kurulus geneli"}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Gecerlilik</p>
+            <p className="font-medium">{readiness.source.validFrom ? `${readiness.source.validFrom} / ${readiness.source.validTo ?? "devam"}` : "-"}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Doluluk</p>
+            <p className="font-medium">{readiness.completeness.percentage !== null ? `%${readiness.completeness.percentage}` : "-"}</p>
+          </div>
+        </div>
+        {readiness.warnings.length > 0 && (
+          <p className="text-xs text-amber-400 mt-3">{readiness.warnings[0]}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function AiSuggestions() {
   const { year } = useYear();
@@ -42,6 +106,7 @@ export default function AiSuggestions() {
     getSuggestions.mutate({
       data: {
         focus,
+        year,
         ...(companyId !== null ? { companyId } : {}),
         ...(unitId !== null ? { unitId } : {}),
       } as any,
@@ -49,6 +114,7 @@ export default function AiSuggestions() {
   }
 
   const suggestions = getSuggestions.data?.suggestions ?? [];
+  const technicalProfileReadiness = (getSuggestions.data as any)?.technicalProfileReadiness as TechnicalProfileReadiness | undefined;
   const totalSavingKwh = suggestions.reduce((a, s) => a + (s.potentialSavingKwh ?? 0), 0);
   const errorMessage = getSuggestions.error instanceof Error
     ? getSuggestions.error.message
@@ -90,6 +156,10 @@ export default function AiSuggestions() {
           )}
         </CardContent>
       </Card>
+
+      {triggered && !getSuggestions.isPending && (
+        <TechnicalProfileReadinessCard readiness={technicalProfileReadiness} />
+      )}
 
       {triggered && !getSuggestions.isPending && suggestions.length > 0 && (
         <div className="grid grid-cols-3 gap-4">

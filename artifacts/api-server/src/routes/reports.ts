@@ -41,6 +41,11 @@ import {
   normalizeDeleteReason,
   redactedObjectIdentifier,
 } from "../lib/report-retention.js";
+import {
+  buildTechnicalProfileReportContext,
+  endOfYearEffectiveDate,
+  type TechnicalProfileReportContext,
+} from "../lib/unit-technical-profile-effective.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -76,6 +81,37 @@ function escapeHtml(value: unknown): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function technicalProfileReportContextHtml(context: TechnicalProfileReportContext): string {
+  const title = "Birim Teknik Profili";
+  if (context.status !== "resolved") {
+    return `<h2>${title}</h2>
+    <div class="warning-box">
+      <strong>Teknik profil baglami:</strong> ${escapeHtml(context.warning ?? "Secilen kapsam icin teknik profil snapshot'i kullanilmadi.")}
+      <br><span>Etki tarihi: ${escapeHtml(context.effectiveDate)}</span>
+    </div>`;
+  }
+
+  const metaRows = [
+    ["Birim", context.unitName ?? "-"],
+    ["Snapshot", context.snapshotNumber ? `#${context.snapshotNumber}` : "-"],
+    ["Profil versiyonu", context.profileVersion ?? "-"],
+    ["Gecerlilik", `${context.validFrom ?? "-"} - ${context.validTo ?? "devam"}`],
+    ["Yayim tarihi", context.publishedAt ? context.publishedAt.slice(0, 10) : "-"],
+    ["Tamamlanma", context.completionPercentage !== null ? `%${context.completionPercentage}` : "-"],
+  ];
+  const fieldRows = [...context.standardSummary.slice(0, 14), ...context.customSummary.slice(0, 8)]
+    .map((field) => `<tr><td>${escapeHtml(field.label)}</td><td>${escapeHtml(field.displayValue)}</td></tr>`)
+    .join("");
+
+  return `<h2>${title}</h2>
+    <div class="meta-grid">
+      ${metaRows.map(([label, value]) => `<div class="meta-item"><div class="meta-label">${escapeHtml(label)}</div><div class="meta-value">${escapeHtml(value)}</div></div>`).join("")}
+    </div>
+    ${fieldRows
+      ? `<table><tr><th>Alan</th><th>Deger</th></tr>${fieldRows}</table>`
+      : `<div class="warning-box">Yayimlanmis snapshot bulundu ancak rapora uygun dolu teknik profil alani yok.</div>`}`;
 }
 
 function parsePositiveInteger(value: unknown, field: string): number | undefined {
@@ -1877,6 +1913,11 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
     });
     const generatedAt = new Date();
+    const technicalProfileContext = await buildTechnicalProfileReportContext({
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      effectiveDate: endOfYearEffectiveDate(year),
+    });
     const snapshot = buildEnergyPerformanceReportSnapshot({
       effective: effectiveSettings,
       companyId: effectiveCompanyId,
@@ -1890,6 +1931,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       generatedAt,
       generatedBy: req.user?.userId ?? null,
       hasModelVariables: bvars.length > 0,
+      technicalProfile: technicalProfileContext,
     });
     snapshotForFailure = snapshot;
     const [snapshotRecord] = await db.insert(reportGenerationSnapshotsTable).values({
@@ -1929,6 +1971,13 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       baselineId,
       seuAssessmentItemId: snapshot.seuAssessmentItemId,
       modelType: snapshot.modelType,
+      technicalProfile: {
+        status: snapshot.technicalProfile.status,
+        effectiveDate: snapshot.technicalProfile.effectiveDate,
+        snapshotId: snapshot.technicalProfile.snapshotId,
+        snapshotNumber: snapshot.technicalProfile.snapshotNumber,
+        warning: snapshot.technicalProfile.warning,
+      },
       sectionCodes: snapshot.sections.filter((section) => section.visibilityResult).map((section) => section.code),
       requestOverrideUsed: false,
     };
@@ -2074,6 +2123,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
     .kpi-value { font-size: 22px; font-weight: 700; color: #0f766e; }
     .kpi-label { font-size: 11px; color: #64748b; margin-top: 3px; }
     .formula-box { background: #f0fdf4; border: 1px solid #a7f3d0; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-family: monospace; font-size: 13px; color: #065f46; }
+    .warning-box { background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 10px 14px; margin: 12px 0; font-size: 12px; color: #78350f; }
     .meta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; font-size: 12px; }
     .meta-item { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 12px; }
     .meta-label { color: #64748b; margin-bottom: 3px; }
@@ -2104,6 +2154,8 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
     <div class="meta-item"><div class="meta-label">Rapor Tarihi</div><div class="meta-value">${generatedDate.toLocaleDateString(locale, { day: "2-digit", month: "long", year: "numeric" })}</div></div>
   </div>
   </div>
+
+  ${technicalProfileReportContextHtml(snapshot.technicalProfile)}
 
   <h2>${sectionTitle("regression_model", "Regresyon Modeli")}</h2>
   <div class="formula-box">${formulaTextHtml}</div>

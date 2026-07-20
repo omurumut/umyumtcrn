@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { useAuth } from "@/context/AuthContext";
+import { useCompany } from "@/context/CompanyContext";
 import { useUnit } from "@/context/UnitContext";
 import { useYear } from "@/context/YearContext";
 import { useToast } from "@/hooks/use-toast";
@@ -102,6 +103,31 @@ interface OverviewData {
   openActionsCount: number;
   overdueActionsCount: number;
   activeVapCount: number;
+  technicalProfileContext: TechnicalProfileReportContext;
+}
+
+interface TechnicalProfileReportField {
+  code: string;
+  label: string;
+  displayValue: string;
+  unitLabel: string | null;
+}
+
+interface TechnicalProfileReportContext {
+  status: "resolved" | "no_published_snapshot" | "no_snapshot_for_date" | "not_applicable";
+  effectiveDate: string;
+  unitId: number | null;
+  unitName: string | null;
+  snapshotId: number | null;
+  snapshotNumber: number | null;
+  profileVersion: number | null;
+  validFrom: string | null;
+  validTo: string | null;
+  publishedAt: string | null;
+  completionPercentage: number | null;
+  warning: string | null;
+  standardSummary: TechnicalProfileReportField[];
+  customSummary: TechnicalProfileReportField[];
 }
 
 interface SourceBreakdownItem {
@@ -494,6 +520,7 @@ function LoadingRows({ cols }: { cols: number }) {
 
 export default function EnergyReview() {
   const { user, token } = useAuth();
+  const { companyId } = useCompany();
   const { unitId: ctxUnitId } = useUnit();
   const { year, setYear } = useYear();
   const [deepLinkParams] = useState(() => new URLSearchParams(window.location.search));
@@ -503,7 +530,8 @@ export default function EnergyReview() {
   const reviewRecordRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
   const isCompanyAdmin = user?.role === "admin" || user?.role === "kontrol_admin";
-  const isAdmin = isCompanyAdmin || user?.role === "superadmin";
+  const isSuperAdmin = user?.role === "superadmin";
+  const isAdmin = isCompanyAdmin || isSuperAdmin;
 
   // Admin kullanıcı için lokal birim filtresi (context'ten bağımsız seçim)
   const [selectedUnitId, setSelectedUnitId] = useState<number | null>(null);
@@ -540,6 +568,7 @@ export default function EnergyReview() {
 
   // Efektif birim: admin → local state; standart kullanıcı → context
   const effectiveUnitId: number | null = isAdmin ? selectedUnitId : (user?.unitId ?? null);
+  const energyReviewQueriesEnabled = !isSuperAdmin || companyId !== null;
 
   useEffect(() => {
     if (deepLinkApplied || !user) return;
@@ -560,6 +589,7 @@ export default function EnergyReview() {
   function buildParams(extra?: Record<string, string | number | undefined>) {
     const p = new URLSearchParams();
     p.set("year", String(year));
+    if (isSuperAdmin && companyId !== null) p.set("companyId", String(companyId));
     if (isAdmin && effectiveUnitId !== null) p.set("unitId", String(effectiveUnitId));
     if (extra) {
       for (const [k, v] of Object.entries(extra)) {
@@ -570,44 +600,51 @@ export default function EnergyReview() {
   }
 
   const overviewQ = useQuery<OverviewData>({
-    queryKey: ["energy-review-overview", year, effectiveUnitId],
+    queryKey: ["energy-review-overview", year, effectiveUnitId, companyId],
     queryFn: () => apiFetch(`${API_BASE}/energy-review/overview?${buildParams()}`, token),
+    enabled: energyReviewQueriesEnabled,
   });
 
   const sourceQ = useQuery<SourceBreakdownItem[]>({
-    queryKey: ["energy-review-source", year, effectiveUnitId],
+    queryKey: ["energy-review-source", year, effectiveUnitId, companyId],
     queryFn: () => apiFetch(`${API_BASE}/energy-review/source-breakdown?${buildParams()}`, token),
+    enabled: energyReviewQueriesEnabled,
   });
 
   const enpiQ = useQuery<EnpiSummaryItem[]>({
-    queryKey: ["energy-review-enpi", year, effectiveUnitId],
+    queryKey: ["energy-review-enpi", year, effectiveUnitId, companyId],
     queryFn: () => apiFetch(`${API_BASE}/energy-review/enpi-summary?${buildParams()}`, token),
+    enabled: energyReviewQueriesEnabled,
   });
 
   const sourceCompQ = useQuery<SourceComparisonItem[]>({
-    queryKey: ["energy-review-source-comparison", year, effectiveUnitId],
+    queryKey: ["energy-review-source-comparison", year, effectiveUnitId, companyId],
     queryFn: () => apiFetch(`${API_BASE}/energy-review/source-comparison?${buildParams()}`, token),
+    enabled: energyReviewQueriesEnabled,
   });
 
   const unitCompQ = useQuery<UnitComparisonItem[]>({
-    queryKey: ["energy-review-units", year],
-    queryFn: () => apiFetch(`${API_BASE}/energy-review/unit-comparison?year=${year}`, token),
-    enabled: isAdmin,
+    queryKey: ["energy-review-units", year, companyId],
+    queryFn: () => apiFetch(`${API_BASE}/energy-review/unit-comparison?${buildParams()}`, token),
+    enabled: isAdmin && energyReviewQueriesEnabled,
   });
 
   const taSummaryQ = useQuery<TargetsActionsSummaryItem[]>({
-    queryKey: ["energy-review-targets-actions", year, effectiveUnitId],
+    queryKey: ["energy-review-targets-actions", year, effectiveUnitId, companyId],
     queryFn: () => apiFetch(`${API_BASE}/energy-review/targets-actions-summary?${buildParams()}`, token),
+    enabled: energyReviewQueriesEnabled,
   });
 
   const reviewRecordsQ = useQuery<EnergyReviewRecordItem[]>({
-    queryKey: ["energy-review-records", effectiveUnitId, deepLinkYear !== null ? year : "all"],
+    queryKey: ["energy-review-records", effectiveUnitId, deepLinkYear !== null ? year : "all", companyId],
     queryFn: () => {
       const p = new URLSearchParams();
+      if (isSuperAdmin && companyId !== null) p.set("companyId", String(companyId));
       if (isAdmin && effectiveUnitId !== null) p.set("unitId", String(effectiveUnitId));
       if (deepLinkYear !== null) p.set("year", String(year));
       return apiFetch(`${API_BASE}/energy-review-records?${p.toString()}`, token);
     },
+    enabled: energyReviewQueriesEnabled,
   });
 
   const createReviewMut = useMutation({
@@ -864,6 +901,18 @@ export default function EnergyReview() {
               Veriler yüklenemedi: {(overviewQ.error as Error)?.message}
             </div>
           )}
+
+          {!energyReviewQueriesEnabled && (
+            <div className="rounded-lg border border-amber-600/30 bg-amber-600/10 p-4 text-sm text-amber-300 flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              Energy Review icin sirket baglami secilmelidir.
+            </div>
+          )}
+
+          <TechnicalProfileContextCard
+            context={ov?.technicalProfileContext}
+            isLoading={overviewQ.isLoading}
+          />
 
           {/* KPI grid */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -2233,5 +2282,85 @@ export default function EnergyReview() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function TechnicalProfileContextCard({
+  context,
+  isLoading,
+}: {
+  context: TechnicalProfileReportContext | undefined;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <Card className="bg-card border-border">
+        <CardContent className="pt-5 pb-4">
+          <div className="h-4 rounded bg-muted/30 animate-pulse w-48 mb-3" />
+          <div className="h-16 rounded bg-muted/20 animate-pulse w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!context) return null;
+  const resolved = context.status === "resolved";
+  const summaryFields = [...context.standardSummary.slice(0, 6), ...context.customSummary.slice(0, 4)];
+
+  return (
+    <Card className="bg-card border-border" data-testid="energy-review-technical-profile-context">
+      <CardHeader className="pb-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Info className="h-4 w-4 text-teal-400" />
+            Birim Teknik Profili
+          </CardTitle>
+          <Badge
+            variant="outline"
+            className={resolved ? "border-teal-600/30 text-teal-400 bg-teal-600/10" : "border-amber-600/30 text-amber-400 bg-amber-600/10"}
+          >
+            {resolved ? `Snapshot #${context.snapshotNumber}` : "Snapshot yok"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div>
+            <p className="text-muted-foreground">Etki tarihi</p>
+            <p className="font-medium">{context.effectiveDate}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Birim</p>
+            <p className="font-medium">{context.unitName ?? "Kurulus geneli"}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Gecerlilik</p>
+            <p className="font-medium">{context.validFrom ? `${context.validFrom} / ${context.validTo ?? "devam"}` : "-"}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Tamamlanma</p>
+            <p className="font-medium">{context.completionPercentage !== null ? `%${context.completionPercentage}` : "-"}</p>
+          </div>
+        </div>
+
+        {!resolved && context.warning && (
+          <div className="rounded-md border border-amber-600/30 bg-amber-600/10 p-3 text-xs text-amber-300 flex gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>{context.warning}</span>
+          </div>
+        )}
+
+        {summaryFields.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {summaryFields.map((field) => (
+              <div key={field.code} className="rounded-md bg-muted/20 px-3 py-2 text-xs">
+                <p className="text-muted-foreground truncate">{field.label}</p>
+                <p className="font-medium break-words">{field.displayValue}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

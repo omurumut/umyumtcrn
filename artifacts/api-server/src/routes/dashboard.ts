@@ -10,6 +10,10 @@ import {
 } from "@workspace/db";
 import { eq, and, SQL, inArray, sql } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import {
+  buildTechnicalProfileDashboardContext,
+  defaultTechnicalProfileContextDate,
+} from "../lib/unit-technical-profile-effective.js";
 
 const router = Router();
 
@@ -49,6 +53,18 @@ function parsePositiveInteger(value: unknown, field: string): number | undefined
 
 function parseYear(value: unknown, fallback?: number): number | undefined {
   return value === undefined ? fallback : parsePositiveInteger(value, "year");
+}
+
+function parseDateOnly(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new DashboardScopeError(400, `GeÃ§ersiz ${field}`);
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new DashboardScopeError(400, `GeÃ§ersiz ${field}`);
+  }
+  return value;
 }
 
 function parseQueryEnum(value: unknown, field: string, allowed: Set<string>): string | undefined {
@@ -131,6 +147,44 @@ function buildConsumptionConditions(year: number, unitId?: number, companyId?: n
   }
   return conds;
 }
+
+router.get("/dashboard/technical-profile-context", requireAuth, async (req, res) => {
+  try {
+    const year = parseYear(req.query.year, new Date().getFullYear())!;
+    const effectiveDate = parseDateOnly(req.query.date, "date") ?? defaultTechnicalProfileContextDate(year);
+    const scope = await resolveDashboardScope(req);
+    if (scope.empty) {
+      res.json({
+        mode: "unit",
+        status: "not_applicable",
+        effectiveDate,
+        unitId: null,
+        unitName: null,
+        snapshotNumber: null,
+        validFrom: null,
+        validTo: null,
+        publishedAt: null,
+        completionPercentage: null,
+        facilityUseType: null,
+        mainActivity: null,
+        totalEnclosedAreaM2: null,
+        heatingSystemType: null,
+        coolingSystemType: null,
+        warning: "Standart kullanici icin birim kapsami bulunamadi.",
+      });
+      return;
+    }
+    res.json(await buildTechnicalProfileDashboardContext({
+      companyId: scope.companyId,
+      unitId: scope.unitId ?? null,
+      effectiveDate,
+    }));
+  } catch (err) {
+    if (sendDashboardError(res, err)) return;
+    req.log.error({ errorType: err instanceof Error ? err.name : typeof err }, "Dashboard technical profile context failed");
+    res.status(500).json({ error: "Dashboard teknik profil context hatasi" });
+  }
+});
 
 // GET /api/dashboard/kpi?year=2026&unitId=1
 router.get("/dashboard/kpi", requireAuth, async (req, res) => {

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import ExcelJS from "exceljs";
 import {
@@ -12,6 +13,15 @@ type LoginBody = { token?: string };
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+async function assertRejects(fn: () => Promise<unknown>, message: string): Promise<void> {
+  try {
+    await fn();
+  } catch {
+    return;
+  }
+  throw new Error(message);
 }
 
 function assertDisposableDatabase(): void {
@@ -476,7 +486,14 @@ async function main() {
     });
     assert(selectDefinitionRes.status === 201, "Select definition olusturulamadi.");
     const selectDefinition = (await json(selectDefinitionRes)).definition;
-    assertions += 1;
+    const longTextDefinitionRes = await createDefinition(server.baseUrl, adminToken, {
+      code: "phase3c7_ai_private_note",
+      label: "AI private note",
+      fieldType: "long_text",
+      sortOrder: 30,
+    });
+    assert(longTextDefinitionRes.status === 201, "3C.7 long_text custom definition olusturulamadi.");
+    assertions += 2;
 
     const invalidCustomValue = await patchProfile(server.baseUrl, standardToken, unitA1.id, {
       expectedProfileVersion: 3,
@@ -493,7 +510,10 @@ async function main() {
       customFieldValues: {
         phase3c3_process_temperature: 42.5,
         phase3c3_line_type: "assembly",
+        phase3c7_ai_private_note: "Bu uzun not AI context icin varsayilan olarak haric tutulmalidir.",
       },
+      buildingAutomationStatus: "unknown",
+      renewableEnergyStatus: "not_applicable",
     });
     assert(validCustomValue.status === 200, `Custom value save 200 yerine ${validCustomValue.status}`);
     const validCustomBody = await json(validCustomValue);
@@ -744,7 +764,76 @@ async function main() {
     const effectiveAfterImport = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?date=2026-07-01`);
     const effectiveAfterImportBody = await json(effectiveAfterImport);
     assert(effectiveAfterImportBody.snapshot.standardValues.mainActivity === "Assembly snapshot v2", "Import effective snapshot sonucunu degistirdi.");
-    assertions += 11;
+    const energyReviewOverview = await api(server.baseUrl, adminToken, `/api/energy-review/overview?year=2026&unitId=${unitA1.id}`);
+    assert(energyReviewOverview.status === 200, `Energy Review overview 200 yerine ${energyReviewOverview.status}`);
+    const energyReviewOverviewBody = await json(energyReviewOverview);
+    assert(energyReviewOverviewBody.technicalProfileContext.status === "resolved", "Energy Review teknik profil context resolved degil.");
+    assert(energyReviewOverviewBody.technicalProfileContext.effectiveDate === "2026-12-31", "Energy Review teknik profil etki tarihi yil sonu degil.");
+    assert(energyReviewOverviewBody.technicalProfileContext.snapshotNumber === 2, "Energy Review teknik profil yil sonu snapshot v2 secmedi.");
+    assert(energyReviewOverviewBody.technicalProfileContext.standardSummary.some((field: any) => field.code === "mainActivity" && field.displayValue === "Assembly snapshot v2"), "Energy Review teknik profil published snapshot degerini gostermedi.");
+    const superEnergyReviewNoContext = await api(server.baseUrl, superadminToken, `/api/energy-review/overview?year=2026&unitId=${unitA1.id}`);
+    assert(superEnergyReviewNoContext.status === 400, "Superadmin Energy Review context olmadan basarili oldu.");
+    const superEnergyReviewWithContext = await api(server.baseUrl, superadminToken, `/api/energy-review/overview?companyId=${adminUser.company_id}&year=2026&unitId=${unitA1.id}`);
+    assert(superEnergyReviewWithContext.status === 200, "Superadmin Energy Review explicit context ile okuyamadi.");
+    const technicalProfileEffectiveModule = await import(pathToFileURL(resolve(import.meta.dirname, "../../artifacts/api-server/src/lib/unit-technical-profile-effective.ts")).href) as any;
+    const buildTechnicalProfileAiContext = technicalProfileEffectiveModule.buildTechnicalProfileAiContext as (input: {
+      companyId: number;
+      unitId: number;
+      effectiveDate: string;
+    }) => Promise<any>;
+    const aiContext = await buildTechnicalProfileAiContext({
+      companyId: adminUser.company_id,
+      unitId: unitA1.id,
+      effectiveDate: "2026-12-31",
+    });
+    const aiContextAgain = await buildTechnicalProfileAiContext({
+      companyId: adminUser.company_id,
+      unitId: unitA1.id,
+      effectiveDate: "2026-12-31",
+    });
+    assert(aiContext.status === "resolved" && aiContext.source.snapshotNumber === 2, "AI context resolved snapshot v2 secmedi.");
+    assert(aiContext.facility.mainActivity === "Assembly snapshot v2", "AI context draft current profile'a dustu.");
+    assert(aiContext.facility.totalEnclosedAreaM2 === 0, "AI context anlamli 0 degerini korumadi.");
+    assert((aiContext.systems.buildingAutomationStatus as any)?.code === "unknown", "AI context unknown statusunu korumadi.");
+    assert((aiContext.systems.renewableEnergyStatus as any)?.code === "not_applicable", "AI context not_applicable statusunu korumadi.");
+    assert(aiContext.customFacts.some((field: any) => field.code === "phase3c3_line_type" && field.displayValue === "assembly"), "AI context guvenli custom select degeri icermiyor.");
+    assert(!aiContext.customFacts.some((field: any) => field.code === "phase3c7_ai_private_note"), "AI context long_text custom alani dahil etti.");
+    assert(aiContext.observations.some((item: any) => item.code === "knownEnergyIssues" && item.contentKind === "user_supplied_profile_text"), "AI context serbest metin veri kaynagini isaretlemedi.");
+    assert(JSON.stringify(aiContext) === JSON.stringify(aiContextAgain), "AI context deterministik uretilmedi.");
+    const aiBeforeSnapshot = await buildTechnicalProfileAiContext({
+      companyId: adminUser.company_id,
+      unitId: unitA1.id,
+      effectiveDate: "2025-12-31",
+    });
+    assert(aiBeforeSnapshot.status === "no_snapshot_for_date", "AI context effective date oncesi durumu dogru degil.");
+    await assertRejects(
+      () => buildTechnicalProfileAiContext({ companyId: standardBUser.company_id, unitId: unitA1.id, effectiveDate: "2026-12-31" }),
+      "AI context cross-tenant unit reddedilmedi.",
+    );
+
+    const aiSuggestionsRes = await api(server.baseUrl, adminToken, `/api/ai/suggestions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ year: 2026, focus: "genel", unitId: unitA1.id }),
+    });
+    assert(aiSuggestionsRes.status === 200, `AI suggestions 200 yerine ${aiSuggestionsRes.status}`);
+    const aiSuggestionsBody = await json(aiSuggestionsRes);
+    assert(aiSuggestionsBody.technicalProfileReadiness?.status === "resolved", "AI suggestions teknik profil readiness status yok.");
+    assert(aiSuggestionsBody.technicalProfileReadiness?.source?.snapshotNumber === 2, "AI suggestions teknik profil source snapshot v2 degil.");
+    assert(aiSuggestionsBody.technicalProfileReadiness?.note?.includes("dis AI servisine gonderilmedi"), "AI suggestions dis provider gonderilmedi notu yok.");
+
+    const dashboardUnitContext = await api(server.baseUrl, adminToken, `/api/dashboard/technical-profile-context?year=2026&unitId=${unitA1.id}`);
+    assert(dashboardUnitContext.status === 200, "Dashboard unit teknik profil context okunamadi.");
+    const dashboardUnitBody = await json(dashboardUnitContext);
+    assert(dashboardUnitBody.mode === "unit" && dashboardUnitBody.status === "resolved" && dashboardUnitBody.snapshotNumber === 2, "Dashboard unit teknik profil context bozuk.");
+    const dashboardAggregate = await api(server.baseUrl, adminToken, `/api/dashboard/technical-profile-context?year=2026`);
+    assert(dashboardAggregate.status === 200, "Dashboard aggregate teknik profil context okunamadi.");
+    const dashboardAggregateBody = await json(dashboardAggregate);
+    assert(dashboardAggregateBody.mode === "company" && dashboardAggregateBody.totalUnits >= 2, "Dashboard aggregate unit sayisi bozuk.");
+    assert(dashboardAggregateBody.unitsWithResolvedProfile >= 1, "Dashboard aggregate resolved profil sayisi bozuk.");
+    const superDashboardNoContext = await api(server.baseUrl, superadminToken, `/api/dashboard/technical-profile-context?year=2026`);
+    assert(superDashboardNoContext.status === 400, "Superadmin dashboard teknik profil context olmadan basarili oldu.");
+    assertions += 40;
 
     const staleImportBuffer = await workbookBuffer(importHeaders, [[unitA1.id, unitA1.name, secondPublishBody.profile.profileVersion, "Stale import", "", "", ""]]);
     const stalePreview = await uploadProfileImport(server.baseUrl, adminToken, "/api/unit-technical-profiles/import/preview", staleImportBuffer);

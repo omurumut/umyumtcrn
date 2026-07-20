@@ -2,6 +2,11 @@ import { Router } from "express";
 import { db, companiesTable, consumptionTable, seuTable, metersTable, unitsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import {
+  buildTechnicalProfileAiContext,
+  endOfYearEffectiveDate,
+  type TechnicalProfileAiContext,
+} from "../lib/unit-technical-profile-effective.js";
 
 const router = Router();
 const FOCUS_VALUES = new Set(["genel", "seu", "co2", "maliyet"]);
@@ -46,6 +51,30 @@ function parseYear(bodyValue: unknown, queryValue: unknown) {
   const year = parseMatchingPositiveInteger(bodyValue, queryValue, "year") ?? new Date().getFullYear();
   if (year < 1900 || year > 3000) throw new AiScopeError(400, "Geçersiz year");
   return year;
+}
+
+function aiReadinessFromTechnicalProfile(context: TechnicalProfileAiContext) {
+  const ready = context.status === "resolved";
+  return {
+    status: context.status,
+    ready,
+    effectiveDate: context.effectiveDate,
+    source: {
+      type: context.source.type,
+      snapshotId: context.source.snapshotId,
+      snapshotNumber: context.source.snapshotNumber,
+      profileVersion: context.source.profileVersion,
+      validFrom: context.source.validFrom,
+      validTo: context.source.validTo,
+      publishedAt: context.source.publishedAt,
+    },
+    unit: context.unit,
+    completeness: context.completeness,
+    warnings: context.warnings,
+    note: ready
+      ? "Teknik profil AI baglamina hazir; bu pakette dis AI servisine gonderilmedi."
+      : "Yayimlanmis teknik profil baglami hazir degil; bu pakette dis AI servisine gonderilmedi.",
+  };
 }
 
 function parseFocus(value: unknown) {
@@ -124,6 +153,11 @@ router.post("/ai/suggestions", requireAuth, async (req, res) => {
       .where(and(...seuConditions)).orderBy(seuTable.priority);
 
     const totalKwh = rows.reduce((a, r) => a + r.kwh, 0);
+    const technicalProfileContext = await buildTechnicalProfileAiContext({
+      companyId: effectiveCompanyId,
+      unitId: effectiveUnitId ?? null,
+      effectiveDate: endOfYearEffectiveDate(yr),
+    });
 
     const suggestions = [];
 
@@ -222,7 +256,10 @@ router.post("/ai/suggestions", requireAuth, async (req, res) => {
       filtered = suggestions.filter(s => ["Operasyonel", "Enerji Yönetimi", "Kompresör"].includes(s.category));
     }
 
-    res.json({ suggestions: filtered.slice(0, 6) });
+    res.json({
+      suggestions: filtered.slice(0, 6),
+      technicalProfileReadiness: aiReadinessFromTechnicalProfile(technicalProfileContext),
+    });
   } catch (err) {
     if (err instanceof AiScopeError) {
       res.status(err.status).json({ error: err.message });

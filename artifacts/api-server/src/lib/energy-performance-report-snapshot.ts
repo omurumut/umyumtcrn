@@ -6,6 +6,7 @@ import type {
 } from "@workspace/api-zod";
 import { REPORT_FILE_NAME_TOKENS } from "@workspace/api-zod";
 import { safePdfFilename } from "./pdf-render.js";
+import type { TechnicalProfileReportContext } from "./unit-technical-profile-effective.js";
 
 export const ENERGY_PERFORMANCE_REPORT_TYPE = "energy_performance_monitoring" as const;
 export const ENERGY_PERFORMANCE_REPORT_SETTINGS_SNAPSHOT_SCHEMA_VERSION = "2026-07-18.phase-3b-3c.energy-performance";
@@ -106,6 +107,7 @@ export type EnergyPerformanceReportSnapshot = {
   footerText: string | null;
   showSignatureFields: boolean;
   sections: EnergyPerformanceReportSnapshotSection[];
+  technicalProfile: TechnicalProfileReportContext;
 };
 
 export class EnergyPerformanceReportSnapshotError extends Error {
@@ -160,6 +162,7 @@ export function buildEnergyPerformanceReportSnapshot({
   generatedAt,
   generatedBy,
   hasModelVariables,
+  technicalProfile,
 }: {
   effective: EffectiveEnergyPerformanceSettings;
   companyId: number;
@@ -173,6 +176,7 @@ export function buildEnergyPerformanceReportSnapshot({
   generatedAt: Date;
   generatedBy: number | null;
   hasModelVariables: boolean;
+  technicalProfile: TechnicalProfileReportContext;
 }): EnergyPerformanceReportSnapshot {
   const supportedCoverStyles = new Set(effective.reportDefinition.supportedCoverStyles);
   if (!supportedCoverStyles.has(effective.coverStyle)) {
@@ -249,6 +253,7 @@ export function buildEnergyPerformanceReportSnapshot({
     footerText: effective.profile.footerText,
     showSignatureFields: effective.profile.showSignatureFields,
     sections,
+    technicalProfile,
   };
 }
 
