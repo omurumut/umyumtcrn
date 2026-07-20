@@ -17,7 +17,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  Activity, AlertTriangle, BarChart2, Building2, FileText,
+  Activity, AlertTriangle, BarChart2, Box, Building2, FileText,
   ClipboardList, Gauge, Home, LayoutDashboard, Lightbulb, ShieldAlert, Target, User, LogOut, Globe, Building, Layers, Variable, TrendingUp, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,7 @@ const ADMIN_NAV = [
       { title: "Birim Yönetimi", url: "/birimler", icon: Building2 },
       { title: "Enerji Kullanım Grupları", url: "/enerji-kullanim-gruplari", icon: Layers },
       { title: "Sayaç Yönetimi", url: "/sayaclar", icon: Gauge },
+      { title: "Ekipman Envanteri", url: "/equipment", icon: Box },
       { title: "Tüketim Verileri", url: "/tuketim", icon: Activity },
       { title: "Değişken Yönetimi", url: "/degiskenler", icon: Variable },
     ],
@@ -42,6 +43,7 @@ const USER_NAV = [
       { title: "Birim Yönetimi", url: "/birimler", icon: Building2 },
       { title: "Enerji Kullanım Grupları", url: "/enerji-kullanim-gruplari", icon: Layers },
       { title: "Sayaç Yönetimi", url: "/sayaclar", icon: Gauge },
+      { title: "Ekipman Envanteri", url: "/equipment", icon: Box },
       { title: "Tüketim Verileri", url: "/tuketim", icon: Activity },
       { title: "Değişken Yönetimi", url: "/degiskenler", icon: Variable },
     ],

@@ -12,6 +12,7 @@ import NotFound from "@/pages/not-found";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Meters from "@/pages/Meters";
+import Equipment from "@/pages/Equipment";
 import Consumption from "@/pages/Consumption";
 import Swot from "@/pages/Swot";
 import Risks from "@/pages/Risks";
@@ -72,6 +73,7 @@ function Router() {
       <Route path="/birimler" component={Units} />
       <Route path="/enerji-kullanim-gruplari" component={EnergyUseGroups} />
       <Route path="/sayaclar" component={Meters} />
+      <Route path="/equipment" component={Equipment} />
       <Route path="/tuketim" component={Consumption} />
       <Route path="/meteoroloji">{() => <Redirect to="/" />}</Route>
       <Route path="/analiz">{() => <Redirect to="/" />}</Route>
