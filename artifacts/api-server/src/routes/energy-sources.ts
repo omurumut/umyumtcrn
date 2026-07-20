@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, energySourcesTable, unitsTable, metersTable, consumptionTable, energyUseGroupsTable, seuAssessmentsTable, seuAssessmentItemsTable, energyTargetsTable, energyPerformanceIndicatorsTable } from "@workspace/db";
+import { db, energySourcesTable, unitsTable, metersTable, consumptionTable, energyUseGroupsTable, seuAssessmentsTable, seuAssessmentItemsTable, energyTargetsTable, energyPerformanceIndicatorsTable, equipmentEnergySourceLinksTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
@@ -257,7 +257,11 @@ router.delete("/energy-sources/:id", requireAuth, async (req, res) => {
       const [indicator] = await tx.select({ id: energyPerformanceIndicatorsTable.id })
         .from(energyPerformanceIndicatorsTable)
         .where(and(...indicatorConditions)).limit(1);
-      if (meter || consumption || group || assessment || assessmentItem || target || indicator) {
+      const [equipmentLink] = await tx.select({ id: equipmentEnergySourceLinksTable.id })
+        .from(equipmentEnergySourceLinksTable)
+        .where(and(eq(equipmentEnergySourceLinksTable.energySourceId, id), eq(equipmentEnergySourceLinksTable.companyId, existing.companyId)))
+        .limit(1);
+      if (meter || consumption || group || assessment || assessmentItem || target || indicator || equipmentLink) {
         return "dependent" as const;
       }
 

@@ -93,6 +93,10 @@ export const AUDIT_ACTIONS = [
   "unit_technical_profile_field.updated",
   "unit_technical_profile_field.archived",
   "unit_technical_profile_field.reactivated",
+  "equipment.created",
+  "equipment.updated",
+  "equipment.archived",
+  "equipment.reactivated",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;

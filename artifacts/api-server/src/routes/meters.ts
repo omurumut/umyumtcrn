@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, metersTable, consumptionTable, subUnitsTable, energySourcesTable, unitsTable, energyUseGroupsTable } from "@workspace/db";
+import { db, metersTable, consumptionTable, subUnitsTable, energySourcesTable, unitsTable, energyUseGroupsTable, equipmentMeterLinksTable } from "@workspace/db";
 import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
@@ -375,6 +375,12 @@ router.delete("/meters/:id", requireAuth, async (req, res) => {
       .from(consumptionTable).where(eq(consumptionTable.meterId, id)).limit(1);
     if (usage) {
       res.status(409).json({ error: "Bu sayaçta tüketim kayıtları bulunduğu için silinemez." }); return;
+    }
+
+    const [equipmentLink] = await db.select({ id: equipmentMeterLinksTable.id })
+      .from(equipmentMeterLinksTable).where(eq(equipmentMeterLinksTable.meterId, id)).limit(1);
+    if (equipmentLink) {
+      res.status(409).json({ error: "Bu sayac ekipman iliskilerinde kullanildigi icin silinemez." }); return;
     }
 
     await db.delete(metersTable).where(scopedMeterCondition(id, role, sessionCompanyId));

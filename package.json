@@ -34,6 +34,7 @@
     "test:auth-migration-upgrade": "pnpm --filter @workspace/scripts run test:auth-migration-upgrade",
     "test:audit": "pnpm --filter @workspace/scripts run test:audit",
     "test:audit-restore": "pnpm --filter @workspace/scripts run test:audit-restore",
+    "test:equipment-inventory": "pnpm --filter @workspace/scripts run test:equipment-inventory",
     "verify:ci": "pnpm run typecheck && pnpm run build && pnpm run test:db:smoke && pnpm run test:fixtures && pnpm run test:audit && pnpm run test:audit-restore && pnpm run test:e2e && pnpm run test:production-readiness",
     "auth:cleanup": "pnpm --filter @workspace/scripts run auth:cleanup",
     "start": "ts-node scripts/index.ts",

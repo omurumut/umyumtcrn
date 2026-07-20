@@ -5,7 +5,7 @@ import {
   seuTable, seuAssessmentsTable, seuAssessmentItemsTable, energyTargetsTable,
   energyReviewRecordsTable, variableValuesTable, energyPerformanceIndicatorsTable,
   energyBaselinesTable, energyPerformanceResultsTable, reportsTable,
-  unitTechnicalProfilesTable,
+  unitTechnicalProfilesTable, equipmentTable,
 } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
@@ -58,6 +58,7 @@ async function unitHasDependencies(unitId: number) {
     db.select({ id: reportsTable.id }).from(reportsTable).where(eq(reportsTable.unitId, unitId)).limit(1),
     db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.unitId, unitId)).limit(1),
     db.select({ id: unitTechnicalProfilesTable.id }).from(unitTechnicalProfilesTable).where(eq(unitTechnicalProfilesTable.unitId, unitId)).limit(1),
+    db.select({ id: equipmentTable.id }).from(equipmentTable).where(eq(equipmentTable.unitId, unitId)).limit(1),
   ]);
   return checks.some(rows => rows.length > 0);
 }

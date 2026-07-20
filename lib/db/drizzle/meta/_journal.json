@@ -239,6 +239,13 @@
       "when": 1785100000000,
       "tag": "0034_unit_technical_profile_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1785200000000,
+      "tag": "0035_equipment_inventory",
+      "breakpoints": true
     }
   ]
 }

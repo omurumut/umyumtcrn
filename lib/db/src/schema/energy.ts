@@ -535,6 +535,118 @@ export const insertMeterSchema = createInsertSchema(metersTable).omit({ id: true
 export type InsertMeter = z.infer<typeof insertMeterSchema>;
 export type Meter = typeof metersTable.$inferSelect;
 
+export const equipmentTable = pgTable("equipment", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id).notNull(),
+  subUnitId: integer("sub_unit_id").references(() => subUnitsTable.id, { onDelete: "set null" }),
+  equipmentCode: text("equipment_code").notNull(),
+  name: text("name").notNull(),
+  equipmentKind: text("equipment_kind").notNull().default("physical"),
+  category: text("category").notNull(),
+  subType: text("sub_type"),
+  status: text("status").notNull().default("active"),
+  assetCode: text("asset_code"),
+  manufacturer: text("manufacturer"),
+  brand: text("brand"),
+  model: text("model"),
+  serialNumber: text("serial_number"),
+  tagCode: text("tag_code"),
+  locationText: text("location_text"),
+  buildingText: text("building_text"),
+  processText: text("process_text"),
+  parentEquipmentId: integer("parent_equipment_id").references((): AnyPgColumn => equipmentTable.id, { onDelete: "set null" }),
+  energyUseGroupId: integer("energy_use_group_id").references(() => energyUseGroupsTable.id, { onDelete: "set null" }),
+  measurementMethod: text("measurement_method").notNull().default("unknown"),
+  measurementConfidence: text("measurement_confidence").notNull().default("unknown"),
+  ratedPowerValue: real("rated_power_value"),
+  ratedPowerUnit: text("rated_power_unit"),
+  installedPowerKw: real("installed_power_kw"),
+  capacityValue: real("capacity_value"),
+  capacityUnit: text("capacity_unit"),
+  nominalEfficiencyPercent: real("nominal_efficiency_percent"),
+  operationalStatus: text("operational_status"),
+  dailyOperatingHours: real("daily_operating_hours"),
+  annualOperatingHours: real("annual_operating_hours"),
+  averageLoadPercent: real("average_load_percent"),
+  seasonalOperationStatus: text("seasonal_operation_status"),
+  purchaseDate: text("purchase_date"),
+  commissioningDate: text("commissioning_date"),
+  manufactureYear: integer("manufacture_year"),
+  expectedLifeYears: integer("expected_life_years"),
+  plannedReplacementYear: integer("planned_replacement_year"),
+  isEnergyIntensive: boolean("is_energy_intensive").notNull().default(false),
+  isCritical: boolean("is_critical").notNull().default(false),
+  criticalityReason: text("criticality_reason"),
+  savingPotential: text("saving_potential"),
+  technicalNotes: text("technical_notes"),
+  maintenanceNotes: text("maintenance_notes"),
+  efficiencyOpportunities: text("efficiency_opportunities"),
+  plannedImprovements: text("planned_improvements"),
+  equipmentVersion: integer("equipment_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdBy: integer("created_by").references(() => usersTable.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+  archivedAt: timestamp("archived_at"),
+  archivedBy: integer("archived_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyCodeUnique: uniqueIndex("equipment_company_code_unique").on(table.companyId, table.equipmentCode),
+  companyUnitIdx: index("equipment_company_unit_idx").on(table.companyId, table.unitId),
+  companyUnitStatusIdx: index("equipment_company_unit_status_idx").on(table.companyId, table.unitId, table.status),
+  companyCategoryIdx: index("equipment_company_category_idx").on(table.companyId, table.category),
+  companyArchivedIdx: index("equipment_company_archived_idx").on(table.companyId, table.archivedAt),
+  parentIdx: index("equipment_parent_idx").on(table.parentEquipmentId),
+}));
+
+export const insertEquipmentSchema = createInsertSchema(equipmentTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEquipment = z.infer<typeof insertEquipmentSchema>;
+export type Equipment = typeof equipmentTable.$inferSelect;
+
+export const equipmentMeterLinksTable = pgTable("equipment_meter_links", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  equipmentId: integer("equipment_id").references(() => equipmentTable.id).notNull(),
+  meterId: integer("meter_id").references(() => metersTable.id).notNull(),
+  relationRole: text("relation_role").notNull().default("direct"),
+  sharePercent: real("share_percent"),
+  measurementConfidence: text("measurement_confidence").notNull().default("unknown"),
+  isPrimary: boolean("is_primary").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdBy: integer("created_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  equipmentMeterUnique: uniqueIndex("equipment_meter_links_equipment_meter_unique").on(table.equipmentId, table.meterId),
+  onePrimaryUnique: uniqueIndex("equipment_meter_links_one_primary_unique").on(table.equipmentId).where(sql`${table.isPrimary} = true`),
+  companyEquipmentIdx: index("equipment_meter_links_company_equipment_idx").on(table.companyId, table.equipmentId),
+  companyMeterIdx: index("equipment_meter_links_company_meter_idx").on(table.companyId, table.meterId),
+}));
+
+export const insertEquipmentMeterLinkSchema = createInsertSchema(equipmentMeterLinksTable).omit({ id: true, createdAt: true });
+export type InsertEquipmentMeterLink = z.infer<typeof insertEquipmentMeterLinkSchema>;
+export type EquipmentMeterLink = typeof equipmentMeterLinksTable.$inferSelect;
+
+export const equipmentEnergySourceLinksTable = pgTable("equipment_energy_source_links", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  equipmentId: integer("equipment_id").references(() => equipmentTable.id).notNull(),
+  energySourceId: integer("energy_source_id").references(() => energySourcesTable.id).notNull(),
+  relationRole: text("relation_role").notNull().default("primary"),
+  sharePercent: real("share_percent"),
+  measurementConfidence: text("measurement_confidence").notNull().default("unknown"),
+  isPrimary: boolean("is_primary").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdBy: integer("created_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  equipmentSourceUnique: uniqueIndex("equipment_energy_source_links_equipment_source_unique").on(table.equipmentId, table.energySourceId),
+  onePrimaryUnique: uniqueIndex("equipment_energy_source_links_one_primary_unique").on(table.equipmentId).where(sql`${table.isPrimary} = true`),
+  companyEquipmentIdx: index("equipment_energy_source_links_company_equipment_idx").on(table.companyId, table.equipmentId),
+  companySourceIdx: index("equipment_energy_source_links_company_source_idx").on(table.companyId, table.energySourceId),
+}));
+
+export const insertEquipmentEnergySourceLinkSchema = createInsertSchema(equipmentEnergySourceLinksTable).omit({ id: true, createdAt: true });
+export type InsertEquipmentEnergySourceLink = z.infer<typeof insertEquipmentEnergySourceLinkSchema>;
+export type EquipmentEnergySourceLink = typeof equipmentEnergySourceLinksTable.$inferSelect;
+
 // ── Consumption ──────────────────────────────────────────
 export const consumptionTable = pgTable("consumption", {
   id: serial("id").primaryKey(),
