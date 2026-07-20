@@ -43,6 +43,8 @@ type FixtureIds = {
   companyA: number;
   unitA1: number;
   unitA1Name: string;
+  meterAName: string;
+  sourceAName: string;
 };
 
 let ids: FixtureIds;
@@ -52,10 +54,12 @@ async function resolveFixtureIds(): Promise<FixtureIds> {
     SELECT
       (SELECT id FROM companies WHERE subdomain = 'e2e-tenant-a') AS "companyA",
       (SELECT id FROM units WHERE name = '[E2E] Unit A1') AS "unitA1",
-      (SELECT name FROM units WHERE name = '[E2E] Unit A1') AS "unitA1Name"
+      (SELECT name FROM units WHERE name = '[E2E] Unit A1') AS "unitA1Name",
+      (SELECT name FROM meters WHERE unit_id = (SELECT id FROM units WHERE name = '[E2E] Unit A1') ORDER BY id LIMIT 1) AS "meterAName",
+      (SELECT name FROM energy_sources WHERE unit_id = (SELECT id FROM units WHERE name = '[E2E] Unit A1') ORDER BY id LIMIT 1) AS "sourceAName"
   `);
   const row = result.rows[0];
-  if (!row?.companyA || !row.unitA1 || !row.unitA1Name) throw new Error("Equipment UI fixture kimlikleri cozulemedi.");
+  if (!row?.companyA || !row.unitA1 || !row.unitA1Name || !row.meterAName || !row.sourceAName) throw new Error("Equipment UI fixture kimlikleri cozulemedi.");
   return row;
 }
 
@@ -104,6 +108,14 @@ test.describe.serial("equipment inventory UI", () => {
     await page.locator("#equipment-name").fill("Faz 3D.2 UI Pompa");
     await chooseSelect(page, "equipment-form-unit", ids.unitA1Name);
     await page.locator("#equipment-installed-power").fill("0");
+    await page.getByRole("button", { name: "Sayaç ilişkisi ekle" }).click();
+    await page.getByTestId("equipment-meter-link-0").click();
+    await page.getByRole("option", { name: ids.meterAName }).click();
+    await page.getByLabel("Sayaç 1 pay yüzdesi").fill("0");
+    await page.getByRole("button", { name: "Enerji kaynağı ilişkisi ekle" }).click();
+    await page.getByTestId("equipment-source-link-0").click();
+    await page.getByRole("option", { name: ids.sourceAName }).click();
+    await page.getByLabel("Kaynak 1 pay yüzdesi").fill("100");
     await page.getByRole("button", { name: "Oluştur" }).click();
 
     const createdRow = page.getByTestId("equipment-row").filter({ hasText: code });
@@ -112,6 +124,10 @@ test.describe.serial("equipment inventory UI", () => {
     await expect(page.getByText("0 kW").first()).toBeVisible();
 
     await page.getByRole("button", { name: `${code} detay` }).click();
+    await expect(page.getByText("Sayaç ilişkileri")).toBeVisible();
+    await expect(page.getByText(ids.meterAName)).toBeVisible();
+    await expect(page.getByText("Enerji kaynağı ilişkileri")).toBeVisible();
+    await expect(page.getByText(ids.sourceAName)).toBeVisible();
     await page.getByRole("button", { name: "Düzenle", exact: true }).click();
     await page.locator("#equipment-name").fill("Faz 3D.2 UI Pompa Güncel");
     await page.getByRole("button", { name: "Kaydet" }).click();

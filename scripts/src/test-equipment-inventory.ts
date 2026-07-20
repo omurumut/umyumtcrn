@@ -211,6 +211,55 @@ async function main() {
     );
     assert(subUnitA.rows[0] && subUnitB.rows[0] && meterA.rows[0] && meterB.rows[0] && sourceA.rows[0] && sourceB.rows[0], "Ekipman fixture iliskileri eksik.");
 
+    const extraSourceA = await pool.query<{ id: number }>(
+      `INSERT INTO energy_sources (company_id, unit_id, type, name, unit, active)
+       VALUES ($1, $2, 'elektrik', $3, 'kWh', true)
+       RETURNING id`,
+      [adminUser.company_id, unitA1.id, `[E2E] Equipment relation source ${Date.now()}`],
+    );
+    const extraMeterA = await pool.query<{ id: number }>(
+      `INSERT INTO meters (company_id, unit_id, sub_unit_id, energy_source_id, name, type, record_type, location, city, unit)
+       VALUES ($1, $2, $3, $4, $5, 'elektrik', 'physical_meter', 'E2E relation', 'Istanbul', 'kWh')
+       RETURNING id`,
+      [adminUser.company_id, unitA1.id, subUnitA.rows[0].id, extraSourceA.rows[0].id, `[E2E] Equipment relation meter ${Date.now()}`],
+    );
+    const unitA2Source = await pool.query<{ id: number }>(
+      `INSERT INTO energy_sources (company_id, unit_id, type, name, unit, active)
+       VALUES ($1, $2, 'dogalgaz', $3, 'm3', true)
+       RETURNING id`,
+      [adminUser.company_id, unitA2.id, `[E2E] Cross unit relation source ${Date.now()}`],
+    );
+    const unitA2Meter = await pool.query<{ id: number }>(
+      `INSERT INTO meters (company_id, unit_id, energy_source_id, name, type, record_type, location, city, unit)
+       VALUES ($1, $2, $3, $4, 'dogalgaz', 'physical_meter', 'E2E relation', 'Istanbul', 'm3')
+       RETURNING id`,
+      [adminUser.company_id, unitA2.id, unitA2Source.rows[0].id, `[E2E] Cross unit relation meter ${Date.now()}`],
+    );
+    const generalGroup = await pool.query<{ id: number }>(
+      `INSERT INTO energy_use_groups (company_id, name, code, group_type, unit_id, sub_unit_id, is_active)
+       VALUES ($1, $2, $3, 'process', $4, NULL, true)
+       RETURNING id`,
+      [adminUser.company_id, `[E2E] Equipment general group ${Date.now()}`, `EQ-GEN-${Date.now()}`, unitA1.id],
+    );
+    const sameSubUnitGroup = await pool.query<{ id: number }>(
+      `INSERT INTO energy_use_groups (company_id, name, code, group_type, unit_id, sub_unit_id, is_active)
+       VALUES ($1, $2, $3, 'process', $4, $5, true)
+       RETURNING id`,
+      [adminUser.company_id, `[E2E] Equipment sub group ${Date.now()}`, `EQ-SUB-${Date.now()}`, unitA1.id, subUnitA.rows[0].id],
+    );
+    const otherSubUnit = await pool.query<{ id: number }>(
+      `INSERT INTO sub_units (company_id, unit_id, name, description)
+       VALUES ($1, $2, $3, 'Equipment relation test')
+       RETURNING id`,
+      [adminUser.company_id, unitA1.id, `[E2E] Other SubUnit ${Date.now()}`],
+    );
+    const otherSubUnitGroup = await pool.query<{ id: number }>(
+      `INSERT INTO energy_use_groups (company_id, name, code, group_type, unit_id, sub_unit_id, is_active)
+       VALUES ($1, $2, $3, 'process', $4, $5, true)
+       RETURNING id`,
+      [adminUser.company_id, `[E2E] Equipment other sub group ${Date.now()}`, `EQ-OSUB-${Date.now()}`, unitA1.id, otherSubUnit.rows[0].id],
+    );
+
     const adminToken = await login(server.baseUrl, process.env.E2E_ADMIN_USERNAME!);
     const standardToken = await login(server.baseUrl, process.env.E2E_STANDARD_USERNAME!);
     const standardBToken = await login(server.baseUrl, process.env.E2E_STANDARD_B_USERNAME!);
@@ -262,6 +311,78 @@ async function main() {
     assert(created.meterLinks.length === 1 && created.energySourceLinks.length === 1, "Linkler olusmadi.");
     assertions += 4;
 
+    const relationCreateRes = await postEquipment(server.baseUrl, adminToken, {
+      ...baseCreate,
+      equipmentCode: `EQ3D3-REL-${suffix}`,
+      energyUseGroupId: sameSubUnitGroup.rows[0].id,
+      meterLinks: [
+        { meterId: meterA.rows[0].id, relationRole: "direct", isPrimary: true, sharePercent: 0, measurementConfidence: "high" },
+        { meterId: extraMeterA.rows[0].id, relationRole: "shared", isPrimary: false, sharePercent: 100, measurementConfidence: "low" },
+      ],
+      energySourceLinks: [
+        { energySourceId: sourceA.rows[0].id, relationRole: "primary", isPrimary: true, sharePercent: 0, measurementConfidence: "medium" },
+        { energySourceId: extraSourceA.rows[0].id, relationRole: "backup", isPrimary: false, sharePercent: 100, measurementConfidence: "unknown" },
+      ],
+    });
+    await expectStatus(relationCreateRes, 201, "Iki meter/source link ile create");
+    const relationCreated = await json(relationCreateRes);
+    const relationEquipmentId = relationCreated.equipment.id as number;
+    assert(relationCreated.meterLinks.length === 2 && relationCreated.energySourceLinks.length === 2, "Coklu relation create donmedi.");
+    assert(relationCreated.meterLinks.some((link: any) => link.sharePercent === 0) && relationCreated.meterLinks.some((link: any) => link.sharePercent === 100), "Meter share 0/100 korunmadi.");
+    assert(relationCreated.energySourceLinks.some((link: any) => link.sharePercent === 0) && relationCreated.energySourceLinks.some((link: any) => link.sharePercent === 100), "Source share 0/100 korunmadi.");
+    assert(relationCreated.meterLinks.filter((link: any) => link.isPrimary).length === 1 && relationCreated.energySourceLinks.filter((link: any) => link.isPrimary).length === 1, "Primary tekilligi bozuk.");
+    assert(relationCreated.meterLinks.every((link: any) => link.meterName), "Detail meter label donmedi.");
+    assertions += 6;
+
+    const duplicateSource = await postEquipment(server.baseUrl, adminToken, {
+      ...baseCreate,
+      equipmentCode: `EQ3D3-DUP-SRC-${suffix}`,
+      energySourceLinks: [{ energySourceId: sourceA.rows[0].id }, { energySourceId: sourceA.rows[0].id }],
+    });
+    await expectStatus(duplicateSource, 400, "Duplicate source link reddedilmeli");
+    const twoPrimaryMeters = await postEquipment(server.baseUrl, adminToken, {
+      ...baseCreate,
+      equipmentCode: `EQ3D3-2PM-${suffix}`,
+      meterLinks: [{ meterId: meterA.rows[0].id, isPrimary: true }, { meterId: extraMeterA.rows[0].id, isPrimary: true }],
+    });
+    await expectStatus(twoPrimaryMeters, 400, "Iki primary meter reddedilmeli");
+    const twoPrimarySources = await postEquipment(server.baseUrl, adminToken, {
+      ...baseCreate,
+      equipmentCode: `EQ3D3-2PS-${suffix}`,
+      energySourceLinks: [{ energySourceId: sourceA.rows[0].id, isPrimary: true }, { energySourceId: extraSourceA.rows[0].id, isPrimary: true }],
+    });
+    await expectStatus(twoPrimarySources, 400, "Iki primary source reddedilmeli");
+    const badShare = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D3-BAD-SHARE-${suffix}`, meterLinks: [{ meterId: meterA.rows[0].id, sharePercent: 101 }] });
+    await expectStatus(badShare, 400, "Share >100 reddedilmeli");
+    const badRole = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D3-BAD-ROLE-${suffix}`, meterLinks: [{ meterId: meterA.rows[0].id, relationRole: "invalid" }] });
+    await expectStatus(badRole, 400, "Invalid role reddedilmeli");
+    const badConfidence = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D3-BAD-CONF-${suffix}`, energySourceLinks: [{ energySourceId: sourceA.rows[0].id, measurementConfidence: "certain" }] });
+    await expectStatus(badConfidence, 400, "Invalid confidence reddedilmeli");
+    const crossUnitMeter = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D3-CROSS-UNIT-M-${suffix}`, meterLinks: [{ meterId: unitA2Meter.rows[0].id }] });
+    await expectStatus(crossUnitMeter, 400, "Baska unit meter reddedilmeli");
+    const crossUnitSource = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D3-CROSS-UNIT-S-${suffix}`, energySourceLinks: [{ energySourceId: unitA2Source.rows[0].id }] });
+    await expectStatus(crossUnitSource, 400, "Baska unit source reddedilmeli");
+    const sameSubUnitGroupRes = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D3-GROUP-SUB-${suffix}`, energyUseGroupId: sameSubUnitGroup.rows[0].id });
+    await expectStatus(sameSubUnitGroupRes, 201, "Ayni subUnit group basarili olmali");
+    const generalGroupRes = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D3-GROUP-GEN-${suffix}`, energyUseGroupId: generalGroup.rows[0].id });
+    await expectStatus(generalGroupRes, 201, "Genel group basarili olmali");
+    const otherSubGroupRes = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D3-GROUP-BAD-${suffix}`, energyUseGroupId: otherSubUnitGroup.rows[0].id });
+    await expectStatus(otherSubGroupRes, 400, "Baska subUnit group reddedilmeli");
+    assertions += 11;
+
+    const relationPatchRes = await patchEquipment(server.baseUrl, adminToken, relationEquipmentId, {
+      expectedEquipmentVersion: 1,
+      meterLinks: [{ meterId: extraMeterA.rows[0].id, relationRole: "sub_meter", isPrimary: true, sharePercent: 25, measurementConfidence: "medium" }],
+      energySourceLinks: [{ energySourceId: extraSourceA.rows[0].id, relationRole: "secondary", isPrimary: true, sharePercent: 75, measurementConfidence: "high" }],
+    });
+    await expectStatus(relationPatchRes, 200, "Relation-only patch");
+    const relationPatched = await json(relationPatchRes);
+    assert(relationPatched.equipment.equipmentVersion === 2, "Relation-only patch version artirmadi.");
+    assert(relationPatched.meterLinks.length === 1 && relationPatched.meterLinks[0].meterId === extraMeterA.rows[0].id, "Relation removal/primary degisimi calismadi.");
+    const staleRelation = await patchEquipment(server.baseUrl, adminToken, relationEquipmentId, { expectedEquipmentVersion: 1, meterLinks: [] });
+    await expectStatus(staleRelation, 409, "Stale relation patch 409 olmali");
+    assertions += 4;
+
     const duplicateRes = await postEquipment(server.baseUrl, adminToken, baseCreate);
     await expectStatus(duplicateRes, 409, "Ayni firma icinde equipmentCode unique olmali");
     assertions += 1;
@@ -278,6 +399,18 @@ async function main() {
     await expectStatus(standardOtherList, 403, "Standard baska unit listeleyememeli");
     const standardBDetail = await api(server.baseUrl, standardBToken, `/api/equipment/${equipmentId}`);
     await expectStatus(standardBDetail, 404, "Baska tenant standard ekipmani gorememeli");
+    assertions += 3;
+
+    const standardRelationUpdate = await patchEquipment(server.baseUrl, standardToken, relationEquipmentId, {
+      expectedEquipmentVersion: 2,
+      meterLinks: [{ meterId: meterA.rows[0].id, relationRole: "estimated_reference", isPrimary: false, sharePercent: 10, measurementConfidence: "low" }],
+      energySourceLinks: [],
+    });
+    await expectStatus(standardRelationUpdate, 200, "Standard kendi unit relation update yapabilmeli");
+    const standardOtherRelationUpdate = await patchEquipment(server.baseUrl, standardBToken, relationEquipmentId, { expectedEquipmentVersion: 3, meterLinks: [] });
+    await expectStatus(standardOtherRelationUpdate, 404, "Standard baska unit/tenant relation update yapamamali");
+    const superNoContextMutation = await patchEquipment(server.baseUrl, superadminToken, relationEquipmentId, { expectedEquipmentVersion: 3, meterLinks: [] });
+    await expectStatus(superNoContextMutation, 400, "Superadmin context olmadan relation mutation yapamamali");
     assertions += 3;
 
     const adminCrossTenantCreate = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, unitId: unitB1.id, equipmentCode: `EQ3D1-CROSS-${suffix}` });

@@ -95,12 +95,74 @@ type EquipmentListResponse = {
 
 type EquipmentDetailResponse = {
   equipment: Equipment;
-  meterLinks: Array<{ id: number; meterId: number; isPrimary: boolean; relationRole: string; measurementConfidence: string }>;
-  energySourceLinks: Array<{ id: number; energySourceId: number; isPrimary: boolean; relationRole: string; measurementConfidence: string }>;
+  meterLinks: MeterLink[];
+  energySourceLinks: EnergySourceLink[];
   permissions: { canEdit: boolean; canArchive: boolean; canReactivate: boolean };
 };
 
-type OptionRow = { id: number; name: string; unitId?: number | null; type?: string; unit?: string; groupType?: string; isActive?: boolean };
+type MeterLink = {
+  id: number;
+  meterId: number;
+  meterName?: string | null;
+  meterType?: string | null;
+  meterUnit?: string | null;
+  meterEnergySourceName?: string | null;
+  unitId?: number | null;
+  unitName?: string | null;
+  subUnitId?: number | null;
+  subUnitName?: string | null;
+  isActive?: boolean;
+  isPrimary: boolean;
+  relationRole: string;
+  sharePercent: number | null;
+  measurementConfidence: string;
+};
+
+type EnergySourceLink = {
+  id: number;
+  energySourceId: number;
+  energySourceName?: string | null;
+  energySourceType?: string | null;
+  unitId?: number | null;
+  unitName?: string | null;
+  subUnitId?: number | null;
+  subUnitName?: string | null;
+  isActive?: boolean;
+  isPrimary: boolean;
+  relationRole: string;
+  sharePercent: number | null;
+  measurementConfidence: string;
+};
+
+type MeterRelationDraft = {
+  meterId: string;
+  relationRole: string;
+  isPrimary: boolean;
+  sharePercent: string;
+  measurementConfidence: string;
+};
+
+type SourceRelationDraft = {
+  energySourceId: string;
+  relationRole: string;
+  isPrimary: boolean;
+  sharePercent: string;
+  measurementConfidence: string;
+};
+
+type OptionRow = {
+  id: number;
+  name: string;
+  unitId?: number | null;
+  subUnitId?: number | null;
+  type?: string;
+  unit?: string;
+  groupType?: string;
+  isActive?: boolean;
+  active?: boolean;
+  subUnitName?: string | null;
+  energySourceName?: string | null;
+};
 
 type EquipmentForm = {
   equipmentCode: string;
@@ -148,6 +210,8 @@ type EquipmentForm = {
   maintenanceNotes: string;
   efficiencyOpportunities: string;
   plannedImprovements: string;
+  meterLinks: MeterRelationDraft[];
+  energySourceLinks: SourceRelationDraft[];
 };
 
 class ApiError extends Error {
@@ -217,6 +281,20 @@ const CONFIDENCE_OPTIONS = [
   ["unknown", "Bilinmiyor"],
 ] as const;
 
+const METER_RELATION_ROLE_OPTIONS = [
+  ["direct", "Doğrudan ölçüm"],
+  ["shared", "Paylaşımlı ölçüm"],
+  ["sub_meter", "Alt sayaç"],
+  ["estimated_reference", "Tahmini referans"],
+] as const;
+
+const SOURCE_RELATION_ROLE_OPTIONS = [
+  ["primary", "Birincil"],
+  ["secondary", "İkincil"],
+  ["startup", "İlk çalıştırma"],
+  ["backup", "Yedek"],
+] as const;
+
 const EMPTY_FORM: EquipmentForm = {
   equipmentCode: "",
   name: "",
@@ -263,6 +341,8 @@ const EMPTY_FORM: EquipmentForm = {
   maintenanceNotes: "",
   efficiencyOpportunities: "",
   plannedImprovements: "",
+  meterLinks: [],
+  energySourceLinks: [],
 };
 
 function label(options: readonly (readonly [string, string])[], value: string | null | undefined) {
@@ -295,7 +375,27 @@ function asNullableId(value: string) {
   return value === "none" || value === "" ? null : Number(value);
 }
 
-function equipmentToForm(equipment: Equipment): EquipmentForm {
+function meterLinkToDraft(link: MeterLink): MeterRelationDraft {
+  return {
+    meterId: String(link.meterId),
+    relationRole: link.relationRole,
+    isPrimary: link.isPrimary,
+    sharePercent: link.sharePercent?.toString() ?? "",
+    measurementConfidence: link.measurementConfidence,
+  };
+}
+
+function sourceLinkToDraft(link: EnergySourceLink): SourceRelationDraft {
+  return {
+    energySourceId: String(link.energySourceId),
+    relationRole: link.relationRole,
+    isPrimary: link.isPrimary,
+    sharePercent: link.sharePercent?.toString() ?? "",
+    measurementConfidence: link.measurementConfidence,
+  };
+}
+
+function equipmentToForm(equipment: Equipment, detail?: EquipmentDetailResponse): EquipmentForm {
   return {
     ...EMPTY_FORM,
     equipmentCode: equipment.equipmentCode,
@@ -343,6 +443,35 @@ function equipmentToForm(equipment: Equipment): EquipmentForm {
     maintenanceNotes: equipment.maintenanceNotes ?? "",
     efficiencyOpportunities: equipment.efficiencyOpportunities ?? "",
     plannedImprovements: equipment.plannedImprovements ?? "",
+    meterLinks: detail?.meterLinks.map(meterLinkToDraft) ?? [],
+    energySourceLinks: detail?.energySourceLinks.map(sourceLinkToDraft) ?? [],
+  };
+}
+
+function relationShare(value: string) {
+  return value.trim() === "" ? null : Number(value);
+}
+
+function normalizeRelations(form: EquipmentForm) {
+  return {
+    meterLinks: form.meterLinks
+      .filter((link) => link.meterId !== "none" && link.meterId !== "")
+      .map((link) => ({
+        meterId: Number(link.meterId),
+        relationRole: link.relationRole,
+        sharePercent: relationShare(link.sharePercent),
+        measurementConfidence: link.measurementConfidence,
+        isPrimary: link.isPrimary,
+      })),
+    energySourceLinks: form.energySourceLinks
+      .filter((link) => link.energySourceId !== "none" && link.energySourceId !== "")
+      .map((link) => ({
+        energySourceId: Number(link.energySourceId),
+        relationRole: link.relationRole,
+        sharePercent: relationShare(link.sharePercent),
+        measurementConfidence: link.measurementConfidence,
+        isPrimary: link.isPrimary,
+      })),
   };
 }
 
@@ -392,11 +521,12 @@ function buildPayload(form: EquipmentForm, mode: "create" | "edit", expectedEqui
     efficiencyOpportunities: asNullableText(form.efficiencyOpportunities),
     plannedImprovements: asNullableText(form.plannedImprovements),
   };
+  const relations = normalizeRelations(form);
+  payload.meterLinks = relations.meterLinks;
+  payload.energySourceLinks = relations.energySourceLinks;
   if (mode === "create") {
     payload.equipmentCode = asText(form.equipmentCode);
     if (form.unitId) payload.unitId = Number(form.unitId);
-    payload.meterLinks = [];
-    payload.energySourceLinks = [];
   } else {
     payload.expectedEquipmentVersion = expectedEquipmentVersion;
   }
@@ -551,7 +681,7 @@ export default function EquipmentPage() {
   const mutationOptions = {
     onSuccess: async (data: EquipmentDetailResponse) => {
       setSelectedId(data.equipment.id);
-      setForm(equipmentToForm(data.equipment));
+      setForm(equipmentToForm(data.equipment, data));
       setDirty(false);
       setConflict(null);
       setDialogOpen(false);
@@ -623,16 +753,52 @@ export default function EquipmentPage() {
   const meterName = useMemo(() => new Map((metersQuery.data ?? []).map((row) => [row.id, row.name])), [metersQuery.data]);
   const sourceName = useMemo(() => new Map((sourcesQuery.data ?? []).map((row) => [row.id, row.name])), [sourcesQuery.data]);
   const groupName = useMemo(() => new Map((groupsQuery.data ?? []).map((row) => [row.id, row.name])), [groupsQuery.data]);
+  const activeMeters = useMemo(() => (metersQuery.data ?? []).filter((row) => row.isActive !== false), [metersQuery.data]);
+  const activeSources = useMemo(() => (sourcesQuery.data ?? []).filter((row) => row.active !== false && row.isActive !== false), [sourcesQuery.data]);
+  const compatibleGroups = useMemo(() => {
+    const subUnitId = asNullableId(form.subUnitId);
+    return (groupsQuery.data ?? []).filter((group) => group.isActive !== false && (group.subUnitId === null || group.subUnitId === undefined || subUnitId === null || group.subUnitId === subUnitId));
+  }, [form.subUnitId, groupsQuery.data]);
   const rows = listQuery.data?.items ?? [];
   const selectedDetail = detailQuery.data?.equipment;
   const totalPages = Math.max(1, Math.ceil((listQuery.data?.total ?? 0) / pageSize));
 
+  useEffect(() => {
+    if (!dialogOpen || mode !== "edit" || dirty || !detailQuery.data) return;
+    setForm(equipmentToForm(detailQuery.data.equipment, detailQuery.data));
+  }, [detailQuery.data, dialogOpen, dirty, mode]);
+
   function patch<K extends keyof EquipmentForm>(field: K, value: EquipmentForm[K]) {
+    if (field === "unitId") {
+      const hasRelations = form.subUnitId !== "none" || form.parentEquipmentId !== "none" || form.energyUseGroupId !== "none" || form.meterLinks.length > 0 || form.energySourceLinks.length > 0;
+      if (hasRelations && !window.confirm("Birim değiştirildiğinde seçili alt birim ve enerji ilişkileri temizlenecektir.")) return;
+      setForm((current) => ({
+        ...current,
+        unitId: value as string,
+        subUnitId: "none",
+        parentEquipmentId: "none",
+        energyUseGroupId: "none",
+        meterLinks: [],
+        energySourceLinks: [],
+      }));
+      setDirty(true);
+      return;
+    }
+    if (field === "subUnitId") {
+      const nextSubUnitId = value as string;
+      const hasScopedGroup = form.energyUseGroupId !== "none";
+      if (hasScopedGroup && !window.confirm("Alt birim değiştiğinde uyumsuz enerji kullanım grubu temizlenecektir.")) return;
+      setForm((current) => ({
+        ...current,
+        subUnitId: nextSubUnitId,
+        energyUseGroupId: "none",
+        parentEquipmentId: "none",
+      }));
+      setDirty(true);
+      return;
+    }
     setForm((current) => ({ ...current, [field]: value }));
     setDirty(true);
-    if (field === "unitId") {
-      setForm((current) => ({ ...current, subUnitId: "none", parentEquipmentId: "none", energyUseGroupId: "none" }));
-    }
   }
 
   function openCreate() {
@@ -650,10 +816,72 @@ export default function EquipmentPage() {
   function openEdit(equipment: Equipment) {
     setMode("edit");
     setSelectedId(equipment.id);
-    setForm(equipmentToForm(equipment));
+    const detail = detailQuery.data?.equipment.id === equipment.id ? detailQuery.data : undefined;
+    setForm(equipmentToForm(equipment, detail));
     setDirty(false);
     setConflict(null);
     setDialogOpen(true);
+  }
+
+  function updateMeterLink(index: number, patchValue: Partial<MeterRelationDraft>) {
+    setForm((current) => ({
+      ...current,
+      meterLinks: current.meterLinks.map((link, linkIndex) => {
+        if (linkIndex !== index) return patchValue.isPrimary ? { ...link, isPrimary: false } : link;
+        return { ...link, ...patchValue };
+      }),
+    }));
+    setDirty(true);
+  }
+
+  function updateSourceLink(index: number, patchValue: Partial<SourceRelationDraft>) {
+    setForm((current) => ({
+      ...current,
+      energySourceLinks: current.energySourceLinks.map((link, linkIndex) => {
+        if (linkIndex !== index) return patchValue.isPrimary ? { ...link, isPrimary: false } : link;
+        return { ...link, ...patchValue };
+      }),
+    }));
+    setDirty(true);
+  }
+
+  function addMeterLink() {
+    setForm((current) => ({
+      ...current,
+      meterLinks: [...current.meterLinks, { meterId: "none", relationRole: "direct", isPrimary: false, sharePercent: "", measurementConfidence: "unknown" }],
+    }));
+    setDirty(true);
+  }
+
+  function addSourceLink() {
+    setForm((current) => ({
+      ...current,
+      energySourceLinks: [...current.energySourceLinks, { energySourceId: "none", relationRole: "primary", isPrimary: false, sharePercent: "", measurementConfidence: "unknown" }],
+    }));
+    setDirty(true);
+  }
+
+  function removeMeterLink(index: number) {
+    setForm((current) => ({ ...current, meterLinks: current.meterLinks.filter((_, linkIndex) => linkIndex !== index) }));
+    setDirty(true);
+  }
+
+  function removeSourceLink(index: number) {
+    setForm((current) => ({ ...current, energySourceLinks: current.energySourceLinks.filter((_, linkIndex) => linkIndex !== index) }));
+    setDirty(true);
+  }
+
+  function validateRelationDrafts() {
+    const meterIds = form.meterLinks.map((link) => link.meterId).filter((id) => id !== "none" && id !== "");
+    if (meterIds.length !== new Set(meterIds).size) return "Bu sayaç zaten ekipmana bağlı.";
+    if (form.meterLinks.filter((link) => link.isPrimary).length > 1) return "Yalnız bir sayaç birincil olabilir.";
+    const sourceIds = form.energySourceLinks.map((link) => link.energySourceId).filter((id) => id !== "none" && id !== "");
+    if (sourceIds.length !== new Set(sourceIds).size) return "Bu enerji kaynağı zaten ekipmana bağlı.";
+    if (form.energySourceLinks.filter((link) => link.isPrimary).length > 1) return "Yalnız bir enerji kaynağı birincil olabilir.";
+    const shares = [...form.meterLinks.map((link) => link.sharePercent), ...form.energySourceLinks.map((link) => link.sharePercent)];
+    if (shares.some((share) => share.trim() !== "" && (!Number.isFinite(Number(share)) || Number(share) < 0 || Number(share) > 100))) return "Pay yüzdesi 0 ile 100 arasında olmalıdır.";
+    if (form.energyUseGroupId !== "none" && !compatibleGroups.some((group) => String(group.id) === form.energyUseGroupId)) return "Enerji kullanım grubu seçilen alt birimle uyumlu değil.";
+    return null;
   }
 
   function submit(event: FormEvent) {
@@ -664,6 +892,11 @@ export default function EquipmentPage() {
     }
     if (mode === "create" && !standardUnitId && !form.unitId) {
       toast({ title: "Birim seçimi zorunludur", variant: "destructive" });
+      return;
+    }
+    const relationError = validateRelationDrafts();
+    if (relationError) {
+      toast({ title: relationError, variant: "destructive" });
       return;
     }
     if (mode === "create") createMutation.mutate(form);
@@ -921,7 +1154,7 @@ export default function EquipmentPage() {
               )}
               <SelectFilter labelText="SubUnit" value={form.subUnitId} onValueChange={(value) => patch("subUnitId", value)} options={subUnitsQuery.data ?? []} allLabel="Yok" allValue="none" />
               <SelectFilter labelText="Parent ekipman" value={form.parentEquipmentId} onValueChange={(value) => patch("parentEquipmentId", value)} options={(parentOptionsQuery.data?.items ?? []).filter((item) => item.id !== selectedId).map((item) => ({ id: item.id, name: `${item.equipmentCode} - ${item.name}` }))} allLabel="Yok" allValue="none" />
-              <SelectFilter labelText="Enerji kullanım grubu" value={form.energyUseGroupId} onValueChange={(value) => patch("energyUseGroupId", value)} options={groupsQuery.data ?? []} allLabel="Yok" allValue="none" />
+              <SelectFilter labelText="Enerji kullanım grubu" value={form.energyUseGroupId} onValueChange={(value) => patch("energyUseGroupId", value)} options={compatibleGroups} allLabel="Yok" allValue="none" />
               <TextField id="equipment-location" labelText="Lokasyon açıklaması" value={form.locationText} maxLength={240} onChange={(value) => patch("locationText", value)} />
               <TextField id="equipment-building" labelText="Bina" value={form.buildingText} maxLength={160} onChange={(value) => patch("buildingText", value)} />
               <TextField id="equipment-process" labelText="Proses" value={form.processText} maxLength={160} onChange={(value) => patch("processText", value)} />
@@ -961,6 +1194,14 @@ export default function EquipmentPage() {
               <TextareaField id="equipment-saving" labelText="Tasarruf potansiyeli" value={form.savingPotential} maxLength={500} onChange={(value) => patch("savingPotential", value)} />
             </FormSection>
 
+            <RelationSection title="Sayaç İlişkileri" description="Pay yüzdesi, ortak sayaç veya enerji kaynağının bu ekipmana atfedilen yaklaşık oranını ifade eder. Toplamın 100 olması zorunlu değildir." onAdd={addMeterLink} addLabel="Sayaç ilişkisi ekle">
+              <MeterRelationEditor rows={form.meterLinks} options={activeMeters} onChange={updateMeterLink} onRemove={removeMeterLink} />
+            </RelationSection>
+
+            <RelationSection title="Enerji Kaynağı İlişkileri" description="Birincil seçim tekildir; yeni bir satır birincil yapıldığında önceki birincil seçim kaldırılır. İsterseniz hiç birincil bırakmayabilirsiniz." onAdd={addSourceLink} addLabel="Enerji kaynağı ilişkisi ekle">
+              <SourceRelationEditor rows={form.energySourceLinks} options={activeSources} onChange={updateSourceLink} onRemove={removeSourceLink} />
+            </RelationSection>
+
             <FormSection title="Açıklamalar" wide>
               <TextareaField id="equipment-technical-notes" labelText="Teknik notlar" value={form.technicalNotes} maxLength={1000} onChange={(value) => patch("technicalNotes", value)} />
               <TextareaField id="equipment-maintenance-notes" labelText="Bakım notları" value={form.maintenanceNotes} maxLength={1000} onChange={(value) => patch("maintenanceNotes", value)} />
@@ -969,7 +1210,7 @@ export default function EquipmentPage() {
             </FormSection>
 
             <DialogFooter className="sticky bottom-0 bg-background py-3">
-              <Button type="button" variant="outline" onClick={() => { setForm(mode === "edit" && selectedDetail ? equipmentToForm(selectedDetail) : EMPTY_FORM); setDirty(false); }}>Sıfırla</Button>
+              <Button type="button" variant="outline" onClick={() => { setForm(mode === "edit" && detailQuery.data ? equipmentToForm(detailQuery.data.equipment, detailQuery.data) : EMPTY_FORM); setDirty(false); }}>Sıfırla</Button>
               <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending || !dirty}>
                 {mode === "create" ? "Oluştur" : "Kaydet"}
               </Button>
@@ -1104,6 +1345,123 @@ function FormSection({ title, children, wide = false }: { title: string; childre
   );
 }
 
+function RelationSection({ title, description, addLabel, onAdd, children }: {
+  title: string;
+  description: string;
+  addLabel: string;
+  onAdd: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-sm font-semibold uppercase text-muted-foreground">{title}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onAdd} className="gap-2">
+          <Plus className="h-4 w-4" /> {addLabel}
+        </Button>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function MeterRelationEditor({ rows, options, onChange, onRemove }: {
+  rows: MeterRelationDraft[];
+  options: OptionRow[];
+  onChange: (index: number, patchValue: Partial<MeterRelationDraft>) => void;
+  onRemove: (index: number) => void;
+}) {
+  if (rows.length === 0) return <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">Henüz sayaç ilişkisi yok.</div>;
+  return (
+    <div className="overflow-x-auto rounded-md border">
+      <table className="w-full min-w-[920px] text-sm">
+        <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
+          <tr>
+            <th className="px-3 py-2">Sayaç</th>
+            <th className="px-3 py-2">Role</th>
+            <th className="px-3 py-2">Birincil</th>
+            <th className="px-3 py-2">Pay %</th>
+            <th className="px-3 py-2">Güven</th>
+            <th className="px-3 py-2">Özet</th>
+            <th className="px-3 py-2 text-right">Aksiyon</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => {
+            const selected = options.find((option) => String(option.id) === row.meterId);
+            return (
+              <tr key={`${row.meterId}-${index}`} className="border-t align-top">
+                <td className="px-3 py-2"><SelectFilter labelText={`Sayaç ${index + 1}`} value={row.meterId} onValueChange={(value) => onChange(index, { meterId: value })} options={options} allLabel="Sayaç seç" allValue="none" testId={`equipment-meter-link-${index}`} /></td>
+                <td className="px-3 py-2"><SelectField labelText="Role" value={row.relationRole} onValueChange={(value) => onChange(index, { relationRole: value })} options={METER_RELATION_ROLE_OPTIONS} /></td>
+                <td className="px-3 py-2">
+                  <label className="flex h-10 items-center gap-2 text-sm">
+                    <Checkbox checked={row.isPrimary} onCheckedChange={(value) => onChange(index, { isPrimary: value === true })} />
+                    Birincil
+                  </label>
+                </td>
+                <td className="px-3 py-2"><Input aria-label={`Sayaç ${index + 1} pay yüzdesi`} type="number" min={0} max={100} value={row.sharePercent} onChange={(event) => onChange(index, { sharePercent: event.target.value })} /></td>
+                <td className="px-3 py-2"><SelectField labelText="Güven" value={row.measurementConfidence} onValueChange={(value) => onChange(index, { measurementConfidence: value })} options={CONFIDENCE_OPTIONS} /></td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">{selected ? `${selected.type ?? "—"} / ${selected.unit ?? "—"} / ${selected.subUnitName ?? "Genel"}` : "—"}</td>
+                <td className="px-3 py-2 text-right"><Button type="button" variant="ghost" size="sm" onClick={() => onRemove(index)} aria-label={`${selected?.name ?? "Sayaç ilişkisi"} kaldır`}>Kaldır</Button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SourceRelationEditor({ rows, options, onChange, onRemove }: {
+  rows: SourceRelationDraft[];
+  options: OptionRow[];
+  onChange: (index: number, patchValue: Partial<SourceRelationDraft>) => void;
+  onRemove: (index: number) => void;
+}) {
+  if (rows.length === 0) return <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">Henüz enerji kaynağı ilişkisi yok.</div>;
+  return (
+    <div className="overflow-x-auto rounded-md border">
+      <table className="w-full min-w-[860px] text-sm">
+        <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
+          <tr>
+            <th className="px-3 py-2">Kaynak</th>
+            <th className="px-3 py-2">Role</th>
+            <th className="px-3 py-2">Birincil</th>
+            <th className="px-3 py-2">Pay %</th>
+            <th className="px-3 py-2">Güven</th>
+            <th className="px-3 py-2">Özet</th>
+            <th className="px-3 py-2 text-right">Aksiyon</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => {
+            const selected = options.find((option) => String(option.id) === row.energySourceId);
+            return (
+              <tr key={`${row.energySourceId}-${index}`} className="border-t align-top">
+                <td className="px-3 py-2"><SelectFilter labelText={`Kaynak ${index + 1}`} value={row.energySourceId} onValueChange={(value) => onChange(index, { energySourceId: value })} options={options} allLabel="Kaynak seç" allValue="none" testId={`equipment-source-link-${index}`} /></td>
+                <td className="px-3 py-2"><SelectField labelText="Role" value={row.relationRole} onValueChange={(value) => onChange(index, { relationRole: value })} options={SOURCE_RELATION_ROLE_OPTIONS} /></td>
+                <td className="px-3 py-2">
+                  <label className="flex h-10 items-center gap-2 text-sm">
+                    <Checkbox checked={row.isPrimary} onCheckedChange={(value) => onChange(index, { isPrimary: value === true })} />
+                    Birincil
+                  </label>
+                </td>
+                <td className="px-3 py-2"><Input aria-label={`Kaynak ${index + 1} pay yüzdesi`} type="number" min={0} max={100} value={row.sharePercent} onChange={(event) => onChange(index, { sharePercent: event.target.value })} /></td>
+                <td className="px-3 py-2"><SelectField labelText="Güven" value={row.measurementConfidence} onValueChange={(value) => onChange(index, { measurementConfidence: value })} options={CONFIDENCE_OPTIONS} /></td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">{selected ? `${selected.type ?? "—"} / ${selected.unit ?? "—"}` : "—"}</td>
+                <td className="px-3 py-2 text-right"><Button type="button" variant="ghost" size="sm" onClick={() => onRemove(index)} aria-label={`${selected?.name ?? "Enerji kaynağı ilişkisi"} kaldır`}>Kaldır</Button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: EquipmentStatus }) {
   const tone = status === "active" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
     : status === "archived" ? "border-slate-500/30 bg-slate-500/10 text-slate-300"
@@ -1123,6 +1481,83 @@ function InfoLine({ labelText, value }: { labelText: string; value: React.ReactN
     <div>
       <div className="text-xs text-muted-foreground">{labelText}</div>
       <div className="text-sm font-medium">{value || "—"}</div>
+    </div>
+  );
+}
+
+function RelationDetailTables({ detail, meterName, sourceName }: {
+  detail: EquipmentDetailResponse;
+  meterName: Map<number, string>;
+  sourceName: Map<number, string>;
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <h4 className="mb-2 text-sm font-semibold">Sayaç ilişkileri</h4>
+        <div className="overflow-x-auto rounded-md border">
+          <table className="w-full min-w-[640px] text-xs">
+            <thead className="bg-muted/50 text-left text-muted-foreground">
+              <tr>
+                <th className="px-2 py-2">Sayaç</th>
+                <th className="px-2 py-2">Role</th>
+                <th className="px-2 py-2">Primary</th>
+                <th className="px-2 py-2">Pay</th>
+                <th className="px-2 py-2">Confidence</th>
+                <th className="px-2 py-2">Enerji / Lokasyon</th>
+                <th className="px-2 py-2">Durum</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.meterLinks.length === 0 ? (
+                <tr><td className="px-2 py-3 text-muted-foreground" colSpan={7}>Sayaç ilişkisi yok.</td></tr>
+              ) : detail.meterLinks.map((link) => (
+                <tr key={link.id} className="border-t">
+                  <td className="px-2 py-2">{link.meterName ?? meterName.get(link.meterId) ?? link.meterId}</td>
+                  <td className="px-2 py-2">{label(METER_RELATION_ROLE_OPTIONS, link.relationRole)}</td>
+                  <td className="px-2 py-2">{link.isPrimary ? "Evet" : "Hayır"}</td>
+                  <td className="px-2 py-2">{link.sharePercent ?? "—"}</td>
+                  <td className="px-2 py-2">{label(CONFIDENCE_OPTIONS, link.measurementConfidence)}</td>
+                  <td className="px-2 py-2">{link.meterEnergySourceName ?? "—"} / {link.subUnitName ?? link.unitName ?? "—"}</td>
+                  <td className="px-2 py-2">{link.isActive === false ? <Badge variant="outline">Pasif</Badge> : "Aktif"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h4 className="mb-2 text-sm font-semibold">Enerji kaynağı ilişkileri</h4>
+        <div className="overflow-x-auto rounded-md border">
+          <table className="w-full min-w-[600px] text-xs">
+            <thead className="bg-muted/50 text-left text-muted-foreground">
+              <tr>
+                <th className="px-2 py-2">Kaynak</th>
+                <th className="px-2 py-2">Enerji türü</th>
+                <th className="px-2 py-2">Role</th>
+                <th className="px-2 py-2">Primary</th>
+                <th className="px-2 py-2">Pay</th>
+                <th className="px-2 py-2">Confidence</th>
+                <th className="px-2 py-2">Durum</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.energySourceLinks.length === 0 ? (
+                <tr><td className="px-2 py-3 text-muted-foreground" colSpan={7}>Enerji kaynağı ilişkisi yok.</td></tr>
+              ) : detail.energySourceLinks.map((link) => (
+                <tr key={link.id} className="border-t">
+                  <td className="px-2 py-2">{link.energySourceName ?? sourceName.get(link.energySourceId) ?? link.energySourceId}</td>
+                  <td className="px-2 py-2">{link.energySourceType ?? "—"}</td>
+                  <td className="px-2 py-2">{label(SOURCE_RELATION_ROLE_OPTIONS, link.relationRole)}</td>
+                  <td className="px-2 py-2">{link.isPrimary ? "Evet" : "Hayır"}</td>
+                  <td className="px-2 py-2">{link.sharePercent ?? "—"}</td>
+                  <td className="px-2 py-2">{label(CONFIDENCE_OPTIONS, link.measurementConfidence)}</td>
+                  <td className="px-2 py-2">{link.isActive === false ? <Badge variant="outline">Pasif</Badge> : "Aktif"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1181,6 +1616,7 @@ function EquipmentDetail({ detail, loading, unitName, subUnitName, meterName, so
           <InfoLine labelText="Birincil sayaç" value={primaryMeter ? meterName.get(primaryMeter.meterId) ?? primaryMeter.meterId : "—"} />
           <InfoLine labelText="Diğer sayaç" value={Math.max(0, detail.meterLinks.length - (primaryMeter ? 1 : 0))} />
         </div>
+        <RelationDetailTables detail={detail} meterName={meterName} sourceName={sourceName} />
         <div className="grid grid-cols-2 gap-3">
           <InfoLine labelText="Satın alma" value={equipment.purchaseDate ?? "—"} />
           <InfoLine labelText="Devreye alma" value={equipment.commissioningDate ?? "—"} />

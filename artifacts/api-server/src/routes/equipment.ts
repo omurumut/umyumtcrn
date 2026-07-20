@@ -41,6 +41,26 @@ type EquipmentRow = typeof equipmentTable.$inferSelect;
 type MeterLinkRow = typeof equipmentMeterLinksTable.$inferSelect;
 type SourceLinkRow = typeof equipmentEnergySourceLinksTable.$inferSelect;
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type MeterLinkDetail = MeterLinkRow & {
+  meterName?: string | null;
+  meterType?: string | null;
+  meterUnit?: string | null;
+  meterEnergySourceName?: string | null;
+  unitId?: number | null;
+  unitName?: string | null;
+  subUnitId?: number | null;
+  subUnitName?: string | null;
+  isActive?: boolean;
+};
+type SourceLinkDetail = SourceLinkRow & {
+  energySourceName?: string | null;
+  energySourceType?: string | null;
+  unitId?: number | null;
+  unitName?: string | null;
+  subUnitId?: number | null;
+  subUnitName?: string | null;
+  isActive?: boolean;
+};
 
 const EQUIPMENT_MUTABLE_FIELDS = [
   "subUnitId",
@@ -177,11 +197,11 @@ function serializeEquipment(row: EquipmentRow) {
   };
 }
 
-function serializeMeterLink(row: MeterLinkRow) {
+function serializeMeterLink(row: MeterLinkDetail) {
   return { ...row, createdAt: row.createdAt.toISOString() };
 }
 
-function serializeSourceLink(row: SourceLinkRow) {
+function serializeSourceLink(row: SourceLinkDetail) {
   return { ...row, createdAt: row.createdAt.toISOString() };
 }
 
@@ -413,7 +433,72 @@ async function loadLinks(equipmentId: number) {
     db.select().from(equipmentMeterLinksTable).where(eq(equipmentMeterLinksTable.equipmentId, equipmentId)),
     db.select().from(equipmentEnergySourceLinksTable).where(eq(equipmentEnergySourceLinksTable.equipmentId, equipmentId)),
   ]);
-  return { meterLinks, energySourceLinks };
+  const meterIds = meterLinks.map((link) => link.meterId);
+  const sourceIds = energySourceLinks.map((link) => link.energySourceId);
+  const [meters, sources] = await Promise.all([
+    meterIds.length > 0
+      ? db.select({
+        id: metersTable.id,
+        name: metersTable.name,
+        type: metersTable.type,
+        unit: metersTable.unit,
+        unitId: metersTable.unitId,
+        unitName: unitsTable.name,
+        subUnitId: metersTable.subUnitId,
+        subUnitName: subUnitsTable.name,
+        energySourceName: energySourcesTable.name,
+      })
+        .from(metersTable)
+        .leftJoin(unitsTable, eq(metersTable.unitId, unitsTable.id))
+        .leftJoin(subUnitsTable, eq(metersTable.subUnitId, subUnitsTable.id))
+        .leftJoin(energySourcesTable, eq(metersTable.energySourceId, energySourcesTable.id))
+        .where(inArray(metersTable.id, meterIds))
+      : [],
+    sourceIds.length > 0
+      ? db.select({
+        id: energySourcesTable.id,
+        name: energySourcesTable.name,
+        type: energySourcesTable.type,
+        unitId: energySourcesTable.unitId,
+        unitName: unitsTable.name,
+      })
+        .from(energySourcesTable)
+        .leftJoin(unitsTable, eq(energySourcesTable.unitId, unitsTable.id))
+        .where(inArray(energySourcesTable.id, sourceIds))
+      : [],
+  ]);
+  const meterById = new Map(meters.map((meter) => [meter.id, meter]));
+  const sourceById = new Map(sources.map((source) => [source.id, source]));
+  return {
+    meterLinks: meterLinks.map((link): MeterLinkDetail => {
+      const meter = meterById.get(link.meterId);
+      return {
+        ...link,
+        meterName: meter?.name ?? null,
+        meterType: meter?.type ?? null,
+        meterUnit: meter?.unit ?? null,
+        meterEnergySourceName: meter?.energySourceName ?? null,
+        unitId: meter?.unitId ?? null,
+        unitName: meter?.unitName ?? null,
+        subUnitId: meter?.subUnitId ?? null,
+        subUnitName: meter?.subUnitName ?? null,
+        isActive: Boolean(meter),
+      };
+    }),
+    energySourceLinks: energySourceLinks.map((link): SourceLinkDetail => {
+      const source = sourceById.get(link.energySourceId);
+      return {
+        ...link,
+        energySourceName: source?.name ?? null,
+        energySourceType: source?.type ?? null,
+        unitId: source?.unitId ?? null,
+        unitName: source?.unitName ?? null,
+        subUnitId: null,
+        subUnitName: null,
+        isActive: Boolean(source),
+      };
+    }),
+  };
 }
 
 async function detailResponse(equipment: EquipmentRow, scope: Awaited<ReturnType<typeof resolveCompanyScope>>) {
