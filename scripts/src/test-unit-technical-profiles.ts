@@ -200,6 +200,10 @@ async function archiveDefinition(baseUrl: string, token: string, id: number, exp
   });
 }
 
+function expectStatusIn(response: Response, allowed: number[], message: string) {
+  assert(allowed.includes(response.status), `${message}: ${response.status}`);
+}
+
 async function main() {
   assertDisposableDatabase();
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -392,6 +396,29 @@ async function main() {
       assertions += 1;
     }
 
+    for (const forbiddenField of ["snapshotNumber", "validFrom", "validTo", "publishedAt", "publishedBy", "permissions", "auditMetadata"]) {
+      const massAssignment = await patchProfile(server.baseUrl, adminToken, unitA1.id, {
+        expectedProfileVersion: 3,
+        [forbiddenField]: forbiddenField === "permissions" ? { canPublish: true } : 999,
+      });
+      assert(massAssignment.status === 400, `Mass assignment ${forbiddenField} reddedilmedi.`);
+      assertions += 1;
+    }
+
+    const bodyCompanySpoof = await patchProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: 3,
+      mainActivity: "Spoof attempt",
+      companyId: standardBUser.company_id,
+    });
+    assert(bodyCompanySpoof.status === 400, "Request body sahte companyId strict schema tarafindan reddedilmedi.");
+    const bodyUnitSpoof = await patchProfile(server.baseUrl, adminToken, unitA1.id, {
+      expectedProfileVersion: 3,
+      mainActivity: "Spoof attempt",
+      unitId: unitB1.id,
+    });
+    assert(bodyUnitSpoof.status === 400, "Request body sahte unitId strict schema tarafindan reddedilmedi.");
+    assertions += 2;
+
     for (const [field, value] of [
       ["buildingCount", -1],
       ["dailyOperatingHours", 25],
@@ -474,6 +501,26 @@ async function main() {
     });
     assert(staleDefinition.status === 409, "Stale definition version 409 donmedi.");
     assertions += 4;
+
+    const definitionMassAssignment = await patchDefinition(server.baseUrl, adminToken, numericDefinition.id, {
+      expectedDefinitionVersion: numericDefinition.definitionVersion,
+      label: "Mass assignment attempt",
+      companyId: standardBUser.company_id,
+    });
+    assert(definitionMassAssignment.status === 400, "Definition companyId mass assignment reddedilmedi.");
+    const definitionUsageSpoof = await patchDefinition(server.baseUrl, adminToken, numericDefinition.id, {
+      expectedDefinitionVersion: numericDefinition.definitionVersion,
+      label: "Usage spoof attempt",
+      usageCount: 999,
+    });
+    assert(definitionUsageSpoof.status === 400, "Definition usageCount mass assignment reddedilmedi.");
+    const definitionPermissionsSpoof = await patchDefinition(server.baseUrl, adminToken, numericDefinition.id, {
+      expectedDefinitionVersion: numericDefinition.definitionVersion,
+      label: "Permissions spoof attempt",
+      permissions: { canEdit: true },
+    });
+    assert(definitionPermissionsSpoof.status === 400, "Definition permissions mass assignment reddedilmedi.");
+    assertions += 3;
 
     const selectDefinitionRes = await createDefinition(server.baseUrl, adminToken, {
       code: "phase3c3_line_type",
@@ -576,7 +623,12 @@ async function main() {
       customFieldValues: { phase3c3_process_temperature: 1 },
     });
     assert(crossTenantCustomCode.status === 400, "Tenant B, tenant A custom kodunu yazabildi.");
-    assertions += 6;
+    const crossTenantDefinitionPatch = await patchDefinition(server.baseUrl, superadminToken, numericDefinition.id, {
+      expectedDefinitionVersion: numericDefinition.definitionVersion,
+      label: "Cross tenant definition attempt",
+    }, standardBUser.company_id);
+    assert(crossTenantDefinitionPatch.status === 404, "Superadmin yanlis tenant context ile definition guncelleyebildi.");
+    assertions += 7;
 
     const draftSnapshotCount = await pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM unit_technical_profile_snapshots WHERE unit_id=$1",
@@ -612,6 +664,28 @@ async function main() {
     });
     assert(backdatedPublish.status === 409, "Backdated publish reddedilmedi.");
     assertions += 3;
+
+    const unitA2BeforeConcurrentPublish = await json(await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA2.id}`));
+    const concurrentPublishes = await Promise.all([
+      publishProfile(server.baseUrl, adminToken, unitA2.id, {
+        expectedProfileVersion: unitA2BeforeConcurrentPublish.profile.profileVersion,
+        validFrom: "2026-03-01",
+        changeSummary: "Concurrent publish A",
+      }),
+      publishProfile(server.baseUrl, adminToken, unitA2.id, {
+        expectedProfileVersion: unitA2BeforeConcurrentPublish.profile.profileVersion,
+        validFrom: "2026-03-01",
+        changeSummary: "Concurrent publish B",
+      }),
+    ]);
+    const concurrentPublishStatuses = concurrentPublishes.map((response) => response.status).sort();
+    assert(JSON.stringify(concurrentPublishStatuses) === "[200,409]", `Concurrent publish beklenmedik: ${concurrentPublishStatuses}`);
+    const concurrentSnapshotCount = await pool.query<{ count: string; max_snapshot_number: number | null }>(
+      "SELECT count(*)::text AS count, max(snapshot_number) AS max_snapshot_number FROM unit_technical_profile_snapshots WHERE unit_id=$1",
+      [unitA2.id],
+    );
+    assert(concurrentSnapshotCount.rows[0]?.count === "1" && concurrentSnapshotCount.rows[0]?.max_snapshot_number === 1, "Concurrent publish duplicate snapshot olusturdu.");
+    assertions += 2;
 
     const firstSnapshotDetail = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}/history/${firstPublishBody.snapshot.id}`);
     assert(firstSnapshotDetail.status === 200, "Snapshot detail okunamadi.");
@@ -678,7 +752,13 @@ async function main() {
     assert(invalidEffectiveDate.status === 400, "Gecersiz effective date reddedilmedi.");
     const crossTenantSnapshotDetail = await api(server.baseUrl, standardBToken, `/api/unit-technical-profiles/${unitB1.id}/history/${firstPublishBody.snapshot.id}`);
     assert(crossTenantSnapshotDetail.status === 404, "Baska tenant snapshot detail sizdi.");
-    assertions += 6;
+    const crossTenantEffective = await api(server.baseUrl, superadminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?companyId=${standardBUser.company_id}&date=2026-06-01`);
+    assert(crossTenantEffective.status === 403, "Superadmin yanlis tenant context ile effective snapshot okuyabildi.");
+    const crossTenantHistory = await api(server.baseUrl, superadminToken, `/api/unit-technical-profiles/${unitA1.id}/history?companyId=${standardBUser.company_id}`);
+    assert(crossTenantHistory.status === 403, "Superadmin yanlis tenant context ile history okuyabildi.");
+    const crossTenantSnapshot = await api(server.baseUrl, superadminToken, `/api/unit-technical-profiles/${unitA1.id}/history/${firstPublishBody.snapshot.id}?companyId=${standardBUser.company_id}`);
+    assert(crossTenantSnapshot.status === 403, "Superadmin yanlis tenant context ile snapshot detail okuyabildi.");
+    assertions += 9;
 
     const standardExplicitPublish = await publishProfile(server.baseUrl, standardToken, unitA1.id, {
       expectedProfileVersion: secondPublishBody.profile.profileVersion,
@@ -689,7 +769,12 @@ async function main() {
     assert(superHistoryNoContext.status === 400, "Superadmin history context olmadan basarili oldu.");
     const superEffectiveWithContext = await api(server.baseUrl, superadminToken, `/api/unit-technical-profiles/${unitA1.id}/effective?companyId=${adminUser.company_id}&date=2026-07-01`);
     assert(superEffectiveWithContext.status === 200, "Superadmin explicit context effective okuyamadi.");
-    assertions += 3;
+    const superPublishWrongContext = await publishProfile(server.baseUrl, superadminToken, unitA1.id, {
+      expectedProfileVersion: secondPublishBody.profile.profileVersion,
+      validFrom: "2026-08-01",
+    }, standardBUser.company_id);
+    assert(superPublishWrongContext.status === 403, "Superadmin yanlis tenant context ile publish yapabildi.");
+    assertions += 4;
 
     const templateRes = await api(server.baseUrl, adminToken, "/api/unit-technical-profiles/import/template?includeCustomFields=true");
     assert(templateRes.status === 200, `Template 200 yerine ${templateRes.status}`);
@@ -708,7 +793,9 @@ async function main() {
     assert(standardTemplate.status === 403, "Standard baska unit template alabildi.");
     const superTemplateNoContext = await api(server.baseUrl, superadminToken, "/api/unit-technical-profiles/import/template");
     assert(superTemplateNoContext.status === 400, "Superadmin context olmadan template alabildi.");
-    assertions += 8;
+    const superTemplateWrongContext = await api(server.baseUrl, superadminToken, `/api/unit-technical-profiles/import/template?companyId=${standardBUser.company_id}&unitId=${unitA1.id}`);
+    expectStatusIn(superTemplateWrongContext, [403, 404], "Superadmin yanlis tenant context ile template alabildi");
+    assertions += 9;
 
     await pool.query("UPDATE units SET name='=Formula Unit' WHERE id=$1", [unitA2.id]);
     const exportRes = await api(server.baseUrl, adminToken, "/api/unit-technical-profiles/export");
@@ -723,7 +810,11 @@ async function main() {
     assert(standardExportOther.status === 403, "Standard baska unit export alabildi.");
     const superExportNoContext = await api(server.baseUrl, superadminToken, "/api/unit-technical-profiles/export");
     assert(superExportNoContext.status === 400, "Superadmin context olmadan export alabildi.");
-    assertions += 5;
+    const adminCrossTenantExport = await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/export?unitId=${unitB1.id}`);
+    expectStatusIn(adminCrossTenantExport, [403, 404], "Admin baska tenant unit export filtresi reddedilmedi");
+    const superExportWrongContext = await api(server.baseUrl, superadminToken, `/api/unit-technical-profiles/export?companyId=${standardBUser.company_id}&unitId=${unitA1.id}`);
+    expectStatusIn(superExportWrongContext, [403, 404], "Superadmin yanlis tenant context ile export alabildi");
+    assertions += 7;
 
     const importHeaders = [
       "Birim ID [unitId]",
@@ -866,7 +957,51 @@ async function main() {
     assert(allOrNothing.status === 422, "Hatali import all-or-nothing 422 donmedi.");
     const profileAfterRollback = await json(await api(server.baseUrl, adminToken, `/api/unit-technical-profiles/${unitA1.id}`));
     assert(profileAfterRollback.profile.mainActivity === "Imported draft activity", "All-or-nothing rollback calismadi.");
-    assertions += 9;
+    const standardCrossUnitImport = await uploadProfileImport(server.baseUrl, standardToken, "/api/unit-technical-profiles/import/preview", await workbookBuffer(importHeaders, [[
+      unitA2.id,
+      unitA2.name,
+      "",
+      "Standard cross unit import",
+      "",
+      "",
+      "",
+    ]]));
+    assert(standardCrossUnitImport.status === 200, "Standard cross-unit import preview hata ozeti donmedi.");
+    const standardCrossUnitImportBody = await json(standardCrossUnitImport);
+    assert(
+      standardCrossUnitImportBody.errors.some((issue: any) => issue.code === "unit_forbidden"),
+      "Standard import baska unit satirini preview error olarak reddetmedi.",
+    );
+    const adminCrossTenantImport = await uploadProfileImport(server.baseUrl, adminToken, "/api/unit-technical-profiles/import/preview", await workbookBuffer(importHeaders, [[
+      unitB1.id,
+      unitB1.name,
+      "",
+      "Cross tenant import",
+      "",
+      "",
+      "",
+    ]]));
+    assert(adminCrossTenantImport.status === 200, "Admin cross-tenant import preview hata ozeti donmedi.");
+    const adminCrossTenantImportBody = await json(adminCrossTenantImport);
+    assert(
+      adminCrossTenantImportBody.errors.some((issue: any) => issue.code === "unit_not_found"),
+      "Admin import baska tenant unit satirini preview error olarak reddetmedi.",
+    );
+    const superImportNoContext = await uploadProfileImport(server.baseUrl, superadminToken, "/api/unit-technical-profiles/import/preview", validImportBuffer);
+    assert(superImportNoContext.status === 400, "Superadmin context olmadan import preview alabildi.");
+    const superImportWrongContext = await uploadProfileImport(
+      server.baseUrl,
+      superadminToken,
+      `/api/unit-technical-profiles/import/preview?companyId=${standardBUser.company_id}`,
+      validImportBuffer,
+    );
+    assert(superImportWrongContext.status === 200, "Superadmin yanlis context import preview hata ozeti donmedi.");
+    const superImportWrongContextBody = await json(superImportWrongContext);
+    assert(
+      superImportWrongContextBody.errors.some((issue: any) => issue.code === "unit_not_found"),
+      "Superadmin yanlis tenant context ile import preview unit_not_found uretmedi.",
+    );
+    assertions += 13;
 
     const audits = await pool.query<{
       action: string;
