@@ -5,6 +5,7 @@ import {
   energySourcesTable,
   energyUseGroupsTable,
   equipmentEnergySourceLinksTable,
+  equipmentFieldDefinitionsTable,
   equipmentMeterLinksTable,
   equipmentTable,
   metersTable,
@@ -22,6 +23,9 @@ import {
   type EquipmentCreateRequest,
   type EquipmentPatchRequest,
   type EquipmentReactivateRequest,
+  validateEquipmentCustomFieldValues,
+  changedEquipmentCustomValueCodes,
+  type EquipmentCustomFieldDefinitionDto,
 } from "@workspace/api-zod";
 import { requireAuth } from "../middlewares/auth.js";
 import { changedAuditFields, writeAuditEvent, type AuditAction } from "../lib/audit.js";
@@ -80,6 +84,7 @@ const EQUIPMENT_MUTABLE_FIELDS = [
   "processText",
   "parentEquipmentId",
   "energyUseGroupId",
+  "customValues",
   "measurementMethod",
   "measurementConfidence",
   "ratedPowerValue",
@@ -191,10 +196,66 @@ function permissions(scope: Awaited<ReturnType<typeof resolveCompanyScope>>, equ
 function serializeEquipment(row: EquipmentRow) {
   return {
     ...row,
+    customValues: equipmentCustomValues(row),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     archivedAt: row.archivedAt?.toISOString() ?? null,
   };
+}
+
+function equipmentCustomValues(equipment: EquipmentRow | null) {
+  const values = equipment?.customValues;
+  return values && typeof values === "object" && !Array.isArray(values) ? values : {};
+}
+
+function serializeDefinition(row: typeof equipmentFieldDefinitionsTable.$inferSelect): EquipmentCustomFieldDefinitionDto {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    code: row.code,
+    label: row.label,
+    description: row.description,
+    section: row.section as EquipmentCustomFieldDefinitionDto["section"],
+    fieldType: row.fieldType as EquipmentCustomFieldDefinitionDto["fieldType"],
+    unitLabel: row.unitLabel,
+    options: (row.options ?? []).map((option, index) => ({ ...option, displayOrder: option.displayOrder ?? index })),
+    isRequired: row.isRequired,
+    isActive: row.isActive,
+    displayOrder: row.displayOrder,
+    validationConfig: row.validationConfig ?? {},
+    definitionVersion: row.definitionVersion,
+    createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
+    updatedAt: row.updatedAt.toISOString(),
+    updatedBy: row.updatedBy,
+    archivedAt: row.archivedAt?.toISOString() ?? null,
+    archivedBy: row.archivedBy,
+  };
+}
+
+async function getDefinitionsForEquipment(companyId: number, customValues: Record<string, unknown>) {
+  const rows = await db.select().from(equipmentFieldDefinitionsTable).where(eq(equipmentFieldDefinitionsTable.companyId, companyId));
+  return rows
+    .filter((row) => row.isActive || Object.prototype.hasOwnProperty.call(customValues, row.code))
+    .sort((a, b) => a.displayOrder - b.displayOrder || a.label.localeCompare(b.label))
+    .map(serializeDefinition);
+}
+
+async function normalizeEquipmentCustomPatch(companyId: number, existingValues: Record<string, unknown>, patch: Record<string, unknown> | undefined) {
+  if (patch === undefined) return { ok: true as const, value: existingValues, changedCodes: [] as string[] };
+  const definitions = await db.select().from(equipmentFieldDefinitionsTable).where(eq(equipmentFieldDefinitionsTable.companyId, companyId));
+  const inactiveExistingCodes = new Set(Object.keys(existingValues));
+  const validation = validateEquipmentCustomFieldValues(definitions.map(serializeDefinition), patch, {
+    allowInactiveExistingCodes: inactiveExistingCodes,
+    enforceRequired: true,
+  });
+  if (!validation.ok) return validation;
+  const nextValues = { ...existingValues };
+  for (const [code, value] of Object.entries(validation.value)) {
+    if (value === null) delete nextValues[code];
+    else nextValues[code] = value;
+  }
+  return { ok: true as const, value: nextValues, changedCodes: changedEquipmentCustomValueCodes(existingValues, nextValues) };
 }
 
 function serializeMeterLink(row: MeterLinkDetail) {
@@ -238,6 +299,7 @@ function createValues(data: EquipmentCreateRequest, companyId: number, unitId: n
     processText: data.processText ?? null,
     parentEquipmentId: data.parentEquipmentId ?? null,
     energyUseGroupId: data.energyUseGroupId ?? null,
+    customValues: data.customValues ?? {},
     measurementMethod: data.measurementMethod,
     measurementConfidence: data.measurementConfidence,
     ratedPowerValue: data.ratedPowerValue ?? null,
@@ -503,10 +565,23 @@ async function loadLinks(equipmentId: number) {
 
 async function detailResponse(equipment: EquipmentRow, scope: Awaited<ReturnType<typeof resolveCompanyScope>>) {
   const links = await loadLinks(equipment.id);
+  const customValues = equipmentCustomValues(equipment);
+  const definitions = await getDefinitionsForEquipment(scope.companyId, customValues);
   return {
     equipment: serializeEquipment(equipment),
     meterLinks: links.meterLinks.map(serializeMeterLink),
     energySourceLinks: links.energySourceLinks.map(serializeSourceLink),
+    customFields: definitions.map((definition) => ({
+      definitionId: definition.id,
+      code: definition.code,
+      label: definition.label,
+      section: definition.section,
+      fieldType: definition.fieldType,
+      unitLabel: definition.unitLabel,
+      isActive: definition.isActive,
+      isRequired: definition.isRequired,
+      value: customValues[definition.code] ?? null,
+    })),
     permissions: permissions(scope, equipment),
   };
 }
@@ -625,8 +700,10 @@ router.post("/equipment", requireAuth, async (req, res) => {
         meterLinks: data.meterLinks,
         energySourceLinks: data.energySourceLinks,
       });
+      const customValidation = await normalizeEquipmentCustomPatch(scope.companyId, {}, data.customValues ?? {});
+      if (!customValidation.ok) return { status: "custom-validation" as const, error: customValidation.error };
       const [created] = await tx.insert(equipmentTable)
-        .values(createValues(data, scope.companyId, unitId, scope.userId))
+        .values({ ...createValues(data, scope.companyId, unitId, scope.userId), customValues: customValidation.value })
         .onConflictDoNothing({ target: [equipmentTable.companyId, equipmentTable.equipmentCode] })
         .returning();
       if (!created) return { status: "duplicate" as const };
@@ -649,12 +726,17 @@ router.post("/equipment", requireAuth, async (req, res) => {
           equipmentCode: created.equipmentCode,
           meterIds: data.meterLinks.map((link) => link.meterId),
           energySourceIds: data.energySourceLinks.map((link) => link.energySourceId),
+          customFieldCodes: Object.keys(customValidation.value),
         },
       });
       return { status: "ok" as const, equipment: created };
     });
     if (result.status === "duplicate") {
       res.status(409).json({ error: "Bu ekipman kodu sirket icinde zaten kullaniliyor" });
+      return;
+    }
+    if (result.status === "custom-validation") {
+      res.status(400).json({ error: result.error });
       return;
     }
     res.status(201).json(await detailResponse(result.equipment, scope));
@@ -715,6 +797,10 @@ router.patch("/equipment/:id", requireAuth, async (req, res) => {
         meterLinks: data.meterLinks,
         energySourceLinks: data.energySourceLinks,
       });
+      const existingCustomValues = equipmentCustomValues(existing);
+      const customValidation = await normalizeEquipmentCustomPatch(scope.companyId, existingCustomValues, data.customValues);
+      if (!customValidation.ok) return { status: "custom-validation" as const, error: customValidation.error };
+      if (data.customValues !== undefined) patch.customValues = customValidation.value;
 
       const currentLinks = await Promise.all([
         tx.select().from(equipmentMeterLinksTable).where(eq(equipmentMeterLinksTable.equipmentId, id)),
@@ -723,7 +809,8 @@ router.patch("/equipment/:id", requireAuth, async (req, res) => {
       const relationChanged = data.meterLinks !== undefined || data.energySourceLinks !== undefined;
       const next = { ...existing, ...patch };
       const changedFields = Object.keys(changedAuditFields(existing, next, [...EQUIPMENT_MUTABLE_FIELDS]));
-      if (changedFields.length === 0 && !relationChanged) return { status: "ok" as const, equipment: existing };
+      const changedCustomCodes = customValidation.changedCodes;
+      if (changedFields.length === 0 && !relationChanged && changedCustomCodes.length === 0) return { status: "ok" as const, equipment: existing };
       const now = new Date();
       const [updated] = await tx.update(equipmentTable)
         .set({
@@ -760,6 +847,7 @@ router.patch("/equipment/:id", requireAuth, async (req, res) => {
           meterIdsAfter: data.meterLinks?.map((link) => link.meterId) ?? undefined,
           energySourceIdsBefore: currentLinks[1].map((link) => link.energySourceId),
           energySourceIdsAfter: data.energySourceLinks?.map((link) => link.energySourceId) ?? undefined,
+          customFieldCodes: changedCustomCodes,
         },
       });
       return { status: "ok" as const, equipment: updated };
@@ -774,6 +862,10 @@ router.patch("/equipment/:id", requireAuth, async (req, res) => {
     }
     if (result.status === "archived") {
       res.status(409).json({ error: "Arsivli ekipman guncellenemez" });
+      return;
+    }
+    if (result.status === "custom-validation") {
+      res.status(400).json({ error: result.error });
       return;
     }
     if (result.status === "conflict") {

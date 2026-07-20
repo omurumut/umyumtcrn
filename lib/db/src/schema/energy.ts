@@ -557,6 +557,7 @@ export const equipmentTable = pgTable("equipment", {
   processText: text("process_text"),
   parentEquipmentId: integer("parent_equipment_id").references((): AnyPgColumn => equipmentTable.id, { onDelete: "set null" }),
   energyUseGroupId: integer("energy_use_group_id").references(() => energyUseGroupsTable.id, { onDelete: "set null" }),
+  customValues: jsonb("custom_values_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   measurementMethod: text("measurement_method").notNull().default("unknown"),
   measurementConfidence: text("measurement_confidence").notNull().default("unknown"),
   ratedPowerValue: real("rated_power_value"),
@@ -602,6 +603,37 @@ export const equipmentTable = pgTable("equipment", {
 export const insertEquipmentSchema = createInsertSchema(equipmentTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertEquipment = z.infer<typeof insertEquipmentSchema>;
 export type Equipment = typeof equipmentTable.$inferSelect;
+
+export const equipmentFieldDefinitionsTable = pgTable("equipment_field_definitions", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  code: text("code").notNull(),
+  label: text("label").notNull(),
+  description: text("description"),
+  section: text("section").notNull().default("other"),
+  fieldType: text("field_type").notNull(),
+  unitLabel: text("unit_label"),
+  options: jsonb("options_json").$type<Array<{ code: string; label: string; isActive: boolean; displayOrder?: number }>>().notNull().default(sql`'[]'::jsonb`),
+  isRequired: boolean("is_required").notNull().default(false),
+  displayOrder: integer("display_order").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  validationConfig: jsonb("validation_config_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  definitionVersion: integer("definition_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdBy: integer("created_by").references(() => usersTable.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+  archivedAt: timestamp("archived_at"),
+  archivedBy: integer("archived_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyCodeUnique: uniqueIndex("equipment_field_definitions_company_code_unique").on(table.companyId, table.code),
+  companyActiveDisplayIdx: index("equipment_field_definitions_company_active_display_idx").on(table.companyId, table.isActive, table.displayOrder),
+  companySectionIdx: index("equipment_field_definitions_company_section_idx").on(table.companyId, table.section),
+}));
+
+export const insertEquipmentFieldDefinitionSchema = createInsertSchema(equipmentFieldDefinitionsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEquipmentFieldDefinition = z.infer<typeof insertEquipmentFieldDefinitionSchema>;
+export type EquipmentFieldDefinition = typeof equipmentFieldDefinitionsTable.$inferSelect;
 
 export const equipmentMeterLinksTable = pgTable("equipment_meter_links", {
   id: serial("id").primaryKey(),

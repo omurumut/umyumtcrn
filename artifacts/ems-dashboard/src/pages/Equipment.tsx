@@ -52,6 +52,7 @@ type Equipment = {
   processText: string | null;
   parentEquipmentId: number | null;
   energyUseGroupId: number | null;
+  customValues: Record<string, unknown>;
   measurementMethod: string;
   measurementConfidence: string;
   ratedPowerValue: number | null;
@@ -97,7 +98,27 @@ type EquipmentDetailResponse = {
   equipment: Equipment;
   meterLinks: MeterLink[];
   energySourceLinks: EnergySourceLink[];
+  customFields?: EquipmentCustomField[];
   permissions: { canEdit: boolean; canArchive: boolean; canReactivate: boolean };
+};
+
+type EquipmentCustomFieldDefinition = {
+  id: number;
+  code: string;
+  label: string;
+  description: string | null;
+  section: string;
+  fieldType: string;
+  unitLabel: string | null;
+  options: Array<{ code: string; label: string; isActive: boolean; displayOrder?: number }>;
+  isRequired: boolean;
+  isActive: boolean;
+  displayOrder: number;
+};
+
+type EquipmentCustomField = Pick<EquipmentCustomFieldDefinition, "code" | "label" | "section" | "fieldType" | "unitLabel" | "isActive" | "isRequired"> & {
+  definitionId: number;
+  value: unknown;
 };
 
 type MeterLink = {
@@ -212,6 +233,7 @@ type EquipmentForm = {
   plannedImprovements: string;
   meterLinks: MeterRelationDraft[];
   energySourceLinks: SourceRelationDraft[];
+  customValues: Record<string, unknown>;
 };
 
 class ApiError extends Error {
@@ -343,6 +365,7 @@ const EMPTY_FORM: EquipmentForm = {
   plannedImprovements: "",
   meterLinks: [],
   energySourceLinks: [],
+  customValues: {},
 };
 
 function label(options: readonly (readonly [string, string])[], value: string | null | undefined) {
@@ -373,6 +396,13 @@ function asNullableInt(value: string) {
 
 function asNullableId(value: string) {
   return value === "none" || value === "" ? null : Number(value);
+}
+
+function hasCustomValue(value: unknown) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
 }
 
 function meterLinkToDraft(link: MeterLink): MeterRelationDraft {
@@ -445,6 +475,7 @@ function equipmentToForm(equipment: Equipment, detail?: EquipmentDetailResponse)
     plannedImprovements: equipment.plannedImprovements ?? "",
     meterLinks: detail?.meterLinks.map(meterLinkToDraft) ?? [],
     energySourceLinks: detail?.energySourceLinks.map(sourceLinkToDraft) ?? [],
+    customValues: equipment.customValues ?? {},
   };
 }
 
@@ -524,6 +555,7 @@ function buildPayload(form: EquipmentForm, mode: "create" | "edit", expectedEqui
   const relations = normalizeRelations(form);
   payload.meterLinks = relations.meterLinks;
   payload.energySourceLinks = relations.energySourceLinks;
+  payload.customValues = form.customValues;
   if (mode === "create") {
     payload.equipmentCode = asText(form.equipmentCode);
     if (form.unitId) payload.unitId = Number(form.unitId);
@@ -639,6 +671,11 @@ export default function EquipmentPage() {
   const groupsQuery = useQuery<OptionRow[], ApiError>({
     queryKey: ["equipment-energy-use-groups", effectiveCompanyId, selectedWorkingUnit],
     queryFn: () => apiFetch<OptionRow[]>(token, `/api/energy-use-groups?isActive=true&${optionQuery(effectiveCompanyId, selectedWorkingUnit)}`),
+    enabled: canQuery,
+  });
+  const customDefinitionsQuery = useQuery<{ definitions: EquipmentCustomFieldDefinition[]; permissions: { canEdit: boolean } }, ApiError>({
+    queryKey: ["equipment-custom-field-definitions", effectiveCompanyId],
+    queryFn: () => apiFetch(token, `/api/equipment-field-definitions${effectiveCompanyId ? `?companyId=${effectiveCompanyId}` : ""}`),
     enabled: canQuery,
   });
 
@@ -871,6 +908,11 @@ export default function EquipmentPage() {
     setDirty(true);
   }
 
+  function updateCustomValue(code: string, value: unknown) {
+    setForm((current) => ({ ...current, customValues: { ...current.customValues, [code]: value } }));
+    setDirty(true);
+  }
+
   function validateRelationDrafts() {
     const meterIds = form.meterLinks.map((link) => link.meterId).filter((id) => id !== "none" && id !== "");
     if (meterIds.length !== new Set(meterIds).size) return "Bu sayaç zaten ekipmana bağlı.";
@@ -881,6 +923,8 @@ export default function EquipmentPage() {
     const shares = [...form.meterLinks.map((link) => link.sharePercent), ...form.energySourceLinks.map((link) => link.sharePercent)];
     if (shares.some((share) => share.trim() !== "" && (!Number.isFinite(Number(share)) || Number(share) < 0 || Number(share) > 100))) return "Pay yüzdesi 0 ile 100 arasında olmalıdır.";
     if (form.energyUseGroupId !== "none" && !compatibleGroups.some((group) => String(group.id) === form.energyUseGroupId)) return "Enerji kullanım grubu seçilen alt birimle uyumlu değil.";
+    const missingCustom = (customDefinitionsQuery.data?.definitions ?? []).find((definition) => definition.isActive && definition.isRequired && !hasCustomValue(form.customValues[definition.code]));
+    if (missingCustom) return `${missingCustom.label} zorunludur`;
     return null;
   }
 
@@ -1202,6 +1246,8 @@ export default function EquipmentPage() {
               <SourceRelationEditor rows={form.energySourceLinks} options={activeSources} onChange={updateSourceLink} onRemove={removeSourceLink} />
             </RelationSection>
 
+            <CustomFieldsSection definitions={customDefinitionsQuery.data?.definitions ?? []} values={form.customValues} onChange={updateCustomValue} />
+
             <FormSection title="Açıklamalar" wide>
               <TextareaField id="equipment-technical-notes" labelText="Teknik notlar" value={form.technicalNotes} maxLength={1000} onChange={(value) => patch("technicalNotes", value)} />
               <TextareaField id="equipment-maintenance-notes" labelText="Bakım notları" value={form.maintenanceNotes} maxLength={1000} onChange={(value) => patch("maintenanceNotes", value)} />
@@ -1462,6 +1508,98 @@ function SourceRelationEditor({ rows, options, onChange, onRemove }: {
   );
 }
 
+function CustomFieldsSection({ definitions, values, onChange }: {
+  definitions: EquipmentCustomFieldDefinition[];
+  values: Record<string, unknown>;
+  onChange: (code: string, value: unknown) => void;
+}) {
+  const sorted = [...definitions].sort((a, b) => a.displayOrder - b.displayOrder || a.label.localeCompare(b.label));
+  if (sorted.length === 0) {
+    return (
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold uppercase text-muted-foreground">Firma Özel Alanları</h3>
+        <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">Bu firma için ekipman özel alanı tanımlanmamış.</div>
+      </section>
+    );
+  }
+  return (
+    <section className="space-y-3">
+      <h3 className="text-sm font-semibold uppercase text-muted-foreground">Firma Özel Alanları</h3>
+      <div className="grid gap-3 md:grid-cols-2">
+        {sorted.map((definition) => (
+          <CustomFieldInput key={definition.code} definition={definition} value={values[definition.code]} onChange={(value) => onChange(definition.code, value)} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CustomFieldInput({ definition, value, onChange }: {
+  definition: EquipmentCustomFieldDefinition;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  const id = `equipment-custom-${definition.code}`;
+  const labelText = `${definition.label}${definition.isRequired ? " *" : ""}`;
+  const disabled = !definition.isActive;
+  if (definition.fieldType === "long_text") {
+    const text = typeof value === "string" ? value : "";
+    return (
+      <div className="space-y-1 md:col-span-2">
+        <Label htmlFor={id}>{labelText}</Label>
+        <Textarea id={id} value={text} disabled={disabled} maxLength={2000} onChange={(event) => onChange(event.target.value)} />
+        <div className="flex justify-between text-[11px] text-muted-foreground"><span>{definition.description}</span><span>{text.length}/2000</span></div>
+      </div>
+    );
+  }
+  if (definition.fieldType === "boolean") {
+    return (
+      <SelectField labelText={labelText} value={typeof value === "string" ? value : "unknown"} onValueChange={onChange} options={[["yes", "Evet"], ["no", "Hayır"], ["unknown", "Bilinmiyor"], ["not_applicable", "Uygulanamaz"]]} />
+    );
+  }
+  if (definition.fieldType === "single_select") {
+    return <SelectField labelText={labelText} value={typeof value === "string" ? value : "none"} onValueChange={(next) => onChange(next === "none" ? null : next)} options={[["none", "Yok"], ...definition.options.filter((option) => option.isActive).map((option) => [option.code, option.label] as const)]} />;
+  }
+  if (definition.fieldType === "multi_select") {
+    const selected = Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+    return (
+      <div className="space-y-1">
+        <Label>{labelText}</Label>
+        <div className="rounded-md border p-2">
+          {definition.options.filter((option) => option.isActive).map((option) => (
+            <label key={option.code} className="flex items-center gap-2 py-1 text-sm">
+              <Checkbox checked={selected.includes(option.code)} onCheckedChange={(checked) => {
+                const next = checked === true ? [...selected, option.code] : selected.filter((code) => code !== option.code);
+                onChange([...new Set(next)]);
+              }} />
+              {option.label}
+            </label>
+          ))}
+        </div>
+        {definition.description && <div className="text-[11px] text-muted-foreground">{definition.description}</div>}
+      </div>
+    );
+  }
+  const inputType = definition.fieldType === "date" ? "date" : definition.fieldType === "short_text" ? "text" : "number";
+  const textValue = value === null || value === undefined ? "" : String(value);
+  return (
+    <div className="space-y-1">
+      <Label htmlFor={id}>{labelText}</Label>
+      <div className="flex gap-2">
+        <Input id={id} type={inputType} value={textValue} disabled={disabled} maxLength={definition.fieldType === "short_text" ? 250 : undefined} onChange={(event) => {
+          const next = event.target.value;
+          if (definition.fieldType === "integer") onChange(next === "" ? null : Number.parseInt(next, 10));
+          else if (definition.fieldType === "decimal" || definition.fieldType === "unit_number") onChange(next === "" ? null : Number(next));
+          else onChange(next);
+        }} />
+        {definition.unitLabel && <div className="flex min-w-12 items-center rounded-md border bg-muted/30 px-2 text-sm text-muted-foreground">{definition.unitLabel}</div>}
+      </div>
+      {definition.description && <div className="text-[11px] text-muted-foreground">{definition.description}</div>}
+      {!definition.isActive && <Badge variant="outline">Pasif</Badge>}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: EquipmentStatus }) {
   const tone = status === "active" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
     : status === "archived" ? "border-slate-500/30 bg-slate-500/10 text-slate-300"
@@ -1562,6 +1700,31 @@ function RelationDetailTables({ detail, meterName, sourceName }: {
   );
 }
 
+function CustomFieldDetail({ customFields }: { customFields: EquipmentCustomField[] }) {
+  if (customFields.length === 0) return null;
+  return (
+    <div>
+      <h4 className="mb-2 text-sm font-semibold">Firma özel alanları</h4>
+      <div className="grid grid-cols-2 gap-3 rounded-md border p-3">
+        {customFields.map((field) => (
+          <InfoLine
+            key={field.code}
+            labelText={field.label}
+            value={<span className="inline-flex items-center gap-2">{formatCustomValue(field.value)} {!field.isActive && <Badge variant="outline">Pasif</Badge>}</span>}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatCustomValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "boolean") return value ? "Evet" : "Hayır";
+  return String(value);
+}
+
 function EquipmentDetail({ detail, loading, unitName, subUnitName, meterName, sourceName, groupName, onEdit }: {
   detail?: EquipmentDetailResponse;
   loading: boolean;
@@ -1617,6 +1780,7 @@ function EquipmentDetail({ detail, loading, unitName, subUnitName, meterName, so
           <InfoLine labelText="Diğer sayaç" value={Math.max(0, detail.meterLinks.length - (primaryMeter ? 1 : 0))} />
         </div>
         <RelationDetailTables detail={detail} meterName={meterName} sourceName={sourceName} />
+        <CustomFieldDetail customFields={detail.customFields ?? []} />
         <div className="grid grid-cols-2 gap-3">
           <InfoLine labelText="Satın alma" value={equipment.purchaseDate ?? "—"} />
           <InfoLine labelText="Devreye alma" value={equipment.commissioningDate ?? "—"} />

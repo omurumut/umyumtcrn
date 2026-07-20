@@ -3,3 +3,4 @@ export * from "./company-settings-contract";
 export * from "./unit-technical-profile-custom-field-contract";
 export * from "./unit-technical-profile-contract";
 export * from "./equipment-contract";
+export * from "./equipment-custom-field-contract";
