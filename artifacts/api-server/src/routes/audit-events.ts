@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { and, count, desc, eq, gte, isNull, lte, SQL } from "drizzle-orm";
-import { db, auditEventsTable, unitsTable } from "@workspace/db";
+import { db, auditEventsTable, equipmentTable, unitsTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth.js";
 import { AUDIT_ACTION_SET, AUDIT_OUTCOME_SET } from "../lib/audit.js";
 
@@ -36,7 +36,17 @@ function isCompanyAdmin(role: string) {
 
 async function resolveAuditScope(req: Parameters<Parameters<typeof router.get>[1]>[0]) {
   const role = req.user!.role;
-  if (role === "user") return { status: 403 as const, error: "Yetki yok" };
+  if (role === "user") {
+    if (req.query.entityType !== "equipment" || typeof req.query.entityId !== "string") return { status: 403 as const, error: "Yetki yok" };
+    const entityId = parsePositiveInteger(req.query.entityId);
+    if (entityId === null || req.user!.unitId === null) return { status: 403 as const, error: "Yetki yok" };
+    const [equipment] = await db.select({ id: equipmentTable.id })
+      .from(equipmentTable)
+      .where(and(eq(equipmentTable.id, entityId), eq(equipmentTable.companyId, req.user!.companyId), eq(equipmentTable.unitId, req.user!.unitId)))
+      .limit(1);
+    if (!equipment) return { status: 404 as const, error: "Audit kaydı bulunamadı" };
+    return { companyId: req.user!.companyId, unitId: req.user!.unitId, platform: false, forcedEntityType: "equipment", forcedEntityId: String(entityId) };
+  }
 
   const requestedCompanyId = parseOptionalPositiveInteger(req.query.companyId, "companyId");
   const requestedUnitId = parseOptionalPositiveInteger(req.query.unitId, "unitId");
@@ -92,8 +102,12 @@ router.get("/audit-events", requireAuth, async (req, res) => {
       if (!AUDIT_OUTCOME_SET.has(req.query.outcome)) { res.status(400).json({ error: "Geçersiz outcome" }); return; }
       conditions.push(eq(auditEventsTable.outcome, req.query.outcome));
     }
-    if (typeof req.query.entityType === "string") conditions.push(eq(auditEventsTable.entityType, req.query.entityType));
-    if (typeof req.query.entityId === "string") conditions.push(eq(auditEventsTable.entityId, req.query.entityId));
+    const forcedEntityType = "forcedEntityType" in scope ? scope.forcedEntityType : undefined;
+    const forcedEntityId = "forcedEntityId" in scope ? scope.forcedEntityId : undefined;
+    if (forcedEntityType !== undefined) conditions.push(eq(auditEventsTable.entityType, forcedEntityType));
+    else if (typeof req.query.entityType === "string") conditions.push(eq(auditEventsTable.entityType, req.query.entityType));
+    if (forcedEntityId !== undefined) conditions.push(eq(auditEventsTable.entityId, forcedEntityId));
+    else if (typeof req.query.entityId === "string") conditions.push(eq(auditEventsTable.entityId, req.query.entityId));
     if (typeof req.query.requestId === "string") {
       const requestId = req.query.requestId.trim();
       if (requestId.length === 0 || requestId.length > 128) { res.status(400).json({ error: "Geçersiz requestId" }); return; }

@@ -207,7 +207,7 @@ export const equipmentPatchRequestSchema = z.strictObject({
 
 export const equipmentArchiveRequestSchema = z.strictObject({
   expectedEquipmentVersion: z.number().int().min(1),
-  reason: trimNullable(EQUIPMENT_TEXT_LIMITS.archiveReason).optional(),
+  reason: trimRequired(EQUIPMENT_TEXT_LIMITS.archiveReason),
 });
 
 export const equipmentReactivateRequestSchema = z.strictObject({
@@ -224,6 +224,8 @@ export const equipmentListQuerySchema = z.strictObject({
   energySourceId: z.coerce.number().int().positive().optional(),
   meterId: z.coerce.number().int().positive().optional(),
   energyUseGroupId: z.coerce.number().int().positive().optional(),
+  parentEquipmentId: z.coerce.number().int().positive().optional(),
+  parentless: queryBoolean.optional(),
   search: z.string().trim().max(120).optional(),
   includeArchived: queryBoolean.default(false),
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -340,6 +342,21 @@ export const equipmentDetailResponseSchema = z.strictObject({
   equipment: equipmentSchema,
   meterLinks: z.array(equipmentMeterLinkSchema),
   energySourceLinks: z.array(equipmentEnergySourceLinkSchema),
+  parentSummary: z.strictObject({
+    id: idSchema,
+    equipmentCode: z.string(),
+    name: z.string(),
+    status: z.enum(EQUIPMENT_STATUSES),
+  }).nullable().optional(),
+  childSummary: z.strictObject({
+    activeChildCount: z.number().int().min(0),
+    children: z.array(z.strictObject({
+      id: idSchema,
+      equipmentCode: z.string(),
+      name: z.string(),
+      status: z.enum(EQUIPMENT_STATUSES),
+    })),
+  }).optional(),
   customFields: z.array(z.strictObject({
     definitionId: idSchema,
     code: z.string(),

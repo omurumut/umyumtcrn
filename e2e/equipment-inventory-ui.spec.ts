@@ -134,6 +134,7 @@ test.describe.serial("equipment inventory UI", () => {
     await expect(page.getByTestId("equipment-row").filter({ hasText: "Güncel" })).toBeVisible();
 
     await page.getByRole("button", { name: `${code} arşivle` }).click();
+    await page.locator("#equipment-archive-reason").fill("UI archive reason");
     await page.getByRole("button", { name: "Arşivle" }).click();
     await expect(page.getByTestId("equipment-row").filter({ hasText: code })).toHaveCount(0);
     await page.getByLabel("Arşivlileri dahil et").click();

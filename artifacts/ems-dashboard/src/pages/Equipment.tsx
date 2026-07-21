@@ -98,8 +98,22 @@ type EquipmentDetailResponse = {
   equipment: Equipment;
   meterLinks: MeterLink[];
   energySourceLinks: EnergySourceLink[];
+  parentSummary?: Pick<Equipment, "id" | "equipmentCode" | "name" | "status"> | null;
+  childSummary?: {
+    activeChildCount: number;
+    children: Array<Pick<Equipment, "id" | "equipmentCode" | "name" | "status">>;
+  };
   customFields?: EquipmentCustomField[];
   permissions: { canEdit: boolean; canArchive: boolean; canReactivate: boolean };
+};
+
+type AuditEventRecord = {
+  id: number;
+  occurredAt: string;
+  actorRole: string | null;
+  action: string;
+  changes: any;
+  metadata: any;
 };
 
 type EquipmentCustomFieldDefinition = {
@@ -620,6 +634,8 @@ export default function EquipmentPage() {
   const [archiveTarget, setArchiveTarget] = useState<Equipment | null>(null);
   const [reactivateTarget, setReactivateTarget] = useState<Equipment | null>(null);
   const [archiveReason, setArchiveReason] = useState("");
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [reactivateStatus, setReactivateStatus] = useState<Exclude<EquipmentStatus, "archived">>("active");
   const [conflict, setConflict] = useState<Equipment | null>(null);
 
   useEffect(() => {
@@ -704,6 +720,12 @@ export default function EquipmentPage() {
     enabled: canQuery && selectedId !== null,
   });
 
+  const auditHistoryQuery = useQuery<{ items: AuditEventRecord[]; hasNext: boolean }, ApiError>({
+    queryKey: ["equipment-audit-history", selectedId, effectiveCompanyId],
+    queryFn: () => apiFetch(token, `/api/audit-events?entityType=equipment&entityId=${selectedId}&pageSize=10${effectiveCompanyId ? `&companyId=${effectiveCompanyId}` : ""}`),
+    enabled: canQuery && selectedId !== null,
+  });
+
   const parentOptionsQuery = useQuery<EquipmentListResponse, ApiError>({
     queryKey: ["equipment-parent-options", effectiveCompanyId, selectedWorkingUnit, selectedId],
     queryFn: () => {
@@ -724,6 +746,7 @@ export default function EquipmentPage() {
       setDialogOpen(false);
       await queryClient.invalidateQueries({ queryKey: ["equipment"] });
       await queryClient.invalidateQueries({ queryKey: ["equipment-detail", data.equipment.id] });
+      await queryClient.invalidateQueries({ queryKey: ["equipment-audit-history", data.equipment.id] });
     },
     onError: (error: ApiError) => {
       if (error.status === 409 && error.body?.equipment) {
@@ -762,24 +785,33 @@ export default function EquipmentPage() {
     onSuccess: async (data) => {
       setArchiveTarget(null);
       setArchiveReason("");
+      setArchiveError(null);
       setSelectedId(data.equipment.id);
       await queryClient.invalidateQueries({ queryKey: ["equipment"] });
       await queryClient.invalidateQueries({ queryKey: ["equipment-detail", data.equipment.id] });
+      await queryClient.invalidateQueries({ queryKey: ["equipment-audit-history", data.equipment.id] });
       toast({ title: "Ekipman arşivlendi" });
     },
-    onError: (error) => toast({ title: error.message, variant: "destructive" }),
+    onError: (error) => {
+      const childCount = error.body?.activeChildCount;
+      const message = childCount ? `${error.message} Aktif alt ekipman sayisi: ${childCount}.` : error.message;
+      setArchiveError(message);
+      toast({ title: message, variant: "destructive" });
+    },
   });
 
   const reactivateMutation = useMutation<EquipmentDetailResponse, ApiError, Equipment>({
     mutationFn: (equipment) => apiFetch<EquipmentDetailResponse>(token, `/api/equipment/${equipment.id}/reactivate${effectiveCompanyId ? `?companyId=${effectiveCompanyId}` : ""}`, {
       method: "POST",
-      body: JSON.stringify({ expectedEquipmentVersion: equipment.equipmentVersion, status: "active" }),
+      body: JSON.stringify({ expectedEquipmentVersion: equipment.equipmentVersion, status: reactivateStatus }),
     }),
     onSuccess: async (data) => {
       setReactivateTarget(null);
+      setReactivateStatus("active");
       setSelectedId(data.equipment.id);
       await queryClient.invalidateQueries({ queryKey: ["equipment"] });
       await queryClient.invalidateQueries({ queryKey: ["equipment-detail", data.equipment.id] });
+      await queryClient.invalidateQueries({ queryKey: ["equipment-audit-history", data.equipment.id] });
       toast({ title: "Ekipman yeniden aktifleştirildi" });
     },
     onError: (error) => toast({ title: error.message, variant: "destructive" }),
@@ -926,6 +958,19 @@ export default function EquipmentPage() {
     const missingCustom = (customDefinitionsQuery.data?.definitions ?? []).find((definition) => definition.isActive && definition.isRequired && !hasCustomValue(form.customValues[definition.code]));
     if (missingCustom) return `${missingCustom.label} zorunludur`;
     return null;
+  }
+
+  function lifecycleWarnings() {
+    const warnings: string[] = [];
+    const purchaseYear = form.purchaseDate ? Number(form.purchaseDate.slice(0, 4)) : null;
+    const commissioningYear = form.commissioningDate ? Number(form.commissioningDate.slice(0, 4)) : null;
+    const manufactureYear = form.manufactureYear.trim() ? Number(form.manufactureYear) : null;
+    const replacementYear = form.plannedReplacementYear.trim() ? Number(form.plannedReplacementYear) : null;
+    if (form.purchaseDate && form.commissioningDate && form.commissioningDate < form.purchaseDate) warnings.push("Devreye alma tarihi satın alma tarihinden önce görünüyor.");
+    if (manufactureYear !== null && purchaseYear !== null && purchaseYear < manufactureYear) warnings.push("Satın alma tarihi üretim yılından önce görünüyor.");
+    if (replacementYear !== null && manufactureYear !== null && replacementYear < manufactureYear) warnings.push("Planlanan yenileme yılı üretim yılından önce görünüyor.");
+    if (replacementYear !== null && commissioningYear !== null && replacementYear < commissioningYear) warnings.push("Planlanan yenileme yılı devreye alma yılından önce görünüyor.");
+    return warnings;
   }
 
   function submit(event: FormEvent) {
@@ -1105,12 +1150,12 @@ export default function EquipmentPage() {
                             </Button>
                           )}
                           {listQuery.data?.permissions.canArchive && equipment.status !== "archived" && (
-                            <Button variant="ghost" size="sm" onClick={() => dirty ? toast({ title: "Önce açık form değişikliklerini kaydedin veya sıfırlayın.", variant: "destructive" }) : setArchiveTarget(equipment)} aria-label={`${equipment.equipmentCode} arşivle`}>
+                            <Button variant="ghost" size="sm" onClick={() => dirty ? toast({ title: "Önce açık form değişikliklerini kaydedin veya sıfırlayın.", variant: "destructive" }) : (setArchiveError(null), setArchiveTarget(equipment))} aria-label={`${equipment.equipmentCode} arşivle`}>
                               <Archive className="h-4 w-4" />
                             </Button>
                           )}
                           {listQuery.data?.permissions.canArchive && equipment.status === "archived" && (
-                            <Button variant="ghost" size="sm" onClick={() => setReactivateTarget(equipment)} aria-label={`${equipment.equipmentCode} aktifleştir`}>
+                            <Button variant="ghost" size="sm" onClick={() => { setReactivateStatus("active"); setReactivateTarget(equipment); }} aria-label={`${equipment.equipmentCode} aktifleştir`}>
                               <RotateCcw className="h-4 w-4" />
                             </Button>
                           )}
@@ -1144,6 +1189,9 @@ export default function EquipmentPage() {
             meterName={meterName}
             sourceName={sourceName}
             groupName={groupName}
+            auditEvents={auditHistoryQuery.data?.items ?? []}
+            auditLoading={auditHistoryQuery.isLoading}
+            auditHasNext={auditHistoryQuery.data?.hasNext ?? false}
             onEdit={selectedDetail && selectedDetail.status !== "archived" ? () => openEdit(selectedDetail) : undefined}
           />
         </div>
@@ -1227,6 +1275,12 @@ export default function EquipmentPage() {
               <TextField id="equipment-manufacture-year" labelText="Üretim yılı" type="number" value={form.manufactureYear} onChange={(value) => patch("manufactureYear", value)} />
               <TextField id="equipment-life" labelText="Beklenen ömür" type="number" value={form.expectedLifeYears} onChange={(value) => patch("expectedLifeYears", value)} />
               <TextField id="equipment-replacement" labelText="Planlanan yenileme yılı" type="number" value={form.plannedReplacementYear} onChange={(value) => patch("plannedReplacementYear", value)} />
+              {lifecycleWarnings().length > 0 && (
+                <Alert data-testid="equipment-lifecycle-warnings" className="md:col-span-2">
+                  <AlertTitle>Yaşam döngüsü uyarısı</AlertTitle>
+                  <AlertDescription>{lifecycleWarnings().join(" ")}</AlertDescription>
+                </Alert>
+              )}
             </FormSection>
 
             <FormSection title="Kritiklik">
@@ -1270,13 +1324,17 @@ export default function EquipmentPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Ekipman arşivlensin mi?</AlertDialogTitle>
             <AlertDialogDescription>
-              {archiveTarget?.equipmentCode} - {archiveTarget?.name} kaydı korunacak, varsayılan listeden gizlenecek.
+              {archiveTarget?.equipmentCode} - {archiveTarget?.name} kaydı varsayılan listeden gizlenecek. Sayaç, enerji kaynağı, parent ve özel alan değerleri silinmez.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <Textarea value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} placeholder="Arşiv nedeni (opsiyonel)" />
+          {archiveError && <Alert variant="destructive"><AlertTitle>Arşivlenemedi</AlertTitle><AlertDescription>{archiveError}</AlertDescription></Alert>}
+          <div className="space-y-1">
+            <Label htmlFor="equipment-archive-reason">Arşiv nedeni *</Label>
+            <Textarea id="equipment-archive-reason" value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} maxLength={500} placeholder="Örn. ekipman devreden çıkarıldı" />
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Vazgeç</AlertDialogCancel>
-            <AlertDialogAction onClick={() => archiveTarget && archiveMutation.mutate(archiveTarget)}>Arşivle</AlertDialogAction>
+            <AlertDialogAction disabled={archiveReason.trim().length === 0 || archiveMutation.isPending} onClick={() => archiveTarget && archiveMutation.mutate(archiveTarget)}>Arşivle</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1285,11 +1343,20 @@ export default function EquipmentPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Ekipman yeniden aktifleştirilsin mi?</AlertDialogTitle>
-            <AlertDialogDescription>{reactivateTarget?.equipmentCode} - {reactivateTarget?.name} aktif duruma alınacak.</AlertDialogDescription>
+            <AlertDialogDescription>{reactivateTarget?.equipmentCode} - {reactivateTarget?.name} yeniden açılacak. İlişkiler otomatik değiştirilmez.</AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-1">
+            <Label>Hedef durum</Label>
+            <Select value={reactivateStatus} onValueChange={(value) => setReactivateStatus(value as Exclude<EquipmentStatus, "archived">)}>
+              <SelectTrigger data-testid="equipment-reactivate-status"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {STATUS_OPTIONS.filter(([value]) => value !== "archived").map(([value, text]) => <SelectItem key={value} value={value}>{text}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Vazgeç</AlertDialogCancel>
-            <AlertDialogAction onClick={() => reactivateTarget && reactivateMutation.mutate(reactivateTarget)}>Aktifleştir</AlertDialogAction>
+            <AlertDialogAction disabled={reactivateMutation.isPending} onClick={() => reactivateTarget && reactivateMutation.mutate(reactivateTarget)}>Aktifleştir</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1718,6 +1785,56 @@ function CustomFieldDetail({ customFields }: { customFields: EquipmentCustomFiel
   );
 }
 
+function EquipmentAuditHistory({ events, loading, hasNext }: { events: AuditEventRecord[]; loading: boolean; hasNext: boolean }) {
+  if (loading) return <Skeleton className="h-32 w-full" />;
+  return (
+    <div data-testid="equipment-audit-history">
+      <h4 className="mb-2 text-sm font-semibold">Değişiklik Geçmişi</h4>
+      {events.length === 0 ? (
+        <div className="rounded-md border p-3 text-sm text-muted-foreground">Bu ekipman için audit kaydı bulunamadı.</div>
+      ) : (
+        <div className="space-y-2">
+          {events.map((event) => (
+            <div key={event.id} data-testid="equipment-audit-event" className="rounded-md border p-3 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-medium">{auditActionLabel(event.action)}</div>
+                <div className="text-xs text-muted-foreground">{new Date(event.occurredAt).toLocaleString("tr-TR")}</div>
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">Kullanıcı rolü: {event.actorRole ?? "system"}</div>
+              <div className="mt-2 text-xs">{auditSummary(event)}</div>
+            </div>
+          ))}
+          {hasNext && <div className="text-xs text-muted-foreground">Daha eski kayıtlar genel audit ekranında filtrelenebilir.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function auditActionLabel(action: string) {
+  const labels: Record<string, string> = {
+    "equipment.created": "Oluşturuldu",
+    "equipment.updated": "Güncellendi",
+    "equipment.archived": "Arşivlendi",
+    "equipment.reactivated": "Yeniden aktifleştirildi",
+  };
+  return labels[action] ?? action;
+}
+
+function auditSummary(event: AuditEventRecord) {
+  const changedFields = Array.isArray(event.changes?.changedFields) ? event.changes.changedFields : [];
+  const version = event.changes?.previousVersion !== undefined && event.changes?.newVersion !== undefined
+    ? `Sürüm ${event.changes.previousVersion} -> ${event.changes.newVersion}. `
+    : "";
+  const parts: string[] = [];
+  if (changedFields.length > 0) parts.push(`Değişen alanlar: ${changedFields.join(", ")}.`);
+  if (event.metadata?.previousStatus || event.metadata?.newStatus) parts.push(`Durum: ${event.metadata.previousStatus ?? "-"} -> ${event.metadata.newStatus ?? "-"}.`);
+  if (event.metadata?.parentChange) parts.push(`Parent: ${event.metadata.parentChange.before ?? "yok"} -> ${event.metadata.parentChange.after ?? "yok"}.`);
+  if (Array.isArray(event.metadata?.customFieldCodes) && event.metadata.customFieldCodes.length > 0) parts.push(`Özel alanlar: ${event.metadata.customFieldCodes.join(", ")}.`);
+  if (event.metadata?.reason) parts.push(`Neden: ${event.metadata.reason}.`);
+  return `${version}${parts.join(" ") || "Özet alanı yok."}`;
+}
+
 function formatCustomValue(value: unknown) {
   if (value === null || value === undefined || value === "") return "—";
   if (Array.isArray(value)) return value.join(", ");
@@ -1725,7 +1842,7 @@ function formatCustomValue(value: unknown) {
   return String(value);
 }
 
-function EquipmentDetail({ detail, loading, unitName, subUnitName, meterName, sourceName, groupName, onEdit }: {
+function EquipmentDetail({ detail, loading, unitName, subUnitName, meterName, sourceName, groupName, auditEvents, auditLoading, auditHasNext, onEdit }: {
   detail?: EquipmentDetailResponse;
   loading: boolean;
   unitName: Map<number, string>;
@@ -1733,6 +1850,9 @@ function EquipmentDetail({ detail, loading, unitName, subUnitName, meterName, so
   meterName: Map<number, string>;
   sourceName: Map<number, string>;
   groupName: Map<number, string>;
+  auditEvents: AuditEventRecord[];
+  auditLoading: boolean;
+  auditHasNext: boolean;
   onEdit?: () => void;
 }) {
   if (loading) return <Skeleton className="h-96 w-full" />;
@@ -1762,8 +1882,17 @@ function EquipmentDetail({ detail, loading, unitName, subUnitName, meterName, so
         <div className="grid grid-cols-2 gap-3">
           <InfoLine labelText="Kategori" value={label(CATEGORY_OPTIONS, equipment.category)} />
           <InfoLine labelText="Sürüm" value={equipment.equipmentVersion} />
+          <InfoLine labelText="Yaşam durumu" value={label(STATUS_OPTIONS, equipment.status)} />
+          <InfoLine labelText="Operasyon durumu" value={label(OPERATIONAL_OPTIONS, equipment.operationalStatus)} />
           <InfoLine labelText="Unit" value={unitName.get(equipment.unitId) ?? equipment.unitId} />
           <InfoLine labelText="SubUnit" value={equipment.subUnitId ? subUnitName.get(equipment.subUnitId) ?? equipment.subUnitId : "—"} />
+        </div>
+        {equipment.status === "archived" && <Alert><AlertTitle>Salt okunur</AlertTitle><AlertDescription>Arşivli ekipman düzenlenemez; ilişkiler ve geçmiş korunur.</AlertDescription></Alert>}
+        <div className="grid grid-cols-2 gap-3 rounded-md border p-3">
+          <InfoLine labelText="Parent" value={detail.parentSummary ? `${detail.parentSummary.equipmentCode} - ${detail.parentSummary.name}` : "—"} />
+          <InfoLine labelText="Aktif alt ekipman" value={detail.childSummary?.activeChildCount ?? 0} />
+          <InfoLine labelText="Üretim yılı" value={equipment.manufactureYear ?? "—"} />
+          <InfoLine labelText="Planlanan yenileme" value={equipment.plannedReplacementYear ?? "—"} />
         </div>
         <div className="grid grid-cols-2 gap-3 rounded-md border p-3">
           <InfoLine labelText="Güç" value={powerSummary(equipment)} />
@@ -1784,9 +1913,12 @@ function EquipmentDetail({ detail, loading, unitName, subUnitName, meterName, so
         <div className="grid grid-cols-2 gap-3">
           <InfoLine labelText="Satın alma" value={equipment.purchaseDate ?? "—"} />
           <InfoLine labelText="Devreye alma" value={equipment.commissioningDate ?? "—"} />
+          <InfoLine labelText="Beklenen ömür" value={equipment.expectedLifeYears !== null ? `${equipment.expectedLifeYears} yıl` : "—"} />
+          <InfoLine labelText="Arşiv tarihi" value={equipment.archivedAt ? new Date(equipment.archivedAt).toLocaleString("tr-TR") : "—"} />
           <InfoLine labelText="Kritik" value={equipment.isCritical ? <span className="inline-flex items-center gap-1 text-amber-400"><CheckCircle2 className="h-3.5 w-3.5" /> Evet</span> : "Hayır"} />
           <InfoLine labelText="Enerji yoğun" value={equipment.isEnergyIntensive ? "Evet" : "Hayır"} />
         </div>
+        <EquipmentAuditHistory events={auditEvents} loading={auditLoading} hasNext={auditHasNext} />
         <div className="space-y-2 text-sm">
           <InfoLine labelText="Teknik notlar" value={equipment.technicalNotes ?? "—"} />
           <InfoLine labelText="Bakım notları" value={equipment.maintenanceNotes ?? "—"} />

@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { and, count, desc, eq, ilike, inArray, or, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, isNull, ne, or, type SQL } from "drizzle-orm";
 import {
   db,
   energySourcesTable,
@@ -65,6 +65,7 @@ type SourceLinkDetail = SourceLinkRow & {
   subUnitName?: string | null;
   isActive?: boolean;
 };
+type DependencyWarning = { code: string; count?: number; ids?: number[] };
 
 const EQUIPMENT_MUTABLE_FIELDS = [
   "subUnitId",
@@ -336,6 +337,45 @@ function createValues(data: EquipmentCreateRequest, companyId: number, unitId: n
   } satisfies typeof equipmentTable.$inferInsert;
 }
 
+function dateYear(value: string | null | undefined) {
+  if (!value) return null;
+  const match = /^(\d{4})-\d{2}-\d{2}$/.exec(value);
+  return match ? Number(match[1]) : null;
+}
+
+function validateLifecycleFields(values: {
+  status?: string | null;
+  operationalStatus?: string | null;
+  purchaseDate?: string | null;
+  commissioningDate?: string | null;
+  manufactureYear?: number | null;
+  expectedLifeYears?: number | null;
+  plannedReplacementYear?: number | null;
+}) {
+  const currentYear = new Date().getUTCFullYear();
+  if (values.status === "archived" && values.operationalStatus === "running") {
+    throw new EquipmentScopeError(400, "Arsivli ekipman running operasyon durumunda olamaz");
+  }
+  if (values.manufactureYear !== null && values.manufactureYear !== undefined) {
+    if (values.manufactureYear < 1900 || values.manufactureYear > currentYear + 1) {
+      throw new EquipmentScopeError(400, "Uretim yili makul aralikta olmalidir");
+    }
+  }
+  const purchaseYear = dateYear(values.purchaseDate);
+  const commissioningYear = dateYear(values.commissioningDate);
+  if (values.manufactureYear !== null && values.manufactureYear !== undefined && purchaseYear !== null && purchaseYear < values.manufactureYear) {
+    throw new EquipmentScopeError(400, "Satin alma tarihi uretim yilindan once olamaz");
+  }
+  if (values.plannedReplacementYear !== null && values.plannedReplacementYear !== undefined) {
+    if (values.manufactureYear !== null && values.manufactureYear !== undefined && values.plannedReplacementYear < values.manufactureYear) {
+      throw new EquipmentScopeError(400, "Planlanan yenileme yili uretim yilindan once olamaz");
+    }
+    if (commissioningYear !== null && values.plannedReplacementYear < commissioningYear) {
+      throw new EquipmentScopeError(400, "Planlanan yenileme yili devreye alma yilindan once olamaz");
+    }
+  }
+}
+
 async function validateUnit(scope: Awaited<ReturnType<typeof resolveCompanyScope>>, unitId: number) {
   if (scope.standardUnitId !== null && unitId !== scope.standardUnitId) {
     throw new EquipmentScopeError(403, "Yetki yok");
@@ -390,7 +430,7 @@ async function validateRelations(params: {
       unitId: equipmentTable.unitId,
       status: equipmentTable.status,
       parentEquipmentId: equipmentTable.parentEquipmentId,
-    }).from(equipmentTable).where(eq(equipmentTable.id, parentEquipmentId)).limit(1);
+    }).from(equipmentTable).where(eq(equipmentTable.id, parentEquipmentId)).limit(1).for("update");
     if (!parent || parent.companyId !== companyId || parent.unitId !== unitId) {
       throw new EquipmentScopeError(404, "Parent ekipman bulunamadi");
     }
@@ -433,6 +473,94 @@ async function validateRelations(params: {
       }
     }
   }
+}
+
+async function activeChildDependency(tx: Tx | typeof db, equipmentId: number, companyId: number) {
+  const children = await tx.select({
+    id: equipmentTable.id,
+    equipmentCode: equipmentTable.equipmentCode,
+    name: equipmentTable.name,
+    status: equipmentTable.status,
+  })
+    .from(equipmentTable)
+    .where(and(eq(equipmentTable.companyId, companyId), eq(equipmentTable.parentEquipmentId, equipmentId), ne(equipmentTable.status, "archived")))
+    .orderBy(equipmentTable.id)
+    .limit(6)
+    .for("update");
+  if (children.length === 0) return null;
+  const [{ value }] = await tx.select({ value: count() }).from(equipmentTable)
+    .where(and(eq(equipmentTable.companyId, companyId), eq(equipmentTable.parentEquipmentId, equipmentId), ne(equipmentTable.status, "archived")));
+  return {
+    status: "active-children" as const,
+    activeChildCount: value,
+    children: children.slice(0, 5),
+  };
+}
+
+async function parentSummary(equipment: EquipmentRow) {
+  if (equipment.parentEquipmentId === null) return null;
+  const [parent] = await db.select({
+    id: equipmentTable.id,
+    equipmentCode: equipmentTable.equipmentCode,
+    name: equipmentTable.name,
+    status: equipmentTable.status,
+  })
+    .from(equipmentTable)
+    .where(and(eq(equipmentTable.companyId, equipment.companyId), eq(equipmentTable.id, equipment.parentEquipmentId)))
+    .limit(1);
+  return parent ?? null;
+}
+
+async function childSummary(equipment: EquipmentRow) {
+  const children = await db.select({
+    id: equipmentTable.id,
+    equipmentCode: equipmentTable.equipmentCode,
+    name: equipmentTable.name,
+    status: equipmentTable.status,
+  })
+    .from(equipmentTable)
+    .where(and(eq(equipmentTable.companyId, equipment.companyId), eq(equipmentTable.parentEquipmentId, equipment.id), ne(equipmentTable.status, "archived")))
+    .orderBy(equipmentTable.id)
+    .limit(5);
+  const [{ value }] = await db.select({ value: count() }).from(equipmentTable)
+    .where(and(eq(equipmentTable.companyId, equipment.companyId), eq(equipmentTable.parentEquipmentId, equipment.id), ne(equipmentTable.status, "archived")));
+  return { activeChildCount: value, children };
+}
+
+async function validateStoredLinkIntegrity(tx: Tx, equipment: EquipmentRow): Promise<DependencyWarning[]> {
+  const [meterLinks, sourceLinks] = await Promise.all([
+    tx.select().from(equipmentMeterLinksTable).where(eq(equipmentMeterLinksTable.equipmentId, equipment.id)),
+    tx.select().from(equipmentEnergySourceLinksTable).where(eq(equipmentEnergySourceLinksTable.equipmentId, equipment.id)),
+  ]);
+  const warnings: DependencyWarning[] = [];
+  if (meterLinks.length > 0) {
+    const meters = await tx.select({ id: metersTable.id, companyId: metersTable.companyId, unitId: metersTable.unitId })
+      .from(metersTable)
+      .where(inArray(metersTable.id, meterLinks.map((link) => link.meterId)));
+    const byId = new Map(meters.map((meter) => [meter.id, meter]));
+    for (const link of meterLinks) {
+      const meter = byId.get(link.meterId);
+      if (!meter || meter.companyId !== equipment.companyId || meter.unitId !== equipment.unitId) {
+        throw new EquipmentScopeError(409, "Ekipman sayac iliskisi sirket/birim kapsami ile uyumsuz");
+      }
+    }
+  }
+  if (sourceLinks.length > 0) {
+    const sources = await tx.select({ id: energySourcesTable.id, companyId: energySourcesTable.companyId, unitId: energySourcesTable.unitId, active: energySourcesTable.active })
+      .from(energySourcesTable)
+      .where(inArray(energySourcesTable.id, sourceLinks.map((link) => link.energySourceId)));
+    const byId = new Map(sources.map((source) => [source.id, source]));
+    const inactive: number[] = [];
+    for (const link of sourceLinks) {
+      const source = byId.get(link.energySourceId);
+      if (!source || source.companyId !== equipment.companyId || source.unitId !== equipment.unitId) {
+        throw new EquipmentScopeError(409, "Ekipman enerji kaynagi iliskisi sirket/birim kapsami ile uyumsuz");
+      }
+      if (source.active === false) inactive.push(source.id);
+    }
+    if (inactive.length > 0) warnings.push({ code: "INACTIVE_ENERGY_SOURCE_LINKS", count: inactive.length, ids: inactive.slice(0, 5) });
+  }
+  return warnings;
 }
 
 async function assertNoParentCycle(tx: Tx | typeof db, equipmentId: number, candidateParentId: number) {
@@ -571,6 +699,8 @@ async function detailResponse(equipment: EquipmentRow, scope: Awaited<ReturnType
     equipment: serializeEquipment(equipment),
     meterLinks: links.meterLinks.map(serializeMeterLink),
     energySourceLinks: links.energySourceLinks.map(serializeSourceLink),
+    parentSummary: await parentSummary(equipment),
+    childSummary: await childSummary(equipment),
     customFields: definitions.map((definition) => ({
       definitionId: definition.id,
       code: definition.code,
@@ -608,6 +738,8 @@ router.get("/equipment", requireAuth, async (req, res) => {
     if (query.category !== undefined) conditions.push(eq(equipmentTable.category, query.category));
     if (query.status !== undefined) conditions.push(eq(equipmentTable.status, query.status));
     if (query.energyUseGroupId !== undefined) conditions.push(eq(equipmentTable.energyUseGroupId, query.energyUseGroupId));
+    if (query.parentEquipmentId !== undefined) conditions.push(eq(equipmentTable.parentEquipmentId, query.parentEquipmentId));
+    if (query.parentless === true) conditions.push(isNull(equipmentTable.parentEquipmentId));
     if (!query.includeArchived && query.status === undefined) conditions.push(or(eq(equipmentTable.status, "active"), eq(equipmentTable.status, "standby"), eq(equipmentTable.status, "maintenance"), eq(equipmentTable.status, "faulty"), eq(equipmentTable.status, "out_of_service"))!);
     if (query.search) {
       const pattern = `%${query.search.replace(/[%_]/g, "\\$&")}%`;
@@ -688,6 +820,7 @@ router.post("/equipment", requireAuth, async (req, res) => {
       return;
     }
     await validateUnit(scope, unitId);
+    validateLifecycleFields(data);
 
     const result = await db.transaction(async (tx) => {
       await validateRelations({
@@ -786,6 +919,7 @@ router.patch("/equipment/:id", requireAuth, async (req, res) => {
       const effectiveSubUnitId = data.subUnitId !== undefined ? data.subUnitId : existing.subUnitId;
       const effectiveParentId = data.parentEquipmentId !== undefined ? data.parentEquipmentId : existing.parentEquipmentId;
       const effectiveEnergyUseGroupId = data.energyUseGroupId !== undefined ? data.energyUseGroupId : existing.energyUseGroupId;
+      validateLifecycleFields({ ...existing, ...data });
       await validateRelations({
         tx,
         companyId: scope.companyId,
@@ -843,6 +977,10 @@ router.patch("/equipment/:id", requireAuth, async (req, res) => {
         },
         metadata: {
           equipmentCode: updated.equipmentCode,
+          parentChange: existing.parentEquipmentId !== updated.parentEquipmentId ? { before: existing.parentEquipmentId, after: updated.parentEquipmentId } : undefined,
+          statusChange: existing.status !== updated.status ? { before: existing.status, after: updated.status } : undefined,
+          operationalStatusChange: existing.operationalStatus !== updated.operationalStatus ? { before: existing.operationalStatus, after: updated.operationalStatus } : undefined,
+          lifecycleFields: changedFields.filter((field) => ["purchaseDate", "commissioningDate", "manufactureYear", "expectedLifeYears", "plannedReplacementYear"].includes(field)),
           meterIdsBefore: currentLinks[0].map((link) => link.meterId),
           meterIdsAfter: data.meterLinks?.map((link) => link.meterId) ?? undefined,
           energySourceIdsBefore: currentLinks[1].map((link) => link.energySourceId),
@@ -899,6 +1037,11 @@ async function equipmentStatusMutation(req: Request, res: Response, mode: "archi
     if (existing.equipmentVersion !== parsed.data.expectedEquipmentVersion) return { status: "conflict" as const, equipment: existing };
     if (mode === "archive" && existing.status === "archived") return { status: "already-archived" as const, equipment: existing };
     if (mode === "reactivate" && existing.status !== "archived") return { status: "not-archived" as const, equipment: existing };
+    let dependencyWarnings: DependencyWarning[] = [];
+    if (mode === "archive") {
+      const childDependency = await activeChildDependency(tx, existing.id, existing.companyId);
+      if (childDependency) return childDependency;
+    }
     if (mode === "reactivate") {
       await validateUnit(scope, existing.unitId);
       await validateRelations({
@@ -912,6 +1055,8 @@ async function equipmentStatusMutation(req: Request, res: Response, mode: "archi
         meterLinks: undefined,
         energySourceLinks: undefined,
       });
+      dependencyWarnings = await validateStoredLinkIntegrity(tx, existing);
+      validateLifecycleFields({ ...existing, status: (payload as EquipmentReactivateRequest).status });
     }
     const now = new Date();
     const [updated] = await tx.update(equipmentTable).set({
@@ -941,6 +1086,8 @@ async function equipmentStatusMutation(req: Request, res: Response, mode: "archi
         reason: mode === "archive" ? (payload as EquipmentArchiveRequest).reason ?? null : null,
         previousStatus: existing.status,
         newStatus: updated.status,
+        operationalStatus: updated.operationalStatus,
+        dependencyWarnings,
       },
     });
     return { status: "ok" as const, equipment: updated };
@@ -959,6 +1106,15 @@ async function equipmentStatusMutation(req: Request, res: Response, mode: "archi
   }
   if (result.status === "not-archived") {
     res.status(409).json({ error: "Ekipman arsivli degil", equipment: serializeEquipment(result.equipment) });
+    return;
+  }
+  if (result.status === "active-children") {
+    res.status(409).json({
+      error: "Bu ekipmana bagli aktif alt ekipmanlar bulunuyor.",
+      code: "EQUIPMENT_HAS_ACTIVE_CHILDREN",
+      activeChildCount: result.activeChildCount,
+      children: result.children,
+    });
     return;
   }
   res.json(await detailResponse(result.equipment, scope));

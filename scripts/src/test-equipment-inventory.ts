@@ -151,6 +151,14 @@ async function archiveEquipment(baseUrl: string, token: string, id: number, expe
   });
 }
 
+async function archiveEquipmentWithBody(baseUrl: string, token: string, id: number, body: Record<string, unknown>, companyId?: number) {
+  const query = companyId === undefined ? "" : `?companyId=${companyId}`;
+  return api(baseUrl, token, `/api/equipment/${id}/archive${query}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 async function reactivateEquipment(baseUrl: string, token: string, id: number, expectedEquipmentVersion: number, companyId?: number) {
   const query = companyId === undefined ? "" : `?companyId=${companyId}`;
   return api(baseUrl, token, `/api/equipment/${id}/reactivate${query}`, {
@@ -311,6 +319,26 @@ async function main() {
     assert(created.meterLinks.length === 1 && created.energySourceLinks.length === 1, "Linkler olusmadi.");
     assertions += 4;
 
+    const validLifecycle = await postEquipment(server.baseUrl, adminToken, {
+      ...baseCreate,
+      equipmentCode: `EQ3D5-LIFE-OK-${suffix}`,
+      purchaseDate: "2020-02-29",
+      commissioningDate: "2030-01-15",
+      manufactureYear: 2020,
+      expectedLifeYears: 0,
+      plannedReplacementYear: 2031,
+    });
+    await expectStatus(validLifecycle, 201, "Valid lifecycle dates ve future commissioning desteklenmeli");
+    const validLifecycleBody = await json(validLifecycle);
+    assert(validLifecycleBody.equipment.purchaseDate === "2020-02-29" && validLifecycleBody.equipment.commissioningDate === "2030-01-15", "Date-only degerler korunmadi.");
+    const invalidManufactureYear = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D5-LIFE-MFG-${suffix}`, manufactureYear: 3000 });
+    await expectStatus(invalidManufactureYear, 400, "Makul olmayan uretim yili reddedilmeli");
+    const replacementBeforeManufacture = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D5-LIFE-REPL-MFG-${suffix}`, manufactureYear: 2020, plannedReplacementYear: 2019 });
+    await expectStatus(replacementBeforeManufacture, 400, "Yenileme yili uretim yilindan once olamaz");
+    const replacementBeforeCommissioning = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D5-LIFE-REPL-COM-${suffix}`, commissioningDate: "2025-01-01", plannedReplacementYear: 2024 });
+    await expectStatus(replacementBeforeCommissioning, 400, "Yenileme yili devreye alma yilindan once olamaz");
+    assertions += 5;
+
     const relationCreateRes = await postEquipment(server.baseUrl, adminToken, {
       ...baseCreate,
       equipmentCode: `EQ3D3-REL-${suffix}`,
@@ -457,7 +485,17 @@ async function main() {
     await expectStatus(cycleRes, 400, "Parent cycle reddedilmeli");
     const selfParent = await patchEquipment(server.baseUrl, adminToken, child.equipment.id, { expectedEquipmentVersion: 1, parentEquipmentId: child.equipment.id });
     await expectStatus(selfParent, 400, "Self parent reddedilmeli");
-    assertions += 4;
+    const parentArchiveWithActiveChild = await archiveEquipment(server.baseUrl, adminToken, parent.equipment.id, 1);
+    await expectStatus(parentArchiveWithActiveChild, 409, "Aktif child varken parent archive reddedilmeli");
+    const parentArchiveBody = await json(parentArchiveWithActiveChild);
+    assert(parentArchiveBody.code === "EQUIPMENT_HAS_ACTIVE_CHILDREN" && parentArchiveBody.activeChildCount >= 1, "Child dependency response guvenli ozet donmeli.");
+    const childArchive = await archiveEquipment(server.baseUrl, adminToken, child.equipment.id, 1);
+    await expectStatus(childArchive, 200, "Child archive basarili olmali");
+    const parentArchiveAfterChild = await archiveEquipment(server.baseUrl, adminToken, parent.equipment.id, 1);
+    await expectStatus(parentArchiveAfterChild, 200, "Child arsivlendikten sonra parent archive basarili olmali");
+    const parentReactivate = await reactivateEquipment(server.baseUrl, adminToken, parent.equipment.id, (await json(parentArchiveAfterChild)).equipment.equipmentVersion);
+    await expectStatus(parentReactivate, 200, "Parent reactivate child kaydini degistirmemeli");
+    assertions += 9;
 
     const archivedParentRes = await postEquipment(server.baseUrl, adminToken, { ...baseCreate, equipmentCode: `EQ3D1-ARCH-PARENT-${suffix}`, name: "[E2E] Archived parent" });
     await expectStatus(archivedParentRes, 201, "Archived parent create");
@@ -470,6 +508,8 @@ async function main() {
 
     const standardArchive = await archiveEquipment(server.baseUrl, standardToken, equipmentId, latestDetail.equipment.equipmentVersion);
     await expectStatus(standardArchive, 403, "Standard arsivleyememeli");
+    const archiveWithoutReason = await archiveEquipmentWithBody(server.baseUrl, adminToken, equipmentId, { expectedEquipmentVersion: latestDetail.equipment.equipmentVersion });
+    await expectStatus(archiveWithoutReason, 400, "Archive reason zorunlu olmali");
     const archiveRes = await archiveEquipment(server.baseUrl, adminToken, equipmentId, latestDetail.equipment.equipmentVersion);
     await expectStatus(archiveRes, 200, "Admin archive");
     const archived = await json(archiveRes);
@@ -484,7 +524,7 @@ async function main() {
     await expectStatus(reactivateRes, 200, "Admin reactivate");
     const reactivated = await json(reactivateRes);
     assert(reactivated.equipment.status === "active" && reactivated.equipment.archivedAt === null, "Reactivate metadata temizlenmedi.");
-    assertions += 7;
+    assertions += 8;
 
     const deleteEquipment = await api(server.baseUrl, adminToken, `/api/equipment/${equipmentId}`, { method: "DELETE" });
     await expectStatus(deleteEquipment, 404, "Equipment hard delete endpoint olmamali");
@@ -505,6 +545,24 @@ async function main() {
       assert((auditActions.get(action) ?? 0) >= 1, `${action} audit yok.`);
       assertions += 1;
     }
+    const standardAudit = await api(server.baseUrl, standardToken, `/api/audit-events?entityType=equipment&entityId=${equipmentId}&pageSize=5`);
+    await expectStatus(standardAudit, 200, "Standard kendi ekipman audit gecmisini gorebilmeli");
+    const standardBAudit = await api(server.baseUrl, standardBToken, `/api/audit-events?entityType=equipment&entityId=${equipmentId}&pageSize=5`);
+    await expectStatus(standardBAudit, 404, "Standard baska tenant equipment audit gorememeli");
+    const failedAuditRows = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM audit_events
+       WHERE entity_type='equipment' AND entity_id=$1 AND metadata_json::text LIKE '%stale%'`,
+      [String(equipmentId)],
+    );
+    assert(Number(failedAuditRows.rows[0]?.count ?? 0) === 0, "Basarisiz mutation audit uretmemeli.");
+    const sensitiveAudit = await pool.query<{ payload: string }>(
+      `SELECT coalesce(changes_json::text, '') || coalesce(metadata_json::text, '') AS payload
+       FROM audit_events
+       WHERE entity_type='equipment' AND entity_id=$1`,
+      [String(equipmentId)],
+    );
+    assert(sensitiveAudit.rows.every((row) => !row.payload.includes("Main pump updated") && !row.payload.includes("serialNumber")), "Audit hassas serbest metin veya serial raw deger sizdirmemeli.");
+    assertions += 4;
 
     console.log(JSON.stringify({ ok: true, assertions }, null, 2));
   } finally {
