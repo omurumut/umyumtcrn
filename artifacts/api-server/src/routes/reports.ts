@@ -46,6 +46,10 @@ import {
   endOfYearEffectiveDate,
   type TechnicalProfileReportContext,
 } from "../lib/unit-technical-profile-effective.js";
+import {
+  buildEquipmentInventoryContext,
+  toEquipmentReportSnapshot,
+} from "../lib/equipment-inventory-context.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -112,6 +116,33 @@ function technicalProfileReportContextHtml(context: TechnicalProfileReportContex
     ${fieldRows
       ? `<table><tr><th>Alan</th><th>Deger</th></tr>${fieldRows}</table>`
       : `<div class="warning-box">Yayimlanmis snapshot bulundu ancak rapora uygun dolu teknik profil alani yok.</div>`}`;
+}
+
+function equipmentInventoryReportContextHtml(context: ReturnType<typeof toEquipmentReportSnapshot>): string {
+  const rows = context.keyEquipment
+    .map((item) => `<tr>
+      <td>${escapeHtml(item.equipmentCode)}</td>
+      <td>${escapeHtml(item.name)}</td>
+      <td>${escapeHtml(item.category)}</td>
+      <td>${escapeHtml(item.unitName ?? "-")}</td>
+      <td style="text-align:center">${item.isCritical ? "Evet" : "Hayir"}</td>
+      <td style="text-align:right">${item.installedPowerKw !== null ? item.installedPowerKw.toLocaleString("tr-TR") : "-"}</td>
+      <td style="text-align:center">${item.meterCount}</td>
+      <td style="text-align:center">${item.energySourceCount}</td>
+    </tr>`)
+    .join("");
+  return `<h2>Enerji Tuketen Ekipman Envanteri</h2>
+    <div class="meta-grid">
+      <div class="meta-item"><div class="meta-label">Aktif Ekipman</div><div class="meta-value">${context.scope.activeEquipment}</div></div>
+      <div class="meta-item"><div class="meta-label">Kritik</div><div class="meta-value">${context.scope.criticalEquipment}</div></div>
+      <div class="meta-item"><div class="meta-label">Enerji Yogun</div><div class="meta-value">${context.scope.energyIntensiveEquipment}</div></div>
+      <div class="meta-item"><div class="meta-label">Birincil Sayac</div><div class="meta-value">${context.coverage.withPrimaryMeter}</div></div>
+      <div class="meta-item"><div class="meta-label">Enerji Kaynagi</div><div class="meta-value">${context.coverage.withAnyEnergySource}</div></div>
+      <div class="meta-item"><div class="meta-label">Kurulu Guc</div><div class="meta-value">${context.aggregates.installedPowerKw !== null ? `${context.aggregates.installedPowerKw.toLocaleString("tr-TR")} kW` : "-"}</div></div>
+    </div>
+    ${context.warnings.length > 0 ? `<div class="warning-box">Kaynak notlari: ${escapeHtml(context.warnings.slice(0, 4).join(", "))}</div>` : ""}
+    ${rows ? `<table><tr><th>Kod</th><th>Ad</th><th>Kategori</th><th>Birim</th><th>Kritik</th><th style="text-align:right">Kurulu Guc kW</th><th>Sayac</th><th>Kaynak</th></tr>${rows}</table>` : `<div class="warning-box">Kapsamda rapora eklenebilecek aktif ekipman bulunamadi.</div>`}
+    <p style="font-size:11px;color:#64748b">Bu bolum mevcut ekipman envanterinden uretilen ozet baglamdir; seri numarasi, varlik kodu, notlar ve uzun ozel alanlar rapora alinmaz.</p>`;
 }
 
 function parsePositiveInteger(value: unknown, field: string): number | undefined {
@@ -1918,6 +1949,12 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       unitId: baseline.unitId,
       effectiveDate: endOfYearEffectiveDate(year),
     });
+    const equipmentInventory = toEquipmentReportSnapshot(await buildEquipmentInventoryContext({
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      effectiveDate: endOfYearEffectiveDate(year),
+      itemLimit: 10,
+    }));
     const snapshot = buildEnergyPerformanceReportSnapshot({
       effective: effectiveSettings,
       companyId: effectiveCompanyId,
@@ -1932,6 +1969,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       generatedBy: req.user?.userId ?? null,
       hasModelVariables: bvars.length > 0,
       technicalProfile: technicalProfileContext,
+      equipmentInventory,
     });
     snapshotForFailure = snapshot;
     const [snapshotRecord] = await db.insert(reportGenerationSnapshotsTable).values({
@@ -1977,6 +2015,14 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
         snapshotId: snapshot.technicalProfile.snapshotId,
         snapshotNumber: snapshot.technicalProfile.snapshotNumber,
         warning: snapshot.technicalProfile.warning,
+      },
+      equipmentInventory: {
+        readinessStatus: snapshot.equipmentInventory.readiness.status,
+        activeEquipment: snapshot.equipmentInventory.scope.activeEquipment,
+        criticalEquipment: snapshot.equipmentInventory.scope.criticalEquipment,
+        energyIntensiveEquipment: snapshot.equipmentInventory.scope.energyIntensiveEquipment,
+        includedCount: snapshot.equipmentInventory.source.includedCount,
+        warnings: snapshot.equipmentInventory.warnings,
       },
       sectionCodes: snapshot.sections.filter((section) => section.visibilityResult).map((section) => section.code),
       requestOverrideUsed: false,
@@ -2156,6 +2202,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   </div>
 
   ${technicalProfileReportContextHtml(snapshot.technicalProfile)}
+  ${equipmentInventoryReportContextHtml(snapshot.equipmentInventory)}
 
   <h2>${sectionTitle("regression_model", "Regresyon Modeli")}</h2>
   <div class="formula-box">${formulaTextHtml}</div>

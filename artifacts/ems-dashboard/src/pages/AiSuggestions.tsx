@@ -42,6 +42,26 @@ interface TechnicalProfileReadiness {
   note: string;
 }
 
+interface EquipmentInventoryReadiness {
+  status: "ready" | "partial" | "insufficient" | "not_applicable";
+  ready: boolean;
+  activeEquipment: number;
+  coverage: {
+    withAnyMeter: number;
+    withAnyEnergySource: number;
+    withTechnicalCapacity: number;
+    criticalOrEnergyIntensive: number;
+  };
+  warnings: string[];
+  note: string;
+  source: {
+    effectiveDate: string;
+    aggregateSourceCount: number;
+    sourcePolicy: string;
+    includedCount: number;
+  };
+}
+
 function TechnicalProfileReadinessCard({ readiness }: { readiness: TechnicalProfileReadiness | undefined }) {
   if (!readiness) return null;
   return (
@@ -87,6 +107,51 @@ function TechnicalProfileReadinessCard({ readiness }: { readiness: TechnicalProf
   );
 }
 
+function EquipmentReadinessCard({ readiness }: { readiness: EquipmentInventoryReadiness | undefined }) {
+  if (!readiness) return null;
+  return (
+    <Card data-testid="ai-equipment-readiness">
+      <CardContent className="p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 ${readiness.ready ? "bg-teal-500/10" : "bg-amber-500/10"}`}>
+              {readiness.ready ? <CheckCircle2 className="h-4 w-4 text-teal-400" /> : <Info className="h-4 w-4 text-amber-400" />}
+            </div>
+            <div>
+              <p className="text-sm font-medium">Ekipman Envanteri AI Baglami</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{readiness.note}</p>
+            </div>
+          </div>
+          <Badge variant="outline" className={readiness.ready ? "border-teal-600/30 text-teal-400" : "border-amber-600/30 text-amber-400"}>
+            {readiness.status}
+          </Badge>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-xs">
+          <div>
+            <p className="text-muted-foreground">Aktif ekipman</p>
+            <p className="font-medium">{readiness.activeEquipment}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Sayac iliskisi</p>
+            <p className="font-medium">{readiness.coverage.withAnyMeter}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Enerji kaynagi</p>
+            <p className="font-medium">{readiness.coverage.withAnyEnergySource}</p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Teknik kapasite</p>
+            <p className="font-medium">{readiness.coverage.withTechnicalCapacity}</p>
+          </div>
+        </div>
+        {readiness.warnings.length > 0 && (
+          <p className="text-xs text-amber-400 mt-3">{readiness.warnings[0]}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AiSuggestions() {
   const { year } = useYear();
   const { unitId } = useUnit();
@@ -115,6 +180,7 @@ export default function AiSuggestions() {
 
   const suggestions = getSuggestions.data?.suggestions ?? [];
   const technicalProfileReadiness = (getSuggestions.data as any)?.technicalProfileReadiness as TechnicalProfileReadiness | undefined;
+  const equipmentInventoryReadiness = (getSuggestions.data as any)?.equipmentInventoryReadiness as EquipmentInventoryReadiness | undefined;
   const totalSavingKwh = suggestions.reduce((a, s) => a + (s.potentialSavingKwh ?? 0), 0);
   const errorMessage = getSuggestions.error instanceof Error
     ? getSuggestions.error.message
@@ -159,6 +225,9 @@ export default function AiSuggestions() {
 
       {triggered && !getSuggestions.isPending && (
         <TechnicalProfileReadinessCard readiness={technicalProfileReadiness} />
+      )}
+      {triggered && !getSuggestions.isPending && (
+        <EquipmentReadinessCard readiness={equipmentInventoryReadiness} />
       )}
 
       {triggered && !getSuggestions.isPending && suggestions.length > 0 && (

@@ -15,7 +15,7 @@ import {
 } from "recharts";
 import {
   TrendingUp, TrendingDown, Flame, Gauge, Leaf,
-  Target, ArrowRight, AlertTriangle, BarChart2, Activity,
+  Target, ArrowRight, AlertTriangle, BarChart2, Activity, Factory,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -147,6 +147,38 @@ type TechnicalProfileDashboardContext =
       warning: string | null;
     };
 
+interface EquipmentDashboardContext {
+  mode: "company" | "unit";
+  source: {
+    effectiveDate: string;
+    includedCount: number;
+    truncated: boolean;
+    lastEquipmentUpdatedAt: string | null;
+  };
+  scope: {
+    activeEquipment: number;
+    archivedEquipment: number;
+    criticalEquipment: number;
+    energyIntensiveEquipment: number;
+  };
+  coverage: {
+    withPrimaryMeter: number;
+    withAnyEnergySource: number;
+    withRatedPower: number;
+    withLifecycleData: number;
+  };
+  aggregates: {
+    installedPowerKw: number | null;
+    ratedPowerKw: number | null;
+  };
+  readiness: {
+    status: "ready" | "partial" | "insufficient" | "not_applicable";
+    ready: boolean;
+    note: string;
+  };
+  warnings: string[];
+}
+
 function TechnicalProfileDashboardCard({
   context,
   isLoading,
@@ -220,6 +252,60 @@ function TechnicalProfileDashboardCard({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+function EquipmentDashboardCard({
+  context,
+  isLoading,
+  onOpen,
+}: {
+  context: EquipmentDashboardContext | undefined;
+  isLoading: boolean;
+  onOpen: () => void;
+}) {
+  if (isLoading) return <Skeleton className="h-40 w-full" />;
+  if (!context) return null;
+  const missingPrimaryMeter = Math.max(0, context.scope.activeEquipment - context.coverage.withPrimaryMeter);
+  const missingSource = Math.max(0, context.scope.activeEquipment - context.coverage.withAnyEnergySource);
+  return (
+    <Card data-testid="dashboard-equipment-context">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Factory className="h-4 w-4 text-teal-400" />
+              Ekipman Envanteri
+            </CardTitle>
+            <CardDescription className="text-xs">Kaynak: guncel ekipman envanteri - Etki tarihi: {context.source.effectiveDate}</CardDescription>
+          </div>
+          <Badge variant="outline" className={context.readiness.ready ? "border-teal-600/30 text-teal-400" : "border-amber-600/30 text-amber-400"}>
+            {context.readiness.status}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <StatBox label="Aktif Ekipman" value={context.scope.activeEquipment} sub="adet" color="text-teal-400" />
+          <StatBox label="Kritik" value={context.scope.criticalEquipment} sub="adet" color="text-red-400" warn={context.scope.criticalEquipment > 0 && missingPrimaryMeter > 0} />
+          <StatBox label="Sayacsiz" value={missingPrimaryMeter} sub="birincil" color={missingPrimaryMeter > 0 ? "text-amber-400" : "text-muted-foreground"} warn={missingPrimaryMeter > 0} />
+          <StatBox label="Kaynak Eksik" value={missingSource} sub="enerji" color={missingSource > 0 ? "text-amber-400" : "text-muted-foreground"} warn={missingSource > 0} />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <StatBox label="Kurulu Guc" value={context.aggregates.installedPowerKw !== null ? fmt(context.aggregates.installedPowerKw, 1) : "-"} sub="kW" color="text-blue-400" />
+          <StatBox label="Anma Gucu" value={context.aggregates.ratedPowerKw !== null ? fmt(context.aggregates.ratedPowerKw, 1) : "-"} sub="kW" color="text-purple-400" />
+          <StatBox label="Yasam Dongusu" value={context.coverage.withLifecycleData} sub="kayit" color="text-green-400" />
+        </div>
+        {context.warnings.length > 0 && <p className="text-xs text-amber-400">{context.warnings[0]}</p>}
+        <button
+          type="button"
+          onClick={onOpen}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Ekipman envanterine git <ArrowRight className="inline h-3 w-3 ml-0.5" />
+        </button>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Dashboard() {
   const { year } = useYear();
   const { unitId } = useUnit();
@@ -256,6 +342,11 @@ export default function Dashboard() {
   const { data: technicalProfileContext, isLoading: technicalProfileLoading } = useQuery<TechnicalProfileDashboardContext>({
     queryKey: ["dashboard-technical-profile-context", year, unitId, companyId],
     queryFn: () => apiFetch(`${API_BASE}/dashboard/technical-profile-context?${profileParams}`, token),
+    enabled: overviewEnabled,
+  });
+  const { data: equipmentContext, isLoading: equipmentContextLoading } = useQuery<EquipmentDashboardContext>({
+    queryKey: ["dashboard-equipment-context", year, unitId, companyId],
+    queryFn: () => apiFetch(`${API_BASE}/dashboard/equipment-context?${profileParams}`, token),
     enabled: overviewEnabled,
   });
 
@@ -369,6 +460,12 @@ export default function Dashboard() {
         context={technicalProfileContext}
         isLoading={technicalProfileLoading}
         onOpen={() => navigate("/birimler")}
+      />
+
+      <EquipmentDashboardCard
+        context={equipmentContext}
+        isLoading={equipmentContextLoading}
+        onOpen={() => navigate("/equipment")}
       />
 
       <Card>

@@ -7,6 +7,10 @@ import {
   endOfYearEffectiveDate,
   type TechnicalProfileAiContext,
 } from "../lib/unit-technical-profile-effective.js";
+import {
+  buildEquipmentInventoryContext,
+  toEquipmentAiReadiness,
+} from "../lib/equipment-inventory-context.js";
 
 const router = Router();
 const FOCUS_VALUES = new Set(["genel", "seu", "co2", "maliyet"]);
@@ -158,6 +162,12 @@ router.post("/ai/suggestions", requireAuth, async (req, res) => {
       unitId: effectiveUnitId ?? null,
       effectiveDate: endOfYearEffectiveDate(yr),
     });
+    const equipmentInventoryContext = await buildEquipmentInventoryContext({
+      companyId: effectiveCompanyId,
+      unitId: effectiveUnitId ?? null,
+      effectiveDate: endOfYearEffectiveDate(yr),
+      includeItems: false,
+    });
 
     const suggestions = [];
 
@@ -259,6 +269,7 @@ router.post("/ai/suggestions", requireAuth, async (req, res) => {
     res.json({
       suggestions: filtered.slice(0, 6),
       technicalProfileReadiness: aiReadinessFromTechnicalProfile(technicalProfileContext),
+      equipmentInventoryReadiness: toEquipmentAiReadiness(equipmentInventoryContext),
     });
   } catch (err) {
     if (err instanceof AiScopeError) {

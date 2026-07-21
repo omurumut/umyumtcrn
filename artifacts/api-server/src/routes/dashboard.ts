@@ -14,6 +14,10 @@ import {
   buildTechnicalProfileDashboardContext,
   defaultTechnicalProfileContextDate,
 } from "../lib/unit-technical-profile-effective.js";
+import {
+  buildEquipmentInventoryContext,
+  toEquipmentDashboardContext,
+} from "../lib/equipment-inventory-context.js";
 
 const router = Router();
 
@@ -183,6 +187,34 @@ router.get("/dashboard/technical-profile-context", requireAuth, async (req, res)
     if (sendDashboardError(res, err)) return;
     req.log.error({ errorType: err instanceof Error ? err.name : typeof err }, "Dashboard technical profile context failed");
     res.status(500).json({ error: "Dashboard teknik profil context hatasi" });
+  }
+});
+
+router.get("/dashboard/equipment-context", requireAuth, async (req, res) => {
+  try {
+    const year = parseYear(req.query.year, new Date().getFullYear())!;
+    const effectiveDate = parseDateOnly(req.query.date, "date") ?? `${year}-12-31`;
+    const scope = await resolveDashboardScope(req);
+    if (scope.empty) {
+      res.json(toEquipmentDashboardContext(await buildEquipmentInventoryContext({
+        companyId: scope.companyId,
+        unitId: null,
+        effectiveDate,
+        includeItems: false,
+      })));
+      return;
+    }
+    const context = await buildEquipmentInventoryContext({
+      companyId: scope.companyId,
+      unitId: scope.unitId ?? null,
+      effectiveDate,
+      itemLimit: 12,
+    });
+    res.json(toEquipmentDashboardContext(context));
+  } catch (err) {
+    if (sendDashboardError(res, err)) return;
+    req.log.error({ errorType: err instanceof Error ? err.name : typeof err }, "Dashboard equipment context failed");
+    res.status(500).json({ error: "Dashboard ekipman context hatasi" });
   }
 });
 

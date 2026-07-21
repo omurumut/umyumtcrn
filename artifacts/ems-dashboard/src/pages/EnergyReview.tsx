@@ -104,6 +104,27 @@ interface OverviewData {
   overdueActionsCount: number;
   activeVapCount: number;
   technicalProfileContext: TechnicalProfileReportContext;
+  equipmentInventoryContext: EquipmentEnergyReviewContext;
+}
+
+interface EquipmentEnergyReviewContext {
+  source: { effectiveDate: string; includedCount: number; truncated: boolean };
+  scope: {
+    activeEquipment: number;
+    archivedEquipment: number;
+    criticalEquipment: number;
+    energyIntensiveEquipment: number;
+  };
+  coverage: {
+    withPrimaryMeter: number;
+    withAnyEnergySource: number;
+    withEnergyUseGroup: number;
+    withRatedPower: number;
+    withLifecycleData: number;
+  };
+  aggregates: { installedPowerKw: number | null; ratedPowerKw: number | null };
+  readiness: { status: "ready" | "partial" | "insufficient" | "not_applicable"; ready: boolean; note: string };
+  warnings: string[];
 }
 
 interface TechnicalProfileReportField {
@@ -911,6 +932,10 @@ export default function EnergyReview() {
 
           <TechnicalProfileContextCard
             context={ov?.technicalProfileContext}
+            isLoading={overviewQ.isLoading}
+          />
+          <EquipmentInventoryContextCard
+            context={ov?.equipmentInventoryContext}
             isLoading={overviewQ.isLoading}
           />
 
@@ -2282,6 +2307,70 @@ export default function EnergyReview() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function EquipmentInventoryContextCard({
+  context,
+  isLoading,
+}: {
+  context: EquipmentEnergyReviewContext | undefined;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <Card className="bg-card border-border">
+        <CardContent className="pt-5 pb-4">
+          <div className="h-24 animate-pulse rounded-md bg-muted/40" />
+        </CardContent>
+      </Card>
+    );
+  }
+  if (!context) return null;
+  const missingMeter = Math.max(0, context.scope.activeEquipment - context.coverage.withPrimaryMeter);
+  const missingSource = Math.max(0, context.scope.activeEquipment - context.coverage.withAnyEnergySource);
+  return (
+    <Card className="bg-card border-border" data-testid="energy-review-equipment-context">
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Zap className="h-4 w-4 text-teal-400" />
+            Enerji Tuketen Ekipmanlar
+          </CardTitle>
+          <Badge variant="outline" className={context.readiness.ready ? "border-teal-600/30 text-teal-400" : "border-amber-600/30 text-amber-400"}>
+            {context.readiness.status}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+          <div className="rounded-md bg-muted/30 p-3 text-center">
+            <p className="text-muted-foreground">Aktif</p>
+            <p className="text-lg font-bold text-teal-400">{context.scope.activeEquipment}</p>
+          </div>
+          <div className="rounded-md bg-muted/30 p-3 text-center">
+            <p className="text-muted-foreground">Kritik</p>
+            <p className="text-lg font-bold text-red-400">{context.scope.criticalEquipment}</p>
+          </div>
+          <div className={`rounded-md p-3 text-center ${missingMeter > 0 ? "bg-amber-500/10 border border-amber-500/20" : "bg-muted/30"}`}>
+            <p className="text-muted-foreground">Sayacsiz</p>
+            <p className={`text-lg font-bold ${missingMeter > 0 ? "text-amber-400" : ""}`}>{missingMeter}</p>
+          </div>
+          <div className={`rounded-md p-3 text-center ${missingSource > 0 ? "bg-amber-500/10 border border-amber-500/20" : "bg-muted/30"}`}>
+            <p className="text-muted-foreground">Kaynak Eksik</p>
+            <p className={`text-lg font-bold ${missingSource > 0 ? "text-amber-400" : ""}`}>{missingSource}</p>
+          </div>
+          <div className="rounded-md bg-muted/30 p-3 text-center">
+            <p className="text-muted-foreground">Kurulu Guc</p>
+            <p className="text-lg font-bold text-blue-400">{context.aggregates.installedPowerKw !== null ? context.aggregates.installedPowerKw.toLocaleString("tr-TR") : "-"}</p>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Kaynak: guncel ekipman envanteri. Seri numarasi, varlik kodu ve uzun notlar bu ozet baglama alinmaz.
+        </p>
+        {context.warnings.length > 0 && <p className="text-xs text-amber-400">{context.warnings[0]}</p>}
+      </CardContent>
+    </Card>
   );
 }
 

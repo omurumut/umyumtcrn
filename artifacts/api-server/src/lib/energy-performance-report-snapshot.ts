@@ -7,6 +7,7 @@ import type {
 import { REPORT_FILE_NAME_TOKENS } from "@workspace/api-zod";
 import { safePdfFilename } from "./pdf-render.js";
 import type { TechnicalProfileReportContext } from "./unit-technical-profile-effective.js";
+import type { toEquipmentReportSnapshot } from "./equipment-inventory-context.js";
 
 export const ENERGY_PERFORMANCE_REPORT_TYPE = "energy_performance_monitoring" as const;
 export const ENERGY_PERFORMANCE_REPORT_SETTINGS_SNAPSHOT_SCHEMA_VERSION = "2026-07-18.phase-3b-3c.energy-performance";
@@ -108,6 +109,7 @@ export type EnergyPerformanceReportSnapshot = {
   showSignatureFields: boolean;
   sections: EnergyPerformanceReportSnapshotSection[];
   technicalProfile: TechnicalProfileReportContext;
+  equipmentInventory: ReturnType<typeof toEquipmentReportSnapshot>;
 };
 
 export class EnergyPerformanceReportSnapshotError extends Error {
@@ -163,6 +165,7 @@ export function buildEnergyPerformanceReportSnapshot({
   generatedBy,
   hasModelVariables,
   technicalProfile,
+  equipmentInventory,
 }: {
   effective: EffectiveEnergyPerformanceSettings;
   companyId: number;
@@ -177,6 +180,7 @@ export function buildEnergyPerformanceReportSnapshot({
   generatedBy: number | null;
   hasModelVariables: boolean;
   technicalProfile: TechnicalProfileReportContext;
+  equipmentInventory: ReturnType<typeof toEquipmentReportSnapshot>;
 }): EnergyPerformanceReportSnapshot {
   const supportedCoverStyles = new Set(effective.reportDefinition.supportedCoverStyles);
   if (!supportedCoverStyles.has(effective.coverStyle)) {
@@ -254,6 +258,7 @@ export function buildEnergyPerformanceReportSnapshot({
     showSignatureFields: effective.profile.showSignatureFields,
     sections,
     technicalProfile,
+    equipmentInventory,
   };
 }
 

@@ -23,6 +23,10 @@ import {
   buildTechnicalProfileReportContext,
   endOfYearEffectiveDate,
 } from "../lib/unit-technical-profile-effective.js";
+import {
+  buildEquipmentInventoryContext,
+  toEquipmentEnergyReviewContext,
+} from "../lib/equipment-inventory-context.js";
 
 const router = Router();
 
@@ -211,6 +215,12 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
       unitId: effectiveUnitId,
       effectiveDate: endOfYearEffectiveDate(year),
     });
+    const equipmentInventoryContext = toEquipmentEnergyReviewContext(await buildEquipmentInventoryContext({
+      companyId: effectiveCompanyId,
+      unitId: effectiveUnitId,
+      effectiveDate: endOfYearEffectiveDate(year),
+      itemLimit: 8,
+    }));
     if (standardUnitMissing) {
       res.json({
         year,
@@ -225,6 +235,7 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
         overdueActionsCount: 0,
         activeVapCount: 0,
         technicalProfileContext,
+        equipmentInventoryContext,
       });
       return;
     }
@@ -342,6 +353,7 @@ router.get("/energy-review/overview", requireAuth, async (req, res) => {
       overdueActionsCount,
       activeVapCount,
       technicalProfileContext,
+      equipmentInventoryContext,
     });
   } catch (err) {
     if (handleEnergyReviewScopeError(res, err)) return;
