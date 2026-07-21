@@ -26,7 +26,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { Archive, Box, CheckCircle2, Eye, Pencil, Plus, RefreshCcw, RotateCcw, Search, SlidersHorizontal, XCircle } from "lucide-react";
+import { Archive, Box, CheckCircle2, Download, Eye, FileSpreadsheet, Pencil, Plus, RefreshCcw, RotateCcw, Search, SlidersHorizontal, Upload, XCircle } from "lucide-react";
 
 type EquipmentStatus = "active" | "standby" | "maintenance" | "faulty" | "out_of_service" | "archived";
 
@@ -105,6 +105,31 @@ type EquipmentDetailResponse = {
   };
   customFields?: EquipmentCustomField[];
   permissions: { canEdit: boolean; canArchive: boolean; canReactivate: boolean };
+};
+
+type EquipmentImportIssue = {
+  sheet: string;
+  row?: number;
+  column?: string;
+  code: string;
+  message: string;
+  severity: "error" | "warning";
+};
+
+type EquipmentImportPreview = {
+  previewHash: string;
+  mode: string;
+  fileName: string;
+  totalRows: number;
+  createCount: number;
+  updateCount: number;
+  noChangeCount: number;
+  errorCount: number;
+  warningCount: number;
+  canApply: boolean;
+  issues: EquipmentImportIssue[];
+  rows: Array<{ row: number; equipmentCode: string; action: string; changedFields: string[]; customFieldCodes: string[]; issues: EquipmentImportIssue[] }>;
+  relationSummary: { meterReplaceCount: number; energySourceReplaceCount: number };
 };
 
 type AuditEventRecord = {
@@ -594,6 +619,33 @@ async function apiFetch<T>(token: string | null, url: string, init: RequestInit 
   return body as T;
 }
 
+async function apiBlob(token: string | null, url: string): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let body: any = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
+    throw new ApiError(response.status, body);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)/);
+  const filename = match ? decodeURIComponent(match[1]) : "ekipman.xlsx";
+  return { blob: await response.blob(), filename };
+}
+
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function optionQuery(companyId: number | null, unitId?: number | null) {
   const params = new URLSearchParams();
   if (companyId) params.set("companyId", String(companyId));
@@ -637,6 +689,10 @@ export default function EquipmentPage() {
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [reactivateStatus, setReactivateStatus] = useState<Exclude<EquipmentStatus, "archived">>("active");
   const [conflict, setConflict] = useState<Equipment | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importPreview, setImportPreview] = useState<EquipmentImportPreview | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -1005,6 +1061,105 @@ export default function EquipmentPage() {
     setPage(1);
   }
 
+  function equipmentQueryParams(forExport = false) {
+    const params = new URLSearchParams();
+    if (!forExport) {
+      params.set("limit", String(pageSize));
+      params.set("offset", String((page - 1) * pageSize));
+    }
+    if (effectiveCompanyId) params.set("companyId", String(effectiveCompanyId));
+    if (unitParam) params.set("unitId", String(unitParam));
+    if (filterSubUnit !== "all") params.set("subUnitId", filterSubUnit);
+    if (filterCategory !== "all") params.set("category", filterCategory);
+    if (filterStatus !== "all") params.set("status", filterStatus);
+    if (filterEnergySource !== "all") params.set("energySourceId", filterEnergySource);
+    if (filterMeter !== "all") params.set("meterId", filterMeter);
+    if (filterGroup !== "all") params.set("energyUseGroupId", filterGroup);
+    if (includeArchived) params.set("includeArchived", "true");
+    if (debouncedSearch.length >= 2) params.set("search", debouncedSearch);
+    return params;
+  }
+
+  async function downloadTemplate() {
+    try {
+      const params = new URLSearchParams();
+      if (effectiveCompanyId) params.set("companyId", String(effectiveCompanyId));
+      const { blob, filename } = await apiBlob(token, `/api/equipment/import/template${params.toString() ? `?${params}` : ""}`);
+      saveBlob(blob, filename);
+      toast({ title: "Ekipman import ÅŸablonu indirildi" });
+    } catch (error) {
+      toast({ title: error instanceof Error ? error.message : "Åablon indirilemedi", variant: "destructive" });
+    }
+  }
+
+  async function downloadExport() {
+    try {
+      const params = equipmentQueryParams(true);
+      const { blob, filename } = await apiBlob(token, `/api/equipment/export?${params}`);
+      saveBlob(blob, filename);
+      toast({ title: "Ekipman envanteri dÄ±ÅŸa aktarÄ±ldÄ±" });
+    } catch (error) {
+      toast({ title: error instanceof Error ? error.message : "Export alÄ±namadÄ±", variant: "destructive" });
+    }
+  }
+
+  async function uploadImport(endpoint: "preview" | "apply") {
+    if (!importFile) {
+      setImportError("XLSX dosyasi seÃ§in.");
+      return;
+    }
+    if (!importFile.name.toLowerCase().endsWith(".xlsx") || importFile.name.toLowerCase().endsWith(".xlsm")) {
+      setImportError("YalnÄ±z .xlsx dosyasÄ± kabul edilir.");
+      return;
+    }
+    setImportError(null);
+    const params = new URLSearchParams();
+    if (effectiveCompanyId) params.set("companyId", String(effectiveCompanyId));
+    const formData = new FormData();
+    formData.append("file", importFile);
+    if (endpoint === "apply") {
+      if (!importPreview?.previewHash) {
+        setImportError("Ã–nce preview alÄ±n.");
+        return;
+      }
+      formData.append("previewHash", importPreview.previewHash);
+    }
+    const response = await fetch(`/api/equipment/import/${endpoint}${params.toString() ? `?${params}` : ""}`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    });
+    const text = await response.text();
+    const body = text ? JSON.parse(text) : null;
+    if (!response.ok) throw new ApiError(response.status, body);
+    if (endpoint === "preview") {
+      setImportPreview(body as EquipmentImportPreview);
+    } else {
+      setImportPreview(null);
+      setImportFile(null);
+      setImportOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ["equipment"] });
+      if (selectedId !== null) await queryClient.invalidateQueries({ queryKey: ["equipment-detail", selectedId] });
+      toast({ title: `Import uygulandÄ±: ${body.appliedCount ?? 0} deÄŸiÅŸiklik` });
+    }
+  }
+
+  async function previewImport() {
+    try {
+      await uploadImport("preview");
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Preview alÄ±namadÄ±");
+    }
+  }
+
+  async function applyImport() {
+    try {
+      await uploadImport("apply");
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Import uygulanamadÄ±");
+    }
+  }
+
   if (isSuperAdmin && companyId === null) {
     return (
       <div data-testid="equipment-page" className="space-y-4">
@@ -1026,9 +1181,20 @@ export default function EquipmentPage() {
           <p className="text-sm text-muted-foreground mt-1">Enerji tüketen ekipmanları tesis, teknik bilgi ve ölçüm bağlamıyla yönetin.</p>
         </div>
         {canCreate && (
-          <Button data-testid="equipment-create-button" onClick={openCreate} className="gap-2 lg:self-start">
-            <Plus className="h-4 w-4" /> Yeni Ekipman
-          </Button>
+          <div className="flex flex-wrap gap-2 lg:self-start">
+            <Button type="button" variant="outline" onClick={downloadTemplate} className="gap-2" data-testid="equipment-template-button">
+              <FileSpreadsheet className="h-4 w-4" /> Åablon
+            </Button>
+            <Button type="button" variant="outline" onClick={downloadExport} className="gap-2" data-testid="equipment-export-button">
+              <Download className="h-4 w-4" /> DÄ±ÅŸa Aktar
+            </Button>
+            <Button type="button" variant="outline" onClick={() => { setImportOpen(true); setImportError(null); }} className="gap-2" data-testid="equipment-import-button">
+              <Upload className="h-4 w-4" /> Ä°Ã§e Aktar
+            </Button>
+            <Button data-testid="equipment-create-button" onClick={openCreate} className="gap-2">
+              <Plus className="h-4 w-4" /> Yeni Ekipman
+            </Button>
+          </div>
         )}
       </div>
 
@@ -1196,6 +1362,114 @@ export default function EquipmentPage() {
           />
         </div>
       )}
+
+      <Dialog open={importOpen} onOpenChange={(open) => {
+        setImportOpen(open);
+        if (!open) {
+          setImportPreview(null);
+          setImportError(null);
+          setImportFile(null);
+        }
+      }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl" data-testid="equipment-import-dialog">
+          <DialogHeader>
+            <DialogTitle>Ekipman Ä°Ã§e Aktar</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="equipment-import-file">XLSX dosyasÄ±</Label>
+              <Input
+                id="equipment-import-file"
+                type="file"
+                accept=".xlsx"
+                onChange={(event) => {
+                  setImportFile(event.target.files?.[0] ?? null);
+                  setImportPreview(null);
+                  setImportError(null);
+                }}
+              />
+              <div className="text-xs text-muted-foreground">Mod: update_non_empty. BoÅŸ hÃ¼cre mevcut deÄŸeri korur; temizlemek iÃ§in __CLEAR__.</div>
+            </div>
+            {importError && (
+              <Alert variant="destructive">
+                <XCircle className="h-4 w-4" />
+                <AlertTitle>Import hazÄ±rlanamadÄ±</AlertTitle>
+                <AlertDescription>{importError}</AlertDescription>
+              </Alert>
+            )}
+            {importPreview && (
+              <div className="space-y-3" aria-live="polite">
+                <div className="grid gap-2 sm:grid-cols-5">
+                  <SummaryCell labelText="SatÄ±r" value={importPreview.totalRows} />
+                  <SummaryCell labelText="Create" value={importPreview.createCount} />
+                  <SummaryCell labelText="Update" value={importPreview.updateCount} />
+                  <SummaryCell labelText="No-change" value={importPreview.noChangeCount} />
+                  <SummaryCell labelText="Hata" value={importPreview.errorCount} />
+                </div>
+                <div className="rounded-md border p-3 text-sm">
+                  <div>SayaÃ§ relation replace: {importPreview.relationSummary.meterReplaceCount}</div>
+                  <div>Enerji kaynaÄŸÄ± relation replace: {importPreview.relationSummary.energySourceReplaceCount}</div>
+                </div>
+                {importPreview.issues.length > 0 && (
+                  <div className="max-h-60 overflow-y-auto rounded-md border">
+                    <table className="w-full min-w-[640px] text-xs">
+                      <thead className="bg-muted/50 text-left text-muted-foreground">
+                        <tr>
+                          <th className="px-2 py-2">Sheet</th>
+                          <th className="px-2 py-2">SatÄ±r</th>
+                          <th className="px-2 py-2">Kolon</th>
+                          <th className="px-2 py-2">Kod</th>
+                          <th className="px-2 py-2">Mesaj</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importPreview.issues.slice(0, 80).map((item, index) => (
+                          <tr key={`${item.sheet}-${item.row}-${item.column}-${item.code}-${index}`} className="border-t">
+                            <td className="px-2 py-2">{item.sheet}</td>
+                            <td className="px-2 py-2">{item.row ?? "â€”"}</td>
+                            <td className="px-2 py-2">{item.column ?? "â€”"}</td>
+                            <td className="px-2 py-2">{item.code}</td>
+                            <td className="px-2 py-2">{item.message}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div className="max-h-60 overflow-y-auto rounded-md border">
+                  <table className="w-full min-w-[560px] text-xs">
+                    <thead className="bg-muted/50 text-left text-muted-foreground">
+                      <tr>
+                        <th className="px-2 py-2">SatÄ±r</th>
+                        <th className="px-2 py-2">Ekipman</th>
+                        <th className="px-2 py-2">Aksiyon</th>
+                        <th className="px-2 py-2">Alanlar</th>
+                        <th className="px-2 py-2">Ã–zel alan</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.rows.map((row) => (
+                        <tr key={`${row.row}-${row.equipmentCode}`} className="border-t">
+                          <td className="px-2 py-2">{row.row}</td>
+                          <td className="px-2 py-2">{row.equipmentCode}</td>
+                          <td className="px-2 py-2">{row.action}</td>
+                          <td className="px-2 py-2">{row.changedFields.slice(0, 6).join(", ") || "â€”"}</td>
+                          <td className="px-2 py-2">{row.customFieldCodes.join(", ") || "â€”"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setImportOpen(false)}>Kapat</Button>
+            <Button type="button" variant="secondary" onClick={previewImport} disabled={!importFile}>Preview</Button>
+            <Button type="button" onClick={applyImport} disabled={!importPreview?.canApply}>Apply</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => {
         if (!open && dirty && !window.confirm("Kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?")) return;
@@ -1686,6 +1960,15 @@ function InfoLine({ labelText, value }: { labelText: string; value: React.ReactN
     <div>
       <div className="text-xs text-muted-foreground">{labelText}</div>
       <div className="text-sm font-medium">{value || "—"}</div>
+    </div>
+  );
+}
+
+function SummaryCell({ labelText, value }: { labelText: string; value: React.ReactNode }) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="text-xs text-muted-foreground">{labelText}</div>
+      <div className="text-lg font-semibold">{value}</div>
     </div>
   );
 }

@@ -101,6 +101,8 @@ export const AUDIT_ACTIONS = [
   "equipment.updated",
   "equipment.archived",
   "equipment.reactivated",
+  "equipment.exported",
+  "equipment.imported",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;

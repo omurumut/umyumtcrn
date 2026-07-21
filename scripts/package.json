@@ -31,6 +31,7 @@
     "test:unit-technical-profiles": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-unit-technical-profiles.ts",
     "test:equipment-inventory": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-equipment-inventory.ts",
     "test:equipment-custom-fields": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-equipment-custom-fields.ts",
+    "test:equipment-import-export": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-equipment-import-export.ts",
     "test:report-migration-readiness": "tsx ./src/test-db.ts --with-child -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-migration-readiness.ts",
     "test:report-archive-retention": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-archive-retention.ts",
     "test:report-storage-s3": "tsx ./src/test-report-storage-s3.ts",
