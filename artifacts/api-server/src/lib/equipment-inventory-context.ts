@@ -510,10 +510,12 @@ export function toEquipmentEnergyReviewContext(context: EquipmentInventoryContex
 export function toEquipmentAiReadiness(context: EquipmentInventoryContext): EquipmentInventoryReadiness & {
   source: EquipmentInventoryContext["source"];
 } {
+  const stableGeneratedAt = `${context.source.effectiveDate}T00:00:00.000Z`;
   return {
     ...context.readiness,
     source: {
       ...context.source,
+      generatedAt: stableGeneratedAt,
       includedCount: 0,
       truncated: false,
     },
