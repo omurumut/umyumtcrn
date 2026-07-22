@@ -116,6 +116,11 @@ function errorDescription(error: unknown) {
       AI_PROVIDER_UNAVAILABLE: "AI provider su anda erisilebilir degil.",
       AI_SCHEMA_INVALID: "AI yaniti beklenen guvenli sozlesmeye uymadi.",
       CLIENT_SCHEMA_INVALID: "Sunucu yaniti beklenen frontend sozlesmesiyle eslesmedi.",
+      AI_USER_CONCURRENCY_LIMIT: "Bu kullanici icin baska bir analiz halen devam ediyor.",
+      AI_COMPANY_CONCURRENCY_LIMIT: "Bu firma icin baska analizler halen devam ediyor.",
+      AI_DAILY_LIMIT_REACHED: "Firmaniz icin gunluk yeni AI analiz limiti doldu. Daha once olusturulmus analizleri goruntuleyebilirsiniz.",
+      AI_MONTHLY_LIMIT_REACHED: "Aylik AI analiz limiti doldu.",
+      AI_CIRCUIT_OPEN: "AI saglayicisi gecici olarak kullanilamiyor. Sistem kisa sure sonra yeniden deneyecek.",
     };
     return error.code ? byCode[error.code] ?? error.message : error.message;
   }
@@ -182,7 +187,9 @@ export default function AiSuggestions() {
       await queryClient.invalidateQueries({ queryKey: ["ai-analyses"] });
       toast({
         title: data.meta.cacheHit ? "Analiz cache uzerinden getirildi" : "AI analizi olusturuldu",
-        description: data.meta.cacheHit
+        description: data.meta.fallbackUsed
+          ? "Gemini servisine erisilemedigi icin kural tabanli fallback sonucu kaydedildi."
+          : data.meta.cacheHit
           ? "Ayni veri surumu icin yeni AI cagrisi yapilmadi."
           : "Yeni analiz sonucu dogrulanmis olarak kaydedildi.",
       });
@@ -384,11 +391,14 @@ function PolicyStatus({ policy, isLoading, error, canResolveCompany }: {
             <CardTitle className="text-base">Firma AI kullanimi</CardTitle>
             <CardDescription>{display.description}</CardDescription>
           </div>
-          <Badge variant="outline" className="w-fit">{display.label}</Badge>
+        <Badge variant="outline" className="w-fit">{display.label}</Badge>
         </div>
       </CardHeader>
       <CardContent className="text-xs text-muted-foreground">
-        Saklama suresi: {policy?.retentionDays ? `${policy.retentionDays} gun` : "varsayilan veya tanimsiz"}
+        Saklama suresi: {policy?.retentionDays ? `${policy.retentionDays} gun` : "varsayilan veya tanimsiz"} ·
+        Gunluk limit: {policy?.dailyAnalysisLimit ?? "sinirsiz"} ·
+        Aylik limit: {policy?.monthlyAnalysisLimit ?? "sinirsiz"} ·
+        Fallback: {policy?.fallbackEnabled === false ? "kapali" : "acik"}
       </CardContent>
     </Card>
   );
@@ -525,7 +535,7 @@ function AnalysisResultView({ analysis }: { analysis: AiAnalysisResponse }) {
             <div className="flex flex-wrap gap-2">
               <Badge variant="outline">{labelFrom(STATUS_LABELS, analysis.analysis.status)}</Badge>
               <Badge variant="outline">{analysis.meta.provider}</Badge>
-              <Badge variant="outline">{analysis.meta.cacheHit ? "Cache hit" : "Yeni AI cagrisi"}</Badge>
+              <Badge variant="outline">{analysis.meta.fallbackUsed ? "Kural tabanli fallback" : analysis.meta.cacheHit ? "Cache hit" : "Yeni AI cagrisi"}</Badge>
             </div>
           </div>
         </CardHeader>
@@ -536,6 +546,15 @@ function AnalysisResultView({ analysis }: { analysis: AiAnalysisResponse }) {
             <Metric label="Veri yeterliligi" value={labelFrom(META_SUFFICIENCY_LABELS, analysis.meta.dataSufficiency)} />
             <Metric label="Model" value={analysis.meta.model} />
           </div>
+          {analysis.meta.fallbackUsed && (
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertTitle>Kural tabanli fallback</AlertTitle>
+              <AlertDescription>
+                Gemini servisine erisilemedigi icin kural tabanli oneriler gosteriliyor. Bu sonuc Gemini AI analizi degildir ve sinirli karar destegi olarak degerlendirilmelidir.
+              </AlertDescription>
+            </Alert>
+          )}
           {analysis.meta.cacheHit ? (
             <Alert>
               <CheckCircle2 className="h-4 w-4" />

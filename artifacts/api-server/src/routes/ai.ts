@@ -1,8 +1,8 @@
 import { Router } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { aiAnalysisTypeSchema } from "@workspace/api-zod";
-import { db, consumptionTable, metersTable, seuTable, unitsTable } from "@workspace/db";
-import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
+import { aiAnalysesTable, aiAnalysisAttemptsTable, db, consumptionTable, metersTable, seuTable, unitsTable } from "@workspace/db";
+import { requireAuth, requireCompanyAdmin, requireSuperAdmin } from "../middlewares/auth.js";
 import {
   buildEquipmentInventoryContext,
   toEquipmentAiReadiness,
@@ -35,6 +35,7 @@ import {
   resolveAiScopeFromRequest,
 } from "../lib/ai/scope.js";
 import type { AiProviderRequest } from "../lib/ai/provider.js";
+import { getCircuitDiagnostics } from "../lib/ai/circuit-breaker.js";
 
 const router = Router();
 
@@ -69,6 +70,17 @@ function parseOptionalNonNegativeInteger(value: unknown, field: string) {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
   if (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value.trim())) return Number(value.trim());
   throw new AiScopeError(400, `Gecersiz ${field}`);
+}
+
+function parseOptionalPositiveIntegerOrNull(value: unknown, field: string) {
+  if (value === null || value === undefined || value === "") return null;
+  return parseMatchingPositiveInteger(value, undefined, field) ?? null;
+}
+
+function parseOptionalBoolean(value: unknown) {
+  if (value === undefined) return undefined;
+  if (value === true || value === false) return value;
+  throw new AiScopeError(400, "Gecersiz boolean deger");
 }
 
 router.post("/ai/suggestions", requireAuth, async (req, res) => {
@@ -337,18 +349,39 @@ router.get("/company-settings/ai", requireAuth, async (req, res) => {
 
 router.patch("/company-settings/ai", requireAuth, requireCompanyAdmin, async (req, res) => {
   try {
-    const body = req.body as { dataPolicy?: unknown; retentionDays?: unknown; expectedSettingsVersion?: unknown } | undefined;
+    const body = req.body as {
+      dataPolicy?: unknown;
+      retentionDays?: unknown;
+      dailyAnalysisLimit?: unknown;
+      monthlyAnalysisLimit?: unknown;
+      maxConcurrentAnalyses?: unknown;
+      fallbackEnabled?: unknown;
+      expectedSettingsVersion?: unknown;
+    } | undefined;
     const scope = await resolveAiScopeFromRequest(req);
     const dataPolicy = parsePolicy(body?.dataPolicy);
     const retentionDays = body?.retentionDays === null || body?.retentionDays === undefined
       ? null
       : parseMatchingPositiveInteger(body.retentionDays, undefined, "retentionDays") ?? null;
     if (retentionDays !== null && (retentionDays < 30 || retentionDays > 3650)) throw new AiScopeError(400, "Gecersiz retentionDays");
+    const dailyAnalysisLimit = parseOptionalPositiveIntegerOrNull(body?.dailyAnalysisLimit, "dailyAnalysisLimit");
+    if (dailyAnalysisLimit !== null && dailyAnalysisLimit > 10000) throw new AiScopeError(400, "Gecersiz dailyAnalysisLimit");
+    const monthlyAnalysisLimit = parseOptionalPositiveIntegerOrNull(body?.monthlyAnalysisLimit, "monthlyAnalysisLimit");
+    if (monthlyAnalysisLimit !== null && monthlyAnalysisLimit > 300000) throw new AiScopeError(400, "Gecersiz monthlyAnalysisLimit");
+    const maxConcurrentAnalyses = body?.maxConcurrentAnalyses === undefined
+      ? undefined
+      : parseMatchingPositiveInteger(body.maxConcurrentAnalyses, undefined, "maxConcurrentAnalyses");
+    if (maxConcurrentAnalyses !== undefined && maxConcurrentAnalyses > 20) throw new AiScopeError(400, "Gecersiz maxConcurrentAnalyses");
+    const fallbackEnabled = parseOptionalBoolean(body?.fallbackEnabled);
     const expectedSettingsVersion = parseOptionalNonNegativeInteger(body?.expectedSettingsVersion, "expectedSettingsVersion");
     const result = await upsertCompanyAiPolicy({
       companyId: scope.companyId,
       dataPolicy,
       retentionDays,
+      dailyAnalysisLimit,
+      monthlyAnalysisLimit,
+      maxConcurrentAnalyses,
+      fallbackEnabled,
       expectedSettingsVersion,
       userId: req.user?.userId ?? null,
     });
@@ -366,12 +399,20 @@ router.patch("/company-settings/ai", requireAuth, requireCompanyAdmin, async (re
       metadata: {
         dataPolicy: result.settings.dataPolicy,
         retentionDays: result.settings.retentionDays,
+        dailyAnalysisLimit: result.settings.dailyAnalysisLimit,
+        monthlyAnalysisLimit: result.settings.monthlyAnalysisLimit,
+        maxConcurrentAnalyses: result.settings.maxConcurrentAnalyses,
+        fallbackEnabled: result.settings.fallbackEnabled,
         version: result.settings.settingsVersion,
       },
     });
     res.json({
       dataPolicy: result.settings.dataPolicy,
       retentionDays: result.settings.retentionDays,
+      dailyAnalysisLimit: result.settings.dailyAnalysisLimit,
+      monthlyAnalysisLimit: result.settings.monthlyAnalysisLimit,
+      maxConcurrentAnalyses: result.settings.maxConcurrentAnalyses,
+      fallbackEnabled: result.settings.fallbackEnabled,
       version: result.settings.settingsVersion,
       updatedAt: result.settings.updatedAt.toISOString(),
     });
@@ -382,6 +423,60 @@ router.patch("/company-settings/ai", requireAuth, requireCompanyAdmin, async (re
     }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatasi" });
+  }
+});
+
+router.get("/admin/ai/diagnostics", requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const config = readAiRuntimeConfig();
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const month = new Date();
+    month.setUTCDate(1);
+    month.setUTCHours(0, 0, 0, 0);
+    const [totals] = await db.select({
+      activeProcessing: sql<number>`count(*) FILTER (WHERE ${aiAnalysesTable.status} = 'processing')::int`,
+      fallbackCount: sql<number>`count(*) FILTER (WHERE ${aiAnalysesTable.fallbackUsed} = true)::int`,
+      cacheHitCount: sql<number>`count(*) FILTER (WHERE ${aiAnalysesTable.cacheHit} = true)::int`,
+      totalAnalyses: sql<number>`count(*)::int`,
+      staleProcessing: sql<number>`count(*) FILTER (WHERE ${aiAnalysesTable.status} = 'processing' AND ${aiAnalysesTable.startedAt} < now() - interval '30 minutes')::int`,
+      lastCompletedAt: sql<string | null>`max(${aiAnalysesTable.completedAt}) FILTER (WHERE ${aiAnalysesTable.status} = 'completed')`,
+      lastErrorCode: sql<string | null>`(array_remove(array_agg(${aiAnalysesTable.errorCode} ORDER BY ${aiAnalysesTable.updatedAt} DESC), NULL))[1]`,
+    }).from(aiAnalysesTable);
+    const [attemptTotals] = await db.select({
+      todayAttempts: sql<number>`count(*) FILTER (WHERE ${aiAnalysisAttemptsTable.createdAt} >= ${today})::int`,
+      monthAttempts: sql<number>`count(*) FILTER (WHERE ${aiAnalysisAttemptsTable.createdAt} >= ${month})::int`,
+      totalTokens: sql<number | null>`sum(${aiAnalysisAttemptsTable.totalTokens})::int`,
+      estimatedCost: sql<string | null>`sum(${aiAnalysisAttemptsTable.estimatedCost})::text`,
+    }).from(aiAnalysisAttemptsTable);
+    res.json({
+      globalEnabled: config.enabled,
+      provider: config.provider,
+      model: config.provider === "gemini" ? config.gemini.model : "mock-v1",
+      secretConfigured: config.provider === "gemini" ? Boolean(config.gemini.apiKey) : false,
+      limits: {
+        globalMaxConcurrent: config.globalMaxConcurrent,
+        globalDailyLimit: config.globalDailyLimit,
+        circuitBreakerEnabled: config.circuitBreakerEnabled,
+      },
+      circuit: getCircuitDiagnostics(),
+      usage: {
+        activeProcessing: totals?.activeProcessing ?? 0,
+        staleProcessing: totals?.staleProcessing ?? 0,
+        fallbackCount: totals?.fallbackCount ?? 0,
+        cacheHitCount: totals?.cacheHitCount ?? 0,
+        totalAnalyses: totals?.totalAnalyses ?? 0,
+        todayAttempts: attemptTotals?.todayAttempts ?? 0,
+        monthAttempts: attemptTotals?.monthAttempts ?? 0,
+        totalTokens: attemptTotals?.totalTokens ?? null,
+        estimatedCost: attemptTotals?.estimatedCost === null ? null : Number(attemptTotals?.estimatedCost),
+      },
+      lastCompletedAt: totals?.lastCompletedAt ?? null,
+      lastErrorCode: totals?.lastErrorCode ?? null,
+    });
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "AI diagnostics calistirilamadi" });
   }
 });
 

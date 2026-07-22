@@ -107,6 +107,13 @@ export const AUDIT_ACTIONS = [
   "ai.analysis.completed",
   "ai.analysis.failed",
   "ai.analysis.cache_hit",
+  "ai.analysis.fallback_used",
+  "ai.quota.blocked",
+  "ai.concurrency.blocked",
+  "ai.circuit.opened",
+  "ai.circuit.probe",
+  "ai.circuit.closed",
+  "ai.processing.stale_recovered",
   "company_ai_settings.created",
   "company_ai_settings.updated",
 ] as const;

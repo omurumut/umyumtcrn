@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import { aiAnalysisResultSchema, type AiAnalysisResult, type AiAnalysisType } from "@workspace/api-zod";
 import {
   aiAnalysesTable,
@@ -20,6 +20,9 @@ import { GEMINI_PROMPT_POLICY_VERSION } from "./gemini-prompt.js";
 import { validateProviderAnalysis } from "./analysis-validator.js";
 import { AiProviderError, providerErrorResponse } from "./errors.js";
 import { createAiProvider } from "./registry.js";
+import { RuleBasedAiProvider } from "./rule-based-provider.js";
+import { shouldTripCircuit, shouldUseFallback } from "./fallback-policy.js";
+import { beforeProviderCall, recordProviderFailure, recordProviderSuccess } from "./circuit-breaker.js";
 import type { AiProviderRequest, AiProviderResult, AiProviderUsage } from "./provider.js";
 import type { AiResolvedScope } from "./scope.js";
 import { canonicalJson, sha256Canonical } from "./context-utils.js";
@@ -32,6 +35,10 @@ export type CompanyAiDataPolicy = "disabled" | "synthetic_only" | "production_al
 export type CompanyAiPolicy = {
   dataPolicy: CompanyAiDataPolicy;
   retentionDays: number | null;
+  dailyAnalysisLimit: number | null;
+  monthlyAnalysisLimit: number | null;
+  maxConcurrentAnalyses: number;
+  fallbackEnabled: boolean;
   version: number;
   updatedAt: string | null;
 };
@@ -77,15 +84,23 @@ export async function loadCompanyAiPolicy(companyId: number): Promise<CompanyAiP
   const [settings] = await db.select({
     dataPolicy: companyAiSettingsTable.dataPolicy,
     retentionDays: companyAiSettingsTable.retentionDays,
+    dailyAnalysisLimit: companyAiSettingsTable.dailyAnalysisLimit,
+    monthlyAnalysisLimit: companyAiSettingsTable.monthlyAnalysisLimit,
+    maxConcurrentAnalyses: companyAiSettingsTable.maxConcurrentAnalyses,
+    fallbackEnabled: companyAiSettingsTable.fallbackEnabled,
     version: companyAiSettingsTable.settingsVersion,
     updatedAt: companyAiSettingsTable.updatedAt,
   }).from(companyAiSettingsTable)
     .where(eq(companyAiSettingsTable.companyId, companyId))
     .limit(1);
-  if (!settings) return { dataPolicy: "disabled", retentionDays: null, version: 0, updatedAt: null };
+  if (!settings) return defaultCompanyAiPolicy();
   return {
     dataPolicy: normalizePolicy(settings.dataPolicy),
     retentionDays: settings.retentionDays,
+    dailyAnalysisLimit: settings.dailyAnalysisLimit,
+    monthlyAnalysisLimit: settings.monthlyAnalysisLimit,
+    maxConcurrentAnalyses: normalizeConcurrent(settings.maxConcurrentAnalyses),
+    fallbackEnabled: settings.fallbackEnabled,
     version: settings.version,
     updatedAt: settings.updatedAt.toISOString(),
   };
@@ -95,12 +110,20 @@ export async function upsertCompanyAiPolicy({
   companyId,
   dataPolicy,
   retentionDays,
+  dailyAnalysisLimit,
+  monthlyAnalysisLimit,
+  maxConcurrentAnalyses,
+  fallbackEnabled,
   expectedSettingsVersion,
   userId,
 }: {
   companyId: number;
   dataPolicy: CompanyAiDataPolicy;
   retentionDays: number | null;
+  dailyAnalysisLimit?: number | null;
+  monthlyAnalysisLimit?: number | null;
+  maxConcurrentAnalyses?: number;
+  fallbackEnabled?: boolean;
   expectedSettingsVersion?: number;
   userId: number | null;
 }) {
@@ -116,6 +139,10 @@ export async function upsertCompanyAiPolicy({
         companyId,
         dataPolicy,
         retentionDays,
+        dailyAnalysisLimit: dailyAnalysisLimit ?? null,
+        monthlyAnalysisLimit: monthlyAnalysisLimit ?? null,
+        maxConcurrentAnalyses: maxConcurrentAnalyses ?? defaultCompanyAiPolicy().maxConcurrentAnalyses,
+        fallbackEnabled: fallbackEnabled ?? true,
         settingsVersion: 1,
         updatedBy: userId,
       }).returning();
@@ -125,6 +152,10 @@ export async function upsertCompanyAiPolicy({
       .set({
         dataPolicy,
         retentionDays,
+        dailyAnalysisLimit: dailyAnalysisLimit ?? null,
+        monthlyAnalysisLimit: monthlyAnalysisLimit ?? null,
+        maxConcurrentAnalyses: maxConcurrentAnalyses ?? existing.maxConcurrentAnalyses,
+        fallbackEnabled: fallbackEnabled ?? existing.fallbackEnabled,
         settingsVersion: existing.settingsVersion + 1,
         updatedAt: new Date(),
         updatedBy: userId,
@@ -164,6 +195,17 @@ export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysi
     contextSchemaVersion: built.context.contextSchemaVersion,
   });
   const cacheKey = sha256Canonical(cacheManifest);
+  const fallbackProvider = new RuleBasedAiProvider();
+  const fallbackCacheKey = sha256Canonical(buildCacheManifest({
+    scope: input.scope,
+    analysisType: input.analysisType,
+    provider: fallbackProvider.providerName,
+    model: fallbackProvider.getModelName(),
+    dataVersion: built.dataVersion,
+    periodStart: built.context.periodStart,
+    periodEnd: built.context.periodEnd,
+    contextSchemaVersion: built.context.contextSchemaVersion,
+  }));
   await resetStaleProcessing(readStaleMinutes());
   const cached = await findCompletedCache(input.scope, cacheKey);
   if (cached) {
@@ -178,6 +220,8 @@ export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysi
     await auditAnalysis(input, "ai.analysis.cache_hit", hit.id, { cacheHit: true, sourceAnalysisId: cached.id, dataVersion: built.dataVersion, provider: provider.providerName, model });
     return toResponse(hit, parseStoredResult(cached.resultJson), null);
   }
+
+  await enforceOperationalLimits(input, config, policy, provider.providerName);
 
   const analysis = await createProcessingAnalysis({
     input,
@@ -200,20 +244,22 @@ export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysi
 
   const attempt = await createAttempt(analysis.id, provider.providerName, model, 1);
   const started = Date.now();
+  const providerRequest: AiProviderRequest = {
+    analysisType: input.analysisType,
+    scope: input.scope,
+    context: built.context,
+    evidenceRegistry: built.evidenceRegistry,
+    dataVersion: built.dataVersion,
+  };
   try {
-    const providerRequest: AiProviderRequest = {
-      analysisType: input.analysisType,
-      scope: input.scope,
-      context: built.context,
-      evidenceRegistry: built.evidenceRegistry,
-      dataVersion: built.dataVersion,
-    };
+    beforeProviderCall(provider.providerName, model, config);
     const result = await provider.generateAnalysis(providerRequest, {
       signal: input.signal,
       timeoutMs: input.timeoutMs ?? config.timeoutMs,
       maxOutputTokens: input.maxOutputTokens ?? config.maxOutputTokens,
       requestId: input.requestId,
     });
+    recordProviderSuccess(provider.providerName, model);
     const safeResult = validateProviderAnalysis(result.analysis, built.evidenceRegistry);
     const cost = estimateUsageCost(result.meta.provider, result.meta.model, result.meta.usage);
     await completeAttempt(attempt.id, result, started, cost);
@@ -226,7 +272,23 @@ export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysi
       status: 502,
       message: "AI analiz hatasi",
     });
+    if (shouldTripCircuit(classified)) {
+      const circuit = recordProviderFailure(provider.providerName, model, classified.code, config);
+      if (circuit.opened) await auditAnalysis(input, "ai.circuit.opened", analysis.id, { provider: provider.providerName, model, errorCode: classified.code });
+    }
     await failAttempt(attempt.id, classified, started);
+    if (shouldUseFallback(classified, { policy, primaryProvider: provider.providerName })) {
+      const fallbackResponse = await tryFallback({
+        input,
+        analysis,
+        built,
+        providerRequest,
+        fallbackProvider,
+        fallbackCacheKey,
+        failedError: classified,
+      });
+      if (fallbackResponse) return fallbackResponse;
+    }
     const failed = await failAnalysis(analysis.id, classified);
     await auditAnalysis(input, "ai.analysis.failed", analysis.id, { dataVersion: built.dataVersion, provider: provider.providerName, model, errorCode: classified.code });
     throw Object.assign(classified, { analysisId: failed.id });
@@ -383,6 +445,7 @@ async function createCacheHitAnalysis(input: {
   provider: string;
   model: string;
   cacheKey: string;
+  fallbackUsed?: boolean;
 }) {
   const now = new Date();
   const [row] = await db.insert(aiAnalysesTable).values({
@@ -405,7 +468,7 @@ async function createCacheHitAnalysis(input: {
     cacheKey: `${input.cacheKey}:hit:${now.getTime()}:${input.input.user.userId ?? "system"}`,
     cacheHit: true,
     sourceAnalysisId: input.source.id,
-    fallbackUsed: false,
+    fallbackUsed: input.fallbackUsed ?? false,
     dataSufficiency: input.built.context.dataSufficiency,
     contextTruncated: input.built.context.contextTruncated,
     contextWarnings: input.built.warnings,
@@ -468,15 +531,18 @@ async function failAttempt(attemptId: number, error: AiProviderError, startedMs:
   }).where(eq(aiAnalysisAttemptsTable.id, attemptId));
 }
 
-async function completeAnalysis(id: number, result: AiAnalysisResult, providerResult: AiProviderResult) {
+async function completeAnalysis(id: number, result: AiAnalysisResult, providerResult: AiProviderResult, overrides?: { cacheKey?: string; fallbackUsed?: boolean }) {
   const [row] = await db.update(aiAnalysesTable).set({
     status: "completed",
+    provider: providerResult.meta.provider,
+    model: providerResult.meta.model,
+    cacheKey: overrides?.cacheKey,
+    fallbackUsed: overrides?.fallbackUsed ?? false,
     resultJson: result as unknown as Record<string, unknown>,
     errorCode: null,
     errorMessageSafe: null,
     completedAt: new Date(),
     updatedAt: new Date(),
-    model: providerResult.meta.model,
   }).where(eq(aiAnalysesTable.id, id)).returning();
   return row;
 }
@@ -554,7 +620,7 @@ function readStaleMinutes() {
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 24 * 60 ? parsed : 30;
 }
 
-async function auditAnalysis(input: RunInput, action: "ai.analysis.requested" | "ai.analysis.completed" | "ai.analysis.failed" | "ai.analysis.cache_hit", analysisId: number, metadata: Record<string, unknown>) {
+async function auditAnalysis(input: RunInput, action: "ai.analysis.requested" | "ai.analysis.completed" | "ai.analysis.failed" | "ai.analysis.cache_hit" | "ai.analysis.fallback_used" | "ai.quota.blocked" | "ai.concurrency.blocked" | "ai.circuit.opened" | "ai.circuit.probe" | "ai.circuit.closed" | "ai.processing.stale_recovered", analysisId: number | null, metadata: Record<string, unknown>) {
   await writeBestEffortAudit(db, {
     requestId: input.requestId,
     actorUserId: input.user.userId ?? null,
@@ -573,7 +639,7 @@ async function auditAnalysis(input: RunInput, action: "ai.analysis.requested" | 
 
 export async function resetStaleProcessing(minutes = 30) {
   const cutoff = new Date(Date.now() - minutes * 60_000);
-  return await db.update(aiAnalysesTable).set({
+  const stale = await db.update(aiAnalysesTable).set({
     status: "failed",
     errorCode: "AI_PROCESSING_STALE",
     errorMessageSafe: "AI analysis processing kaydi zaman asimina ugradi",
@@ -583,4 +649,156 @@ export async function resetStaleProcessing(minutes = 30) {
     eq(aiAnalysesTable.status, "processing"),
     sql`${aiAnalysesTable.startedAt} < ${cutoff}`,
   )).returning({ id: aiAnalysesTable.id });
+  if (stale.length > 0) {
+    await db.update(aiAnalysisAttemptsTable).set({
+      completedAt: new Date(),
+      success: false,
+      retryable: true,
+      errorCode: "AI_PROCESSING_STALE",
+    }).where(and(
+      sql`${aiAnalysisAttemptsTable.analysisId} IN (${sql.join(stale.map((row) => sql`${row.id}`), sql`,`)})`,
+      isNull(aiAnalysisAttemptsTable.completedAt),
+    ));
+  }
+  return stale;
+}
+
+async function tryFallback(input: {
+  input: RunInput;
+  analysis: typeof aiAnalysesTable.$inferSelect;
+  built: Awaited<ReturnType<typeof buildAiAnalysisContext>>;
+  providerRequest: AiProviderRequest;
+  fallbackProvider: RuleBasedAiProvider;
+  fallbackCacheKey: string;
+  failedError: AiProviderError;
+}) {
+  const cachedFallback = await findCompletedCache(input.input.scope, input.fallbackCacheKey);
+  if (cachedFallback?.resultJson) {
+    await failAnalysis(input.analysis.id, input.failedError);
+    const hit = await createCacheHitAnalysis({
+      source: cachedFallback,
+      input: input.input,
+      built: input.built,
+      provider: input.fallbackProvider.providerName,
+      model: input.fallbackProvider.getModelName(),
+      cacheKey: input.fallbackCacheKey,
+      fallbackUsed: true,
+    });
+    await auditAnalysis(input.input, "ai.analysis.cache_hit", hit.id, { cacheHit: true, fallbackUsed: true, sourceAnalysisId: cachedFallback.id, provider: input.fallbackProvider.providerName, model: input.fallbackProvider.getModelName() });
+    return toResponse(hit, parseStoredResult(cachedFallback.resultJson), null);
+  }
+
+  const fallbackAttempt = await createAttempt(input.analysis.id, input.fallbackProvider.providerName, input.fallbackProvider.getModelName(), 2);
+  const started = Date.now();
+  try {
+    const result = await input.fallbackProvider.generateAnalysis(input.providerRequest, {
+      timeoutMs: input.input.timeoutMs ?? 1_000,
+      maxOutputTokens: input.input.maxOutputTokens,
+      requestId: input.input.requestId,
+    });
+    const cost = estimateUsageCost(result.meta.provider, result.meta.model, result.meta.usage);
+    await completeAttempt(fallbackAttempt.id, result, started, cost);
+    const completed = await completeAnalysis(input.analysis.id, result.analysis, result, { cacheKey: input.fallbackCacheKey, fallbackUsed: true });
+    await auditAnalysis(input.input, "ai.analysis.fallback_used", input.analysis.id, { primaryErrorCode: input.failedError.code, fallbackProvider: result.meta.provider, fallbackModel: result.meta.model, dataVersion: input.providerRequest.dataVersion });
+    return toResponse(completed, result.analysis, { ...result.meta.usage, estimatedCost: cost.estimatedCost, currency: cost.currency });
+  } catch (fallbackError) {
+    const classified = fallbackError instanceof AiProviderError ? fallbackError : new AiProviderError({
+      code: "AI_UNKNOWN_PROVIDER_ERROR",
+      status: 502,
+      message: "Fallback analiz hatasi",
+    });
+    await failAttempt(fallbackAttempt.id, classified, started);
+    return null;
+  }
+}
+
+async function enforceOperationalLimits(input: RunInput, config: AiRuntimeConfig, policy: CompanyAiPolicy, providerName: string) {
+  const userActive = await countActiveAnalyses({ requestedByUserId: input.user.userId ?? null });
+  if (userActive >= 1) {
+    await auditAnalysis(input, "ai.concurrency.blocked", null, { limit: 1, current: userActive, scope: "user" });
+    throw new AiProviderError({ code: "AI_USER_CONCURRENCY_LIMIT", status: 429, retryable: true, message: "Bu kullanici icin baska bir AI analizi halen devam ediyor" });
+  }
+  const companyActive = await countActiveAnalyses({ companyId: input.scope.companyId });
+  const companyLimit = policy.maxConcurrentAnalyses;
+  if (companyActive >= companyLimit) {
+    await auditAnalysis(input, "ai.concurrency.blocked", null, { limit: companyLimit, current: companyActive, scope: "company" });
+    throw new AiProviderError({ code: "AI_COMPANY_CONCURRENCY_LIMIT", status: 429, retryable: true, message: "Bu firma icin AI analiz eszamanli istek limiti dolu" });
+  }
+  if (config.globalMaxConcurrent !== null) {
+    const globalActive = await countActiveAnalyses({});
+    if (globalActive >= config.globalMaxConcurrent) {
+      await auditAnalysis(input, "ai.concurrency.blocked", null, { limit: config.globalMaxConcurrent, current: globalActive, scope: "global" });
+      throw new AiProviderError({ code: "AI_COMPANY_CONCURRENCY_LIMIT", status: 429, retryable: true, message: "Sistem genelinde AI analiz eszamanli istek limiti dolu" });
+    }
+  }
+  if (providerName !== "gemini") return;
+  const dailyLimit = policy.dailyAnalysisLimit ?? config.globalDailyLimit;
+  if (dailyLimit !== null) {
+    const count = await countSuccessfulProviderAnalyses(input.scope.companyId, "day");
+    if (count >= dailyLimit) {
+      await auditAnalysis(input, "ai.quota.blocked", null, { window: "day", limit: dailyLimit, current: count });
+      throw new AiProviderError({ code: "AI_DAILY_LIMIT_REACHED", status: 429, message: "Firma gunluk AI analiz limiti doldu" });
+    }
+  }
+  if (policy.monthlyAnalysisLimit !== null) {
+    const count = await countSuccessfulProviderAnalyses(input.scope.companyId, "month");
+    if (count >= policy.monthlyAnalysisLimit) {
+      await auditAnalysis(input, "ai.quota.blocked", null, { window: "month", limit: policy.monthlyAnalysisLimit, current: count });
+      throw new AiProviderError({ code: "AI_MONTHLY_LIMIT_REACHED", status: 429, message: "Firma aylik AI analiz limiti doldu" });
+    }
+  }
+}
+
+async function countActiveAnalyses(input: { companyId?: number; requestedByUserId?: number | null }) {
+  if (input.requestedByUserId !== undefined) {
+    if (input.requestedByUserId === null) return 0;
+    const [row] = await db.select({ count: sql<number>`count(*) FILTER (WHERE ${aiAnalysesTable.status} = 'processing' AND ${aiAnalysesTable.requestedByUserId} = ${input.requestedByUserId})::int` })
+      .from(aiAnalysesTable);
+    return Number(row?.count ?? 0);
+  }
+  if (input.companyId !== undefined) {
+    const [row] = await db.select({ count: sql<number>`count(*) FILTER (WHERE ${aiAnalysesTable.status} = 'processing' AND ${aiAnalysesTable.companyId} = ${input.companyId})::int` })
+      .from(aiAnalysesTable);
+    return Number(row?.count ?? 0);
+  }
+  const [row] = await db.select({ count: sql<number>`count(*) FILTER (WHERE ${aiAnalysesTable.status} = 'processing')::int` })
+    .from(aiAnalysesTable);
+  return Number(row?.count ?? 0);
+}
+
+async function countSuccessfulProviderAnalyses(companyId: number, window: "day" | "month") {
+  const since = new Date();
+  if (window === "day") since.setUTCHours(0, 0, 0, 0);
+  else {
+    since.setUTCDate(1);
+    since.setUTCHours(0, 0, 0, 0);
+  }
+  const [row] = await db.select({ count: sql<number>`count(*)::int` })
+    .from(aiAnalysesTable)
+    .where(and(
+      eq(aiAnalysesTable.companyId, companyId),
+      eq(aiAnalysesTable.provider, "gemini"),
+      eq(aiAnalysesTable.status, "completed"),
+      eq(aiAnalysesTable.cacheHit, false),
+      eq(aiAnalysesTable.fallbackUsed, false),
+      gte(aiAnalysesTable.completedAt, since),
+    ));
+  return Number(row?.count ?? 0);
+}
+
+function defaultCompanyAiPolicy(): CompanyAiPolicy {
+  return {
+    dataPolicy: "disabled",
+    retentionDays: null,
+    dailyAnalysisLimit: null,
+    monthlyAnalysisLimit: null,
+    maxConcurrentAnalyses: 2,
+    fallbackEnabled: true,
+    version: 0,
+    updatedAt: null,
+  };
+}
+
+function normalizeConcurrent(value: number) {
+  return Number.isSafeInteger(value) && value >= 1 && value <= 20 ? value : 2;
 }

@@ -5,6 +5,12 @@ export type AiRuntimeConfig = {
   allowMockProvider: boolean;
   timeoutMs: number;
   maxOutputTokens: number;
+  globalMaxConcurrent: number | null;
+  globalDailyLimit: number | null;
+  circuitBreakerEnabled: boolean;
+  circuitBreakerFailureThreshold: number;
+  circuitBreakerWindowMs: number;
+  circuitBreakerCooldownMs: number;
   developmentDataPolicy: "demo_only" | "summary_only" | "full_context";
   mockMode: "success" | "timeout" | "rate_limited" | "invalid_schema" | "empty_response" | "provider_unavailable";
   gemini: GeminiRuntimeConfig;
@@ -59,6 +65,12 @@ export function readAiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AiRun
     allowMockProvider: readBoolean(env.AI_ALLOW_MOCK_PROVIDER, !isProduction),
     timeoutMs: readPositiveInteger(env.AI_TIMEOUT_MS, 30_000, 100, 120_000),
     maxOutputTokens: readPositiveInteger(env.AI_MAX_OUTPUT_TOKENS, 4_096, 100, 20_000),
+    globalMaxConcurrent: readOptionalPositiveInteger(env.AI_GLOBAL_MAX_CONCURRENT, 1, 1000),
+    globalDailyLimit: readOptionalPositiveInteger(env.AI_GLOBAL_DAILY_LIMIT, 1, 1_000_000),
+    circuitBreakerEnabled: readBoolean(env.AI_CIRCUIT_BREAKER_ENABLED, true),
+    circuitBreakerFailureThreshold: readPositiveInteger(env.AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD, 3, 1, 100),
+    circuitBreakerWindowMs: readPositiveInteger(env.AI_CIRCUIT_BREAKER_WINDOW_MS, 60_000, 1_000, 60 * 60_000),
+    circuitBreakerCooldownMs: readPositiveInteger(env.AI_CIRCUIT_BREAKER_COOLDOWN_MS, 120_000, 1_000, 24 * 60 * 60_000),
     developmentDataPolicy: readDevelopmentDataPolicy(env.AI_DEVELOPMENT_DATA_POLICY),
     mockMode: ["timeout", "rate_limited", "invalid_schema", "empty_response", "provider_unavailable"].includes(mockMode)
       ? mockMode as AiRuntimeConfig["mockMode"]
@@ -71,4 +83,11 @@ export function readAiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AiRun
       apiVersion: env.GEMINI_API_VERSION?.trim() || null,
     },
   };
+}
+
+function readOptionalPositiveInteger(value: string | undefined, min: number, max: number) {
+  if (value === undefined || value.trim() === "") return null;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) return null;
+  return parsed;
 }

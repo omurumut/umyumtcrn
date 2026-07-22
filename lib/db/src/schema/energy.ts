@@ -74,6 +74,10 @@ export const companyAiSettingsTable = pgTable("company_ai_settings", {
   companyId: integer("company_id").references(() => companiesTable.id).notNull(),
   dataPolicy: text("data_policy").notNull().default("disabled"),
   retentionDays: integer("retention_days"),
+  dailyAnalysisLimit: integer("daily_analysis_limit"),
+  monthlyAnalysisLimit: integer("monthly_analysis_limit"),
+  maxConcurrentAnalyses: integer("max_concurrent_analyses").notNull().default(2),
+  fallbackEnabled: boolean("fallback_enabled").notNull().default(true),
   settingsVersion: integer("settings_version").notNull().default(1),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -1315,6 +1319,8 @@ export const aiAnalysesTable = pgTable("ai_analyses", {
     .where(sql`${table.status} = 'processing' AND ${table.cacheHit} = false`),
   companyUnitCreatedIdx: index("ai_analyses_company_unit_created_idx").on(table.companyId, table.unitId, table.createdAt),
   companyStatusCreatedIdx: index("ai_analyses_company_status_created_idx").on(table.companyId, table.status, table.createdAt),
+  companyProviderCreatedIdx: index("ai_analyses_company_provider_created_idx").on(table.companyId, table.provider, table.createdAt),
+  requestedStatusIdx: index("ai_analyses_requested_status_idx").on(table.requestedByUserId, table.status, table.startedAt),
   sourceAnalysisIdx: index("ai_analyses_source_analysis_idx").on(table.sourceAnalysisId),
 }));
 

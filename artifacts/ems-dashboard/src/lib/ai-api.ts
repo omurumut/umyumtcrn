@@ -79,6 +79,10 @@ const aiAnalysisHistoryResponseSchema = z.object({
 const aiPolicySchema = z.object({
   dataPolicy: z.enum(["disabled", "synthetic_only", "production_allowed"]),
   retentionDays: z.number().nullable(),
+  dailyAnalysisLimit: z.number().nullable().optional(),
+  monthlyAnalysisLimit: z.number().nullable().optional(),
+  maxConcurrentAnalyses: z.number().optional(),
+  fallbackEnabled: z.boolean().optional(),
   version: z.number(),
   updatedAt: z.string().nullable(),
 });
