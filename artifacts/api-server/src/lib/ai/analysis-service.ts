@@ -1,0 +1,586 @@
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { aiAnalysisResultSchema, type AiAnalysisResult, type AiAnalysisType } from "@workspace/api-zod";
+import {
+  aiAnalysesTable,
+  aiAnalysisAttemptsTable,
+  companyAiSettingsTable,
+  db,
+  unitsTable,
+} from "@workspace/db";
+import type { SessionUser } from "../../middlewares/auth.js";
+import { writeBestEffortAudit } from "../audit.js";
+import { readAiRuntimeConfig, type AiRuntimeConfig } from "./config.js";
+import { buildAiAnalysisContext } from "./context-builder.js";
+import {
+  AI_CONTEXT_BUILDER_VERSION,
+  AI_LIMIT_POLICY_VERSION,
+  AI_REDACTION_POLICY_VERSION,
+} from "./context-types.js";
+import { GEMINI_PROMPT_POLICY_VERSION } from "./gemini-prompt.js";
+import { validateProviderAnalysis } from "./analysis-validator.js";
+import { AiProviderError, providerErrorResponse } from "./errors.js";
+import { createAiProvider } from "./registry.js";
+import type { AiProviderRequest, AiProviderResult, AiProviderUsage } from "./provider.js";
+import type { AiResolvedScope } from "./scope.js";
+import { canonicalJson, sha256Canonical } from "./context-utils.js";
+
+export const AI_OUTPUT_SCHEMA_VERSION = "ai-analysis-output-v1";
+export const AI_CACHE_MANIFEST_VERSION = "ai-cache-manifest-v1";
+
+export type CompanyAiDataPolicy = "disabled" | "synthetic_only" | "production_allowed";
+
+export type CompanyAiPolicy = {
+  dataPolicy: CompanyAiDataPolicy;
+  retentionDays: number | null;
+  version: number;
+  updatedAt: string | null;
+};
+
+export type AiAnalysisResponseDto = {
+  analysis: {
+    id: number;
+    status: string;
+    analysisType: AiAnalysisType;
+    periodStart: string;
+    periodEnd: string;
+    result: AiAnalysisResult;
+  };
+  meta: {
+    provider: string;
+    model: string;
+    cacheHit: boolean;
+    sourceAnalysisId: number | null;
+    fallbackUsed: boolean;
+    dataVersion: string;
+    dataSufficiency: string;
+    contextTruncated: boolean;
+    usage: AiProviderUsage & {
+      estimatedCost: number | null;
+      currency: string | null;
+    };
+    createdAt: string;
+    completedAt: string | null;
+  };
+};
+
+type RunInput = {
+  scope: AiResolvedScope;
+  analysisType: AiAnalysisType;
+  user: SessionUser;
+  timeoutMs?: number;
+  maxOutputTokens?: number;
+  requestId?: string;
+  signal?: AbortSignal;
+};
+
+export async function loadCompanyAiPolicy(companyId: number): Promise<CompanyAiPolicy> {
+  const [settings] = await db.select({
+    dataPolicy: companyAiSettingsTable.dataPolicy,
+    retentionDays: companyAiSettingsTable.retentionDays,
+    version: companyAiSettingsTable.settingsVersion,
+    updatedAt: companyAiSettingsTable.updatedAt,
+  }).from(companyAiSettingsTable)
+    .where(eq(companyAiSettingsTable.companyId, companyId))
+    .limit(1);
+  if (!settings) return { dataPolicy: "disabled", retentionDays: null, version: 0, updatedAt: null };
+  return {
+    dataPolicy: normalizePolicy(settings.dataPolicy),
+    retentionDays: settings.retentionDays,
+    version: settings.version,
+    updatedAt: settings.updatedAt.toISOString(),
+  };
+}
+
+export async function upsertCompanyAiPolicy({
+  companyId,
+  dataPolicy,
+  retentionDays,
+  expectedSettingsVersion,
+  userId,
+}: {
+  companyId: number;
+  dataPolicy: CompanyAiDataPolicy;
+  retentionDays: number | null;
+  expectedSettingsVersion?: number;
+  userId: number | null;
+}) {
+  return await db.transaction(async (tx) => {
+    const [existing] = await tx.select().from(companyAiSettingsTable)
+      .where(eq(companyAiSettingsTable.companyId, companyId))
+      .limit(1);
+    if (existing && expectedSettingsVersion !== undefined && existing.settingsVersion !== expectedSettingsVersion) {
+      return { status: "conflict" as const, settings: existing };
+    }
+    if (!existing) {
+      const [created] = await tx.insert(companyAiSettingsTable).values({
+        companyId,
+        dataPolicy,
+        retentionDays,
+        settingsVersion: 1,
+        updatedBy: userId,
+      }).returning();
+      return { status: "created" as const, settings: created };
+    }
+    const [updated] = await tx.update(companyAiSettingsTable)
+      .set({
+        dataPolicy,
+        retentionDays,
+        settingsVersion: existing.settingsVersion + 1,
+        updatedAt: new Date(),
+        updatedBy: userId,
+      })
+      .where(eq(companyAiSettingsTable.id, existing.id))
+      .returning();
+    return { status: "updated" as const, settings: updated };
+  });
+}
+
+export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysisResponseDto> {
+  const config = readAiRuntimeConfig();
+  const policy = await loadCompanyAiPolicy(input.scope.companyId);
+  ensureProviderAllowed(config, policy);
+  if (config.provider === "gemini" && policy.dataPolicy !== "production_allowed") {
+    throw new AiProviderError({
+      code: "AI_DISABLED",
+      status: 403,
+      message: "Firma AI veri politikasi gercek provider icin uygun degil",
+    });
+  }
+
+  const built = await buildAiAnalysisContext(input.scope, {
+    analysisType: input.analysisType,
+    effectiveDate: `${input.scope.year}-12-31`,
+  });
+  const provider = createAiProvider(config);
+  const model = provider.getModelName();
+  const cacheManifest = buildCacheManifest({
+    scope: input.scope,
+    analysisType: input.analysisType,
+    provider: provider.providerName,
+    model,
+    dataVersion: built.dataVersion,
+    periodStart: built.context.periodStart,
+    periodEnd: built.context.periodEnd,
+    contextSchemaVersion: built.context.contextSchemaVersion,
+  });
+  const cacheKey = sha256Canonical(cacheManifest);
+  await resetStaleProcessing(readStaleMinutes());
+  const cached = await findCompletedCache(input.scope, cacheKey);
+  if (cached) {
+    const hit = await createCacheHitAnalysis({
+      source: cached,
+      input,
+      built,
+      provider: provider.providerName,
+      model,
+      cacheKey,
+    });
+    await auditAnalysis(input, "ai.analysis.cache_hit", hit.id, { cacheHit: true, sourceAnalysisId: cached.id, dataVersion: built.dataVersion, provider: provider.providerName, model });
+    return toResponse(hit, parseStoredResult(cached.resultJson), null);
+  }
+
+  const analysis = await createProcessingAnalysis({
+    input,
+    built,
+    provider: provider.providerName,
+    model,
+    cacheKey,
+  }).catch((error) => {
+    if (isUniqueViolation(error)) {
+      throw new AiProviderError({
+        code: "AI_RATE_LIMITED",
+        status: 409,
+        retryable: true,
+        message: "Ayni veri surumu icin AI analizi halen isleniyor",
+      });
+    }
+    throw error;
+  });
+  await auditAnalysis(input, "ai.analysis.requested", analysis.id, { cacheHit: false, dataVersion: built.dataVersion, provider: provider.providerName, model });
+
+  const attempt = await createAttempt(analysis.id, provider.providerName, model, 1);
+  const started = Date.now();
+  try {
+    const providerRequest: AiProviderRequest = {
+      analysisType: input.analysisType,
+      scope: input.scope,
+      context: built.context,
+      evidenceRegistry: built.evidenceRegistry,
+      dataVersion: built.dataVersion,
+    };
+    const result = await provider.generateAnalysis(providerRequest, {
+      signal: input.signal,
+      timeoutMs: input.timeoutMs ?? config.timeoutMs,
+      maxOutputTokens: input.maxOutputTokens ?? config.maxOutputTokens,
+      requestId: input.requestId,
+    });
+    const safeResult = validateProviderAnalysis(result.analysis, built.evidenceRegistry);
+    const cost = estimateUsageCost(result.meta.provider, result.meta.model, result.meta.usage);
+    await completeAttempt(attempt.id, result, started, cost);
+    const completed = await completeAnalysis(analysis.id, safeResult, result);
+    await auditAnalysis(input, "ai.analysis.completed", analysis.id, { cacheHit: false, dataVersion: built.dataVersion, provider: provider.providerName, model, totalTokens: result.meta.usage.totalTokens });
+    return toResponse(completed, safeResult, { ...result.meta.usage, estimatedCost: cost.estimatedCost, currency: cost.currency });
+  } catch (error) {
+    const classified = error instanceof AiProviderError ? error : new AiProviderError({
+      code: "AI_UNKNOWN_PROVIDER_ERROR",
+      status: 502,
+      message: "AI analiz hatasi",
+    });
+    await failAttempt(attempt.id, classified, started);
+    const failed = await failAnalysis(analysis.id, classified);
+    await auditAnalysis(input, "ai.analysis.failed", analysis.id, { dataVersion: built.dataVersion, provider: provider.providerName, model, errorCode: classified.code });
+    throw Object.assign(classified, { analysisId: failed.id });
+  }
+}
+
+export async function listAiAnalyses(scope: AiResolvedScope, input: { limit: number; offset: number; analysisType?: AiAnalysisType; status?: string }) {
+  const conditions = [eq(aiAnalysesTable.companyId, scope.companyId)];
+  if (scope.unitId !== null) conditions.push(eq(aiAnalysesTable.unitId, scope.unitId));
+  if (input.analysisType) conditions.push(eq(aiAnalysesTable.analysisType, input.analysisType));
+  if (input.status) conditions.push(eq(aiAnalysesTable.status, input.status));
+  return await db.select({
+    id: aiAnalysesTable.id,
+    analysisType: aiAnalysesTable.analysisType,
+    status: aiAnalysesTable.status,
+    unitId: aiAnalysesTable.unitId,
+    periodStart: aiAnalysesTable.periodStart,
+    periodEnd: aiAnalysesTable.periodEnd,
+    provider: aiAnalysesTable.provider,
+    model: aiAnalysesTable.model,
+    cacheHit: aiAnalysesTable.cacheHit,
+    sourceAnalysisId: aiAnalysesTable.sourceAnalysisId,
+    dataVersion: aiAnalysesTable.dataVersion,
+    dataSufficiency: aiAnalysesTable.dataSufficiency,
+    contextTruncated: aiAnalysesTable.contextTruncated,
+    createdAt: aiAnalysesTable.createdAt,
+    completedAt: aiAnalysesTable.completedAt,
+  }).from(aiAnalysesTable)
+    .where(and(...conditions))
+    .orderBy(desc(aiAnalysesTable.createdAt), desc(aiAnalysesTable.id))
+    .limit(input.limit)
+    .offset(input.offset);
+}
+
+export async function getAiAnalysisDetail(scope: AiResolvedScope, id: number) {
+  const conditions = [eq(aiAnalysesTable.id, id), eq(aiAnalysesTable.companyId, scope.companyId)];
+  if (scope.unitId !== null) conditions.push(eq(aiAnalysesTable.unitId, scope.unitId));
+  const [analysis] = await db.select().from(aiAnalysesTable).where(and(...conditions)).limit(1);
+  if (!analysis) return null;
+  const result = analysis.resultJson ? parseStoredResult(analysis.resultJson) : null;
+  const attempts = await db.select({
+    id: aiAnalysisAttemptsTable.id,
+    attemptNumber: aiAnalysisAttemptsTable.attemptNumber,
+    provider: aiAnalysisAttemptsTable.provider,
+    model: aiAnalysisAttemptsTable.model,
+    success: aiAnalysisAttemptsTable.success,
+    retryable: aiAnalysisAttemptsTable.retryable,
+    errorCode: aiAnalysisAttemptsTable.errorCode,
+    providerHttpStatus: aiAnalysisAttemptsTable.providerHttpStatus,
+    providerErrorCode: aiAnalysisAttemptsTable.providerErrorCode,
+    providerRequestId: aiAnalysisAttemptsTable.providerRequestId,
+    inputTokens: aiAnalysisAttemptsTable.inputTokens,
+    outputTokens: aiAnalysisAttemptsTable.outputTokens,
+    thinkingTokens: aiAnalysisAttemptsTable.thinkingTokens,
+    cachedTokens: aiAnalysisAttemptsTable.cachedTokens,
+    totalTokens: aiAnalysisAttemptsTable.totalTokens,
+    estimatedCost: aiAnalysisAttemptsTable.estimatedCost,
+    currency: aiAnalysisAttemptsTable.currency,
+    latencyMs: aiAnalysisAttemptsTable.latencyMs,
+    startedAt: aiAnalysisAttemptsTable.startedAt,
+    completedAt: aiAnalysisAttemptsTable.completedAt,
+  }).from(aiAnalysisAttemptsTable)
+    .where(eq(aiAnalysisAttemptsTable.analysisId, analysis.id))
+    .orderBy(aiAnalysisAttemptsTable.attemptNumber);
+  return { analysis, result, attempts };
+}
+
+function buildCacheManifest(input: {
+  scope: AiResolvedScope;
+  analysisType: AiAnalysisType;
+  provider: string;
+  model: string;
+  dataVersion: string;
+  periodStart: string;
+  periodEnd: string;
+  contextSchemaVersion: string;
+}) {
+  return {
+    cacheManifestVersion: AI_CACHE_MANIFEST_VERSION,
+    companyScope: input.scope.companyId,
+    unitScope: input.scope.unitId,
+    analysisType: input.analysisType,
+    periodStart: input.periodStart,
+    periodEnd: input.periodEnd,
+    dataVersion: input.dataVersion,
+    provider: input.provider,
+    model: input.model,
+    contextSchemaVersion: input.contextSchemaVersion,
+    outputSchemaVersion: AI_OUTPUT_SCHEMA_VERSION,
+    promptPolicyVersion: GEMINI_PROMPT_POLICY_VERSION,
+    builderVersion: AI_CONTEXT_BUILDER_VERSION,
+    redactionPolicyVersion: AI_REDACTION_POLICY_VERSION,
+    limitPolicyVersion: AI_LIMIT_POLICY_VERSION,
+  };
+}
+
+async function findCompletedCache(scope: AiResolvedScope, cacheKey: string) {
+  const [cached] = await db.select().from(aiAnalysesTable)
+    .where(and(
+      eq(aiAnalysesTable.companyId, scope.companyId),
+      scope.unitId === null ? isNull(aiAnalysesTable.unitId) : eq(aiAnalysesTable.unitId, scope.unitId),
+      eq(aiAnalysesTable.cacheKey, cacheKey),
+      eq(aiAnalysesTable.status, "completed"),
+      eq(aiAnalysesTable.cacheHit, false),
+      sql`${aiAnalysesTable.resultJson} IS NOT NULL`,
+    ))
+    .orderBy(desc(aiAnalysesTable.completedAt), desc(aiAnalysesTable.id))
+    .limit(1);
+  if (!cached?.resultJson) return null;
+  parseStoredResult(cached.resultJson);
+  return cached;
+}
+
+async function createProcessingAnalysis(input: {
+  input: RunInput;
+  built: Awaited<ReturnType<typeof buildAiAnalysisContext>>;
+  provider: string;
+  model: string;
+  cacheKey: string;
+}) {
+  const now = new Date();
+  const [row] = await db.insert(aiAnalysesTable).values({
+    companyId: input.input.scope.companyId,
+    unitId: input.input.scope.unitId,
+    requestedByUserId: input.input.user.userId ?? null,
+    analysisType: input.input.analysisType,
+    periodStart: input.built.context.periodStart,
+    periodEnd: input.built.context.periodEnd,
+    status: "processing",
+    provider: input.provider,
+    model: input.model,
+    contextSchemaVersion: input.built.context.contextSchemaVersion,
+    outputSchemaVersion: AI_OUTPUT_SCHEMA_VERSION,
+    promptPolicyVersion: GEMINI_PROMPT_POLICY_VERSION,
+    builderVersion: AI_CONTEXT_BUILDER_VERSION,
+    redactionPolicyVersion: AI_REDACTION_POLICY_VERSION,
+    limitPolicyVersion: AI_LIMIT_POLICY_VERSION,
+    dataVersion: input.built.dataVersion,
+    cacheKey: input.cacheKey,
+    cacheHit: false,
+    fallbackUsed: false,
+    dataSufficiency: input.built.context.dataSufficiency,
+    contextTruncated: input.built.context.contextTruncated,
+    contextWarnings: input.built.warnings,
+    startedAt: now,
+  }).returning();
+  return row;
+}
+
+async function createCacheHitAnalysis(input: {
+  source: typeof aiAnalysesTable.$inferSelect;
+  input: RunInput;
+  built: Awaited<ReturnType<typeof buildAiAnalysisContext>>;
+  provider: string;
+  model: string;
+  cacheKey: string;
+}) {
+  const now = new Date();
+  const [row] = await db.insert(aiAnalysesTable).values({
+    companyId: input.input.scope.companyId,
+    unitId: input.input.scope.unitId,
+    requestedByUserId: input.input.user.userId ?? null,
+    analysisType: input.input.analysisType,
+    periodStart: input.built.context.periodStart,
+    periodEnd: input.built.context.periodEnd,
+    status: "completed",
+    provider: input.provider,
+    model: input.model,
+    contextSchemaVersion: input.built.context.contextSchemaVersion,
+    outputSchemaVersion: AI_OUTPUT_SCHEMA_VERSION,
+    promptPolicyVersion: GEMINI_PROMPT_POLICY_VERSION,
+    builderVersion: AI_CONTEXT_BUILDER_VERSION,
+    redactionPolicyVersion: AI_REDACTION_POLICY_VERSION,
+    limitPolicyVersion: AI_LIMIT_POLICY_VERSION,
+    dataVersion: input.built.dataVersion,
+    cacheKey: `${input.cacheKey}:hit:${now.getTime()}:${input.input.user.userId ?? "system"}`,
+    cacheHit: true,
+    sourceAnalysisId: input.source.id,
+    fallbackUsed: false,
+    dataSufficiency: input.built.context.dataSufficiency,
+    contextTruncated: input.built.context.contextTruncated,
+    contextWarnings: input.built.warnings,
+    startedAt: now,
+    completedAt: now,
+  }).returning();
+  return row;
+}
+
+async function createAttempt(analysisId: number, provider: string, model: string, attemptNumber: number) {
+  const [attempt] = await db.insert(aiAnalysisAttemptsTable).values({
+    analysisId,
+    attemptNumber,
+    provider,
+    model,
+    startedAt: new Date(),
+  }).returning();
+  return attempt;
+}
+
+async function completeAttempt(attemptId: number, result: AiProviderResult, startedMs: number, cost: { estimatedCost: number | null; currency: string | null; costCalculationVersion: string | null }) {
+  const usage = result.meta.usage;
+  await db.update(aiAnalysisAttemptsTable).set({
+    completedAt: new Date(),
+    success: true,
+    retryable: false,
+    providerRequestId: result.meta.providerRequestId,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    thinkingTokens: usage.thinkingTokens,
+    cachedTokens: usage.cachedTokens,
+    totalTokens: usage.totalTokens,
+    estimatedCost: cost.estimatedCost === null ? null : String(cost.estimatedCost),
+    currency: cost.currency,
+    costCalculationVersion: cost.costCalculationVersion,
+    latencyMs: Math.max(0, Date.now() - startedMs),
+  }).where(eq(aiAnalysisAttemptsTable.id, attemptId));
+}
+
+function estimateUsageCost(provider: string, _model: string, _usage: AiProviderUsage) {
+  if (provider === "mock" || provider === "rule_based") {
+    return { estimatedCost: 0, currency: "USD", costCalculationVersion: "non-billable-provider-v1" };
+  }
+  return { estimatedCost: null, currency: null, costCalculationVersion: null };
+}
+
+async function failAttempt(attemptId: number, error: AiProviderError, startedMs: number) {
+  await db.update(aiAnalysisAttemptsTable).set({
+    completedAt: new Date(),
+    success: false,
+    retryable: error.retryable,
+    errorCode: error.code,
+    providerHttpStatus: error.providerStatus ?? null,
+    providerErrorCode: error.providerErrorCode ?? null,
+    providerRequestId: error.providerRequestId ?? null,
+    estimatedCost: null,
+    currency: null,
+    costCalculationVersion: null,
+    latencyMs: Math.max(0, Date.now() - startedMs),
+  }).where(eq(aiAnalysisAttemptsTable.id, attemptId));
+}
+
+async function completeAnalysis(id: number, result: AiAnalysisResult, providerResult: AiProviderResult) {
+  const [row] = await db.update(aiAnalysesTable).set({
+    status: "completed",
+    resultJson: result as unknown as Record<string, unknown>,
+    errorCode: null,
+    errorMessageSafe: null,
+    completedAt: new Date(),
+    updatedAt: new Date(),
+    model: providerResult.meta.model,
+  }).where(eq(aiAnalysesTable.id, id)).returning();
+  return row;
+}
+
+async function failAnalysis(id: number, error: AiProviderError) {
+  const [row] = await db.update(aiAnalysesTable).set({
+    status: "failed",
+    errorCode: error.code,
+    errorMessageSafe: providerErrorResponse(error).error,
+    completedAt: new Date(),
+    updatedAt: new Date(),
+  }).where(eq(aiAnalysesTable.id, id)).returning();
+  return row;
+}
+
+function toResponse(row: typeof aiAnalysesTable.$inferSelect, result: AiAnalysisResult, usage: (AiProviderUsage & { estimatedCost: number | null; currency: string | null }) | null): AiAnalysisResponseDto {
+  return {
+    analysis: {
+      id: row.id,
+      status: row.status,
+      analysisType: row.analysisType as AiAnalysisType,
+      periodStart: row.periodStart,
+      periodEnd: row.periodEnd,
+      result,
+    },
+    meta: {
+      provider: row.provider,
+      model: row.model,
+      cacheHit: row.cacheHit,
+      sourceAnalysisId: row.sourceAnalysisId,
+      fallbackUsed: row.fallbackUsed,
+      dataVersion: row.dataVersion,
+      dataSufficiency: row.dataSufficiency,
+      contextTruncated: row.contextTruncated,
+      usage: usage ?? {
+        inputTokens: null,
+        outputTokens: null,
+        thinkingTokens: null,
+        cachedTokens: null,
+        totalTokens: null,
+        estimatedCost: null,
+        currency: null,
+      },
+      createdAt: row.createdAt.toISOString(),
+      completedAt: row.completedAt?.toISOString() ?? null,
+    },
+  };
+}
+
+function parseStoredResult(value: unknown): AiAnalysisResult {
+  return validateProviderAnalysis(aiAnalysisResultSchema.parse(value));
+}
+
+function ensureProviderAllowed(config: AiRuntimeConfig, policy: CompanyAiPolicy) {
+  if (!config.enabled) {
+    throw new AiProviderError({ code: "AI_DISABLED", status: 403, message: "AI global olarak kapali" });
+  }
+  if (policy.dataPolicy === "disabled") {
+    throw new AiProviderError({ code: "AI_DISABLED", status: 403, message: "Firma AI politikasi kapali" });
+  }
+}
+
+function normalizePolicy(value: string): CompanyAiDataPolicy {
+  return value === "synthetic_only" || value === "production_allowed" ? value : "disabled";
+}
+
+function isUniqueViolation(error: unknown) {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "23505");
+}
+
+function readStaleMinutes() {
+  const raw = process.env.AI_PROCESSING_STALE_MINUTES;
+  if (!raw) return 30;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 24 * 60 ? parsed : 30;
+}
+
+async function auditAnalysis(input: RunInput, action: "ai.analysis.requested" | "ai.analysis.completed" | "ai.analysis.failed" | "ai.analysis.cache_hit", analysisId: number, metadata: Record<string, unknown>) {
+  await writeBestEffortAudit(db, {
+    requestId: input.requestId,
+    actorUserId: input.user.userId ?? null,
+    actorRole: input.user.role,
+    companyId: input.scope.companyId,
+    unitId: input.scope.unitId,
+    action,
+    entityType: "ai_analysis",
+    entityId: analysisId,
+    metadata: {
+      analysisType: input.analysisType,
+      ...metadata,
+    },
+  });
+}
+
+export async function resetStaleProcessing(minutes = 30) {
+  const cutoff = new Date(Date.now() - minutes * 60_000);
+  return await db.update(aiAnalysesTable).set({
+    status: "failed",
+    errorCode: "AI_PROCESSING_STALE",
+    errorMessageSafe: "AI analysis processing kaydi zaman asimina ugradi",
+    completedAt: new Date(),
+    updatedAt: new Date(),
+  }).where(and(
+    eq(aiAnalysesTable.status, "processing"),
+    sql`${aiAnalysesTable.startedAt} < ${cutoff}`,
+  )).returning({ id: aiAnalysesTable.id });
+}

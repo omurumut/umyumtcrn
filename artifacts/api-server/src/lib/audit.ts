@@ -103,6 +103,12 @@ export const AUDIT_ACTIONS = [
   "equipment.reactivated",
   "equipment.exported",
   "equipment.imported",
+  "ai.analysis.requested",
+  "ai.analysis.completed",
+  "ai.analysis.failed",
+  "ai.analysis.cache_hit",
+  "company_ai_settings.created",
+  "company_ai_settings.updated",
 ] as const;
 
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "partial"] as const;

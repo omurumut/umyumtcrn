@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, serial, text, integer, real, timestamp, boolean, index, uniqueIndex, jsonb, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, real, timestamp, boolean, index, uniqueIndex, jsonb, numeric, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -68,6 +68,23 @@ export const companySettingsTable = pgTable("company_settings", {
 export const insertCompanySettingsSchema = createInsertSchema(companySettingsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertCompanySettings = z.infer<typeof insertCompanySettingsSchema>;
 export type CompanySettings = typeof companySettingsTable.$inferSelect;
+
+export const companyAiSettingsTable = pgTable("company_ai_settings", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  dataPolicy: text("data_policy").notNull().default("disabled"),
+  retentionDays: integer("retention_days"),
+  settingsVersion: integer("settings_version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  updatedBy: integer("updated_by").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyUnique: uniqueIndex("company_ai_settings_company_id_unique").on(table.companyId),
+}));
+
+export const insertCompanyAiSettingsSchema = createInsertSchema(companyAiSettingsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompanyAiSettings = z.infer<typeof insertCompanyAiSettingsSchema>;
+export type CompanyAiSettings = typeof companyAiSettingsTable.$inferSelect;
 
 export const companyAssetsTable = pgTable("company_assets", {
   id: serial("id").primaryKey(),
@@ -1257,6 +1274,87 @@ export type InsertEnergyPerformanceResult = z.infer<typeof insertEnergyPerforman
 export type EnergyPerformanceResult = typeof energyPerformanceResultsTable.$inferSelect;
 
 // ── Reports ───────────────────────────────────────────────
+export const aiAnalysesTable = pgTable("ai_analyses", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "set null" }),
+  requestedByUserId: integer("requested_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  analysisType: text("analysis_type").notNull(),
+  periodStart: text("period_start").notNull(),
+  periodEnd: text("period_end").notNull(),
+  status: text("status").notNull().default("pending"),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  contextSchemaVersion: text("context_schema_version").notNull(),
+  outputSchemaVersion: text("output_schema_version").notNull(),
+  promptPolicyVersion: text("prompt_policy_version").notNull(),
+  builderVersion: text("builder_version").notNull(),
+  redactionPolicyVersion: text("redaction_policy_version").notNull(),
+  limitPolicyVersion: text("limit_policy_version").notNull(),
+  dataVersion: text("data_version").notNull(),
+  cacheKey: text("cache_key").notNull(),
+  cacheHit: boolean("cache_hit").notNull().default(false),
+  sourceAnalysisId: integer("source_analysis_id").references((): AnyPgColumn => aiAnalysesTable.id, { onDelete: "set null" }),
+  fallbackUsed: boolean("fallback_used").notNull().default(false),
+  dataSufficiency: text("data_sufficiency").notNull(),
+  contextTruncated: boolean("context_truncated").notNull().default(false),
+  contextWarnings: jsonb("context_warnings_json").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  resultJson: jsonb("result_json").$type<Record<string, unknown> | null>(),
+  errorCode: text("error_code"),
+  errorMessageSafe: text("error_message_safe"),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  completedCacheKeyUnique: uniqueIndex("ai_analyses_completed_cache_key_unique")
+    .on(table.companyId, table.cacheKey)
+    .where(sql`${table.status} = 'completed' AND ${table.cacheHit} = false AND ${table.resultJson} IS NOT NULL`),
+  processingCacheKeyUnique: uniqueIndex("ai_analyses_processing_cache_key_unique")
+    .on(table.companyId, table.cacheKey)
+    .where(sql`${table.status} = 'processing' AND ${table.cacheHit} = false`),
+  companyUnitCreatedIdx: index("ai_analyses_company_unit_created_idx").on(table.companyId, table.unitId, table.createdAt),
+  companyStatusCreatedIdx: index("ai_analyses_company_status_created_idx").on(table.companyId, table.status, table.createdAt),
+  sourceAnalysisIdx: index("ai_analyses_source_analysis_idx").on(table.sourceAnalysisId),
+}));
+
+export const insertAiAnalysisSchema = createInsertSchema(aiAnalysesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAiAnalysis = z.infer<typeof insertAiAnalysisSchema>;
+export type AiAnalysisRecord = typeof aiAnalysesTable.$inferSelect;
+
+export const aiAnalysisAttemptsTable = pgTable("ai_analysis_attempts", {
+  id: serial("id").primaryKey(),
+  analysisId: integer("analysis_id").references(() => aiAnalysesTable.id, { onDelete: "cascade" }).notNull(),
+  attemptNumber: integer("attempt_number").notNull(),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  startedAt: timestamp("started_at").notNull(),
+  completedAt: timestamp("completed_at"),
+  success: boolean("success").notNull().default(false),
+  retryable: boolean("retryable").notNull().default(false),
+  errorCode: text("error_code"),
+  providerHttpStatus: integer("provider_http_status"),
+  providerErrorCode: text("provider_error_code"),
+  providerRequestId: text("provider_request_id"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  thinkingTokens: integer("thinking_tokens"),
+  cachedTokens: integer("cached_tokens"),
+  totalTokens: integer("total_tokens"),
+  estimatedCost: numeric("estimated_cost", { precision: 14, scale: 6 }),
+  currency: text("currency"),
+  costCalculationVersion: text("cost_calculation_version"),
+  latencyMs: integer("latency_ms"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  analysisAttemptUnique: uniqueIndex("ai_analysis_attempts_analysis_attempt_unique").on(table.analysisId, table.attemptNumber),
+  analysisCreatedIdx: index("ai_analysis_attempts_analysis_created_idx").on(table.analysisId, table.createdAt),
+}));
+
+export const insertAiAnalysisAttemptSchema = createInsertSchema(aiAnalysisAttemptsTable).omit({ id: true, createdAt: true });
+export type InsertAiAnalysisAttempt = z.infer<typeof insertAiAnalysisAttemptSchema>;
+export type AiAnalysisAttemptRecord = typeof aiAnalysisAttemptsTable.$inferSelect;
+
 export const reportsTable = pgTable("reports", {
   id: serial("id").primaryKey(),
   companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),

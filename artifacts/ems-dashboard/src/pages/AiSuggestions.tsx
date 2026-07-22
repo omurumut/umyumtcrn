@@ -1,327 +1,901 @@
-import { useState, useEffect } from "react";
-import { useGetAiSuggestions } from "@workspace/api-client-react";
-import { useYear } from "@/context/YearContext";
-import { useUnit } from "@/context/UnitContext";
+import { useMemo, useState } from "react";
+import { Link } from "wouter";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { getListUnitsQueryKey, useListUnits, type ListUnitsParams } from "@workspace/api-client-react";
+import type { AiFinding } from "@workspace/api-zod";
+import {
+  AlertCircle,
+  ArrowRight,
+  Brain,
+  CheckCircle2,
+  Clock,
+  DatabaseZap,
+  Eye,
+  FileWarning,
+  Info,
+  Lightbulb,
+  Loader2,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Zap,
+} from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
-import { Card, CardContent } from "@/components/ui/card";
+import { useUnit } from "@/context/UnitContext";
+import { useYear } from "@/context/YearContext";
+import {
+  ApiError,
+  createAiAnalysis,
+  getAiAnalysisDetail,
+  getAiPolicy,
+  getLegacySuggestions,
+  listAiAnalyses,
+  type AiAnalysisHistoryItem,
+  type AiAnalysisResponse,
+  type AiAnalysisType,
+  type AiCompanyPolicy,
+  type LegacySuggestionsResponse,
+} from "@/lib/ai-api";
+import {
+  ANALYSIS_TYPE_OPTIONS,
+  CONFIDENCE_LABELS,
+  IMPACT_TYPE_LABELS,
+  META_SUFFICIENCY_LABELS,
+  MODULE_ROUTES,
+  POLICY_LABELS,
+  PRIORITY_CLASSES,
+  PRIORITY_LABELS,
+  RESULT_SUFFICIENCY_LABELS,
+  STATUS_LABELS,
+  analysisTypeLabel,
+  formatDateTime,
+  formatNumber,
+  formatPeriod,
+  labelFrom,
+  safeErrorMessage,
+} from "@/components/ai/ai-display";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { AlertCircle, CheckCircle2, Info, Lightbulb, Zap, RefreshCw, TrendingDown, Timer } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { useToast } from "@/hooks/use-toast";
 
-const FOCUS_OPTIONS = [
+const HISTORY_PAGE_SIZE = 8;
+
+const LEGACY_FOCUS_OPTIONS = [
   { value: "genel", label: "Genel Analiz" },
-  { value: "seu", label: "ÖEK Odaklı" },
-  { value: "co2", label: "CO₂ Azaltım" },
+  { value: "seu", label: "OEK Odakli" },
+  { value: "co2", label: "CO2 Azaltim" },
   { value: "maliyet", label: "Maliyet Optimizasyonu" },
 ];
 
-const PRIORITY_CONFIG: Record<string, { label: string; color: string }> = {
-  yuksek: { label: "Yüksek Öncelik", color: "bg-red-500/10 text-red-400 border-red-500/20" },
-  orta: { label: "Orta Öncelik", color: "bg-amber-500/10 text-amber-400 border-amber-500/20" },
-  dusuk: { label: "Düşük Öncelik", color: "bg-green-500/10 text-green-400 border-green-500/20" },
+type UnitOption = {
+  id: number;
+  name: string;
 };
 
-interface TechnicalProfileReadiness {
-  status: "resolved" | "no_published_snapshot" | "no_snapshot_for_date" | "not_applicable";
-  ready: boolean;
-  effectiveDate: string;
-  source: {
-    type: string | null;
-    snapshotId: number | null;
-    snapshotNumber: number | null;
-    profileVersion: number | null;
-    validFrom: string | null;
-    validTo: string | null;
-    publishedAt: string | null;
-  };
-  unit: { id: number | null; name: string | null };
-  completeness: { percentage: number | null; missingGroups: string[] };
-  warnings: string[];
-  note: string;
+type Scope = {
+  token: string | null;
+  companyId: number | null;
+  unitId: number | null;
+  year: number;
+};
+
+function isAdminRole(role: string | undefined) {
+  return role === "admin" || role === "kontrol_admin" || role === "superadmin";
 }
 
-interface EquipmentInventoryReadiness {
-  status: "ready" | "partial" | "insufficient" | "not_applicable";
-  ready: boolean;
-  activeEquipment: number;
-  coverage: {
-    withAnyMeter: number;
-    withAnyEnergySource: number;
-    withTechnicalCapacity: number;
-    criticalOrEnergyIntensive: number;
-  };
-  warnings: string[];
-  note: string;
-  source: {
-    effectiveDate: string;
-    aggregateSourceCount: number;
-    sourcePolicy: string;
-    includedCount: number;
-  };
-}
-
-function TechnicalProfileReadinessCard({ readiness }: { readiness: TechnicalProfileReadiness | undefined }) {
-  if (!readiness) return null;
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 ${readiness.ready ? "bg-teal-500/10" : "bg-amber-500/10"}`}>
-              {readiness.ready ? <CheckCircle2 className="h-4 w-4 text-teal-400" /> : <Info className="h-4 w-4 text-amber-400" />}
-            </div>
-            <div>
-              <p className="text-sm font-medium">Teknik Profil AI Baglami</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{readiness.note}</p>
-            </div>
-          </div>
-          <Badge variant="outline" className={readiness.ready ? "border-teal-600/30 text-teal-400" : "border-amber-600/30 text-amber-400"}>
-            {readiness.ready ? `Snapshot #${readiness.source.snapshotNumber}` : "Hazir degil"}
-          </Badge>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-xs">
-          <div>
-            <p className="text-muted-foreground">Etki tarihi</p>
-            <p className="font-medium">{readiness.effectiveDate}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Birim</p>
-            <p className="font-medium">{readiness.unit.name ?? "Kurulus geneli"}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Gecerlilik</p>
-            <p className="font-medium">{readiness.source.validFrom ? `${readiness.source.validFrom} / ${readiness.source.validTo ?? "devam"}` : "-"}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Doluluk</p>
-            <p className="font-medium">{readiness.completeness.percentage !== null ? `%${readiness.completeness.percentage}` : "-"}</p>
-          </div>
-        </div>
-        {readiness.warnings.length > 0 && (
-          <p className="text-xs text-amber-400 mt-3">{readiness.warnings[0]}</p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function EquipmentReadinessCard({ readiness }: { readiness: EquipmentInventoryReadiness | undefined }) {
-  if (!readiness) return null;
-  return (
-    <Card data-testid="ai-equipment-readiness">
-      <CardContent className="p-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 ${readiness.ready ? "bg-teal-500/10" : "bg-amber-500/10"}`}>
-              {readiness.ready ? <CheckCircle2 className="h-4 w-4 text-teal-400" /> : <Info className="h-4 w-4 text-amber-400" />}
-            </div>
-            <div>
-              <p className="text-sm font-medium">Ekipman Envanteri AI Baglami</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{readiness.note}</p>
-            </div>
-          </div>
-          <Badge variant="outline" className={readiness.ready ? "border-teal-600/30 text-teal-400" : "border-amber-600/30 text-amber-400"}>
-            {readiness.status}
-          </Badge>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-xs">
-          <div>
-            <p className="text-muted-foreground">Aktif ekipman</p>
-            <p className="font-medium">{readiness.activeEquipment}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Sayac iliskisi</p>
-            <p className="font-medium">{readiness.coverage.withAnyMeter}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Enerji kaynagi</p>
-            <p className="font-medium">{readiness.coverage.withAnyEnergySource}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Teknik kapasite</p>
-            <p className="font-medium">{readiness.coverage.withTechnicalCapacity}</p>
-          </div>
-        </div>
-        {readiness.warnings.length > 0 && (
-          <p className="text-xs text-amber-400 mt-3">{readiness.warnings[0]}</p>
-        )}
-      </CardContent>
-    </Card>
-  );
+function errorDescription(error: unknown) {
+  if (error instanceof ApiError) {
+    const byCode: Record<string, string> = {
+      AI_DISABLED: "AI analizleri bu kapsam icin kapali.",
+      AI_NOT_CONFIGURED: "AI provider yapilandirmasi tamamlanmamis.",
+      AI_TIMEOUT: "AI analizi zaman asimina ugradi. Daha sonra tekrar deneyin.",
+      AI_RATE_LIMITED: "Benzer bir analiz zaten isleniyor veya servis yogun.",
+      AI_QUOTA_EXHAUSTED: "AI servis kotasi dolmus.",
+      AI_PROVIDER_UNAVAILABLE: "AI provider su anda erisilebilir degil.",
+      AI_SCHEMA_INVALID: "AI yaniti beklenen guvenli sozlesmeye uymadi.",
+      CLIENT_SCHEMA_INVALID: "Sunucu yaniti beklenen frontend sozlesmesiyle eslesmedi.",
+    };
+    return error.code ? byCode[error.code] ?? error.message : error.message;
+  }
+  return safeErrorMessage(error);
 }
 
 export default function AiSuggestions() {
+  const { user, token } = useAuth();
   const { year } = useYear();
-  const { unitId } = useUnit();
+  const { unitId, setUnitId } = useUnit();
   const { companyId } = useCompany();
-  const [focus, setFocus] = useState("genel");
-  const [triggered, setTriggered] = useState(false);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
-  const getSuggestions = useGetAiSuggestions();
+  const [analysisType, setAnalysisType] = useState<AiAnalysisType>("energy_performance_overview");
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyTypeFilter, setHistoryTypeFilter] = useState<AiAnalysisType | "all">("all");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<string>("all");
+  const [lastAnalysis, setLastAnalysis] = useState<AiAnalysisResponse | null>(null);
+  const [selectedAnalysisId, setSelectedAnalysisId] = useState<number | null>(null);
+  const [legacyFocus, setLegacyFocus] = useState("genel");
+  const [legacyVisible, setLegacyVisible] = useState(false);
 
-  useEffect(() => {
-    setTriggered(false);
-  }, [unitId, companyId]);
+  const isSuperAdmin = user?.role === "superadmin";
+  const isAdmin = isAdminRole(user?.role);
+  const canResolveCompany = !isSuperAdmin || companyId !== null;
+  const effectiveUnitId = isAdmin ? unitId : user?.unitId ?? null;
+  const scope: Scope = { token, companyId, unitId: effectiveUnitId, year };
+  const unitsParams: ListUnitsParams = isSuperAdmin && companyId !== null ? { companyId } : {};
+  const unitsQuery = useListUnits<UnitOption[]>(unitsParams, {
+    query: { queryKey: [...getListUnitsQueryKey(), companyId], enabled: isAdmin && canResolveCompany },
+  });
 
-  function handleGet() {
-    getSuggestions.reset();
-    setTriggered(true);
-    getSuggestions.mutate({
-      data: {
-        focus,
-        year,
-        ...(companyId !== null ? { companyId } : {}),
-        ...(unitId !== null ? { unitId } : {}),
-      } as any,
-    });
+  const policyQuery = useQuery<AiCompanyPolicy, ApiError>({
+    queryKey: ["ai-policy", user?.role, companyId, year],
+    queryFn: () => getAiPolicy(scope),
+    enabled: !!token && canResolveCompany,
+    retry: false,
+  });
+
+  const historyQuery = useQuery({
+    queryKey: ["ai-analyses", user?.role, companyId, effectiveUnitId, year, historyOffset, historyTypeFilter, historyStatusFilter],
+    queryFn: () => listAiAnalyses(scope, {
+      limit: HISTORY_PAGE_SIZE,
+      offset: historyOffset,
+      analysisType: historyTypeFilter,
+      status: historyStatusFilter,
+    }),
+    enabled: !!token && canResolveCompany,
+    retry: false,
+  });
+
+  const detailQuery = useQuery({
+    queryKey: ["ai-analysis-detail", user?.role, companyId, effectiveUnitId, year, selectedAnalysisId],
+    queryFn: () => getAiAnalysisDetail(scope, selectedAnalysisId ?? 0),
+    enabled: !!token && canResolveCompany && selectedAnalysisId !== null,
+    retry: false,
+  });
+
+  const createMutation = useMutation<AiAnalysisResponse, ApiError, AiAnalysisType>({
+    mutationFn: (nextType) => createAiAnalysis(scope, nextType),
+    onSuccess: async (data) => {
+      setLastAnalysis(data);
+      await queryClient.invalidateQueries({ queryKey: ["ai-analyses"] });
+      toast({
+        title: data.meta.cacheHit ? "Analiz cache uzerinden getirildi" : "AI analizi olusturuldu",
+        description: data.meta.cacheHit
+          ? "Ayni veri surumu icin yeni AI cagrisi yapilmadi."
+          : "Yeni analiz sonucu dogrulanmis olarak kaydedildi.",
+      });
+    },
+    onError: (error) => {
+      toast({ title: "AI analizi olusturulamadi", description: errorDescription(error), variant: "destructive" });
+    },
+  });
+
+  const legacyMutation = useMutation<LegacySuggestionsResponse, ApiError>({
+    mutationFn: () => getLegacySuggestions(scope, legacyFocus),
+    onSuccess: () => setLegacyVisible(true),
+    onError: (error) => {
+      toast({ title: "Kural tabanli oneriler alinamadi", description: errorDescription(error), variant: "destructive" });
+    },
+  });
+
+  const policy = policyQuery.data;
+  const submitDisabledReason = useMemo(() => {
+    if (!canResolveCompany) return "Superadmin icin once firma secilmelidir.";
+    if (policyQuery.isLoading) return "AI firma politikasi yukleniyor.";
+    if (policy?.dataPolicy === "disabled") return "AI analizleri bu firma icin kapali.";
+    if (createMutation.isPending) return "Analiz su anda olusturuluyor.";
+    return null;
+  }, [canResolveCompany, createMutation.isPending, policy?.dataPolicy, policyQuery.isLoading]);
+
+  const selectedUnitName = effectiveUnitId === null
+    ? "Tum birimler"
+    : unitsQuery.data?.find((unit) => unit.id === effectiveUnitId)?.name ?? (isAdmin ? "Secili birim" : "Kendi biriminiz");
+
+  function submitAnalysis() {
+    if (submitDisabledReason || createMutation.isPending) return;
+    createMutation.mutate(analysisType);
   }
-
-  const suggestions = getSuggestions.data?.suggestions ?? [];
-  const technicalProfileReadiness = (getSuggestions.data as any)?.technicalProfileReadiness as TechnicalProfileReadiness | undefined;
-  const equipmentInventoryReadiness = (getSuggestions.data as any)?.equipmentInventoryReadiness as EquipmentInventoryReadiness | undefined;
-  const totalSavingKwh = suggestions.reduce((a, s) => a + (s.potentialSavingKwh ?? 0), 0);
-  const errorMessage = getSuggestions.error instanceof Error
-    ? getSuggestions.error.message
-    : "Öneriler üretilirken bir hata oluştu.";
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">AI Enerji Önerileri</h1>
-        <p className="text-sm text-muted-foreground mt-1">{year} yılı verilerine göre yapay zeka destekli enerji iyileştirme önerileri</p>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">AI Enerji Analizleri</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {year} donemi icin kullanici tarafindan baslatilan, kayitli ve kanitli AI analizleri.
+          </p>
+        </div>
+        <Badge variant="outline" className="w-fit gap-2 border-teal-600/30 text-teal-400">
+          <ShieldCheck className="h-3.5 w-3.5" />
+          Backend kontrollu scope
+        </Badge>
       </div>
 
+      <AiDisclaimer />
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-4">
+          <PolicyStatus policy={policy} isLoading={policyQuery.isLoading} error={policyQuery.error} canResolveCompany={canResolveCompany} />
+          <AnalysisForm
+            analysisType={analysisType}
+            onAnalysisTypeChange={setAnalysisType}
+            selectedUnitId={effectiveUnitId}
+            selectedUnitName={selectedUnitName}
+            units={unitsQuery.data ?? []}
+            canChooseUnit={isAdmin}
+            onUnitChange={setUnitId}
+            isSubmitting={createMutation.isPending}
+            disabledReason={submitDisabledReason}
+            onSubmit={submitAnalysis}
+          />
+        </div>
+
+        <ReadinessPanel latest={lastAnalysis} historyCount={historyQuery.data?.items.length ?? 0} />
+      </div>
+
+      {createMutation.isPending && (
+        <Alert aria-live="polite">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <AlertTitle>Analiz olusturuluyor</AlertTitle>
+          <AlertDescription>
+            AI provider yalniz secili kapsam ve donem icin cagriliyor. Sayfadan ayrilmadan gecmis analizleri inceleyebilirsiniz.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {createMutation.isError && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Analiz baslatilamadi</AlertTitle>
+          <AlertDescription>{errorDescription(createMutation.error)}</AlertDescription>
+        </Alert>
+      )}
+
+      <LatestAnalysis analysis={lastAnalysis} />
+
+      <AnalysisHistory
+        items={historyQuery.data?.items ?? []}
+        isLoading={historyQuery.isLoading}
+        error={historyQuery.error}
+        offset={historyOffset}
+        pageSize={HISTORY_PAGE_SIZE}
+        typeFilter={historyTypeFilter}
+        statusFilter={historyStatusFilter}
+        onTypeFilterChange={(value) => {
+          setHistoryTypeFilter(value);
+          setHistoryOffset(0);
+        }}
+        onStatusFilterChange={(value) => {
+          setHistoryStatusFilter(value);
+          setHistoryOffset(0);
+        }}
+        onPrevious={() => setHistoryOffset((current) => Math.max(0, current - HISTORY_PAGE_SIZE))}
+        onNext={() => setHistoryOffset((current) => current + HISTORY_PAGE_SIZE)}
+        onRefresh={() => historyQuery.refetch()}
+        onOpenDetail={setSelectedAnalysisId}
+      />
+
+      <LegacySuggestions
+        focus={legacyFocus}
+        onFocusChange={setLegacyFocus}
+        isVisible={legacyVisible}
+        response={legacyMutation.data ?? null}
+        isLoading={legacyMutation.isPending}
+        onLoad={() => legacyMutation.mutate()}
+      />
+
+      <Dialog open={selectedAnalysisId !== null} onOpenChange={(open) => !open && setSelectedAnalysisId(null)}>
+        <DialogContent className="max-h-[85vh] max-w-5xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Analiz detayi</DialogTitle>
+            <DialogDescription>
+              Detaylar kayitli analiz sonucundan yuklenir.
+            </DialogDescription>
+          </DialogHeader>
+          {detailQuery.isLoading && <DetailSkeleton />}
+          {detailQuery.isError && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Analiz bulunamadi</AlertTitle>
+              <AlertDescription>Analiz bulunamadi veya bu kayda erisim yetkiniz yok.</AlertDescription>
+            </Alert>
+          )}
+          {detailQuery.data && <AnalysisResultView analysis={detailQuery.data} />}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function AiDisclaimer() {
+  return (
+    <Alert>
+      <Info className="h-4 w-4" />
+      <AlertTitle>AI karar destegi uyarisi</AlertTitle>
+      <AlertDescription>
+        AI analizleri karar destegi amaclidir. Muhendislik fizibilitesi, yatirim geri donusu veya enerji tasarrufu garantisi degildir.
+        Resmi hesaplamalar EnYS tarafindan uretilen dogrulanmis verilere dayanir. Uygulama oncesinde yetkili uzman degerlendirmesi gerekir.
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function PolicyStatus({ policy, isLoading, error, canResolveCompany }: {
+  policy: AiCompanyPolicy | undefined;
+  isLoading: boolean;
+  error: unknown;
+  canResolveCompany: boolean;
+}) {
+  if (!canResolveCompany) {
+    return (
       <Card>
-        <CardContent className="p-5">
-          <div className="flex items-end gap-4 flex-wrap">
-            <div className="space-y-1.5">
-              <Label>Analiz Odağı</Label>
-              <Select value={focus} onValueChange={setFocus}>
-                <SelectTrigger className="w-52">
+        <CardHeader>
+          <CardTitle className="text-base">Firma AI kullanimi</CardTitle>
+          <CardDescription>Analiz icin once ust bardan firma secin.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader><Skeleton className="h-5 w-48" /></CardHeader>
+        <CardContent><Skeleton className="h-12 w-full" /></CardContent>
+      </Card>
+    );
+  }
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle className="h-4 w-4" />
+        <AlertTitle>AI politikasi okunamadi</AlertTitle>
+        <AlertDescription>{errorDescription(error)}</AlertDescription>
+      </Alert>
+    );
+  }
+  const display = POLICY_LABELS[policy?.dataPolicy ?? "disabled"] ?? POLICY_LABELS.disabled;
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle className="text-base">Firma AI kullanimi</CardTitle>
+            <CardDescription>{display.description}</CardDescription>
+          </div>
+          <Badge variant="outline" className="w-fit">{display.label}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="text-xs text-muted-foreground">
+        Saklama suresi: {policy?.retentionDays ? `${policy.retentionDays} gun` : "varsayilan veya tanimsiz"}
+      </CardContent>
+    </Card>
+  );
+}
+
+function AnalysisForm(props: {
+  analysisType: AiAnalysisType;
+  onAnalysisTypeChange: (value: AiAnalysisType) => void;
+  selectedUnitId: number | null;
+  selectedUnitName: string;
+  units: UnitOption[];
+  canChooseUnit: boolean;
+  onUnitChange: (value: number | null) => void;
+  isSubmitting: boolean;
+  disabledReason: string | null;
+  onSubmit: () => void;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Analiz olustur</CardTitle>
+        <CardDescription>Analiz turu, donem ve kapsam secerek yeni bir kayit olusturun.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]">
+          <div className="space-y-2">
+            <Label htmlFor="analysis-type">Analiz turu</Label>
+            <Select value={props.analysisType} onValueChange={(value) => props.onAnalysisTypeChange(value as AiAnalysisType)}>
+              <SelectTrigger id="analysis-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ANALYSIS_TYPE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {ANALYSIS_TYPE_OPTIONS.find((option) => option.value === props.analysisType)?.description}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="analysis-unit">Kapsam</Label>
+            {props.canChooseUnit ? (
+              <Select
+                value={props.selectedUnitId === null ? "0" : String(props.selectedUnitId)}
+                onValueChange={(value) => props.onUnitChange(value === "0" ? null : Number(value))}
+              >
+                <SelectTrigger id="analysis-unit">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {FOCUS_OPTIONS.map(f => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
+                  <SelectItem value="0">Tum birimler</SelectItem>
+                  {props.units.map((unit) => (
+                    <SelectItem key={unit.id} value={String(unit.id)}>{unit.name}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
-            </div>
-            <Button onClick={handleGet} disabled={getSuggestions.isPending} className="gap-2">
-              {getSuggestions.isPending ? (
-                <><RefreshCw className="h-4 w-4 animate-spin" /> Analiz ediliyor...</>
-              ) : (
-                <><Lightbulb className="h-4 w-4" /> {triggered ? "Yenile" : "Önerileri Al"}</>
-              )}
-            </Button>
+            ) : (
+              <div id="analysis-unit" className="rounded-md border bg-muted/30 px-3 py-2 text-sm">{props.selectedUnitName}</div>
+            )}
+            <p className="text-xs text-muted-foreground">Donem ust bardaki yil seciminden gelir.</p>
           </div>
-          {!triggered && (
-            <p className="text-xs text-muted-foreground mt-3">
-              Biriminize ait tüketim, ÖEK ve SWOT verileriniz analiz edilerek kişiselleştirilmiş iyileştirme önerileri üretilecektir.
-            </p>
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted-foreground" aria-live="polite">
+            {props.disabledReason ?? "Analiz yalniz bu butona basildiginda olusturulur."}
+          </p>
+          <Button onClick={props.onSubmit} disabled={props.disabledReason !== null || props.isSubmitting} className="gap-2">
+            {props.isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            Analiz olustur
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ReadinessPanel({ latest, historyCount }: { latest: AiAnalysisResponse | null; historyCount: number }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Veri hazirlik ozeti</CardTitle>
+        <CardDescription>Hazirlik durumu son analiz metasi ve gecmis kayitlardan ozetlenir.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <StatusLine icon={<DatabaseZap className="h-4 w-4" />} label="Veri yeterliligi" value={latest ? labelFrom(META_SUFFICIENCY_LABELS, latest.meta.dataSufficiency) : "Analiz sonrasi gorunur"} />
+        <StatusLine icon={<FileWarning className="h-4 w-4" />} label="Context limiti" value={latest?.meta.contextTruncated ? "Kisitlandi" : latest ? "Kisitlanmadi" : "Analiz sonrasi gorunur"} />
+        <StatusLine icon={<Clock className="h-4 w-4" />} label="Gecmis kayit" value={`${historyCount} kayit listelendi`} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function StatusLine({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+      <div className="flex items-center gap-2 text-muted-foreground">{icon}<span>{label}</span></div>
+      <span className="text-right font-medium">{value}</span>
+    </div>
+  );
+}
+
+function LatestAnalysis({ analysis }: { analysis: AiAnalysisResponse | null }) {
+  if (!analysis) {
+    return (
+      <Empty className="border">
+        <EmptyHeader>
+          <EmptyMedia variant="icon"><Brain className="h-5 w-5" /></EmptyMedia>
+          <EmptyTitle>Son analiz henuz secilmedi</EmptyTitle>
+          <EmptyDescription>Yeni bir analiz olusturun veya gecmisten bir kaydi acin. Sayfa acilisinda AI provider cagrisi yapilmaz.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+  return <AnalysisResultView analysis={analysis} />;
+}
+
+function AnalysisResultView({ analysis }: { analysis: AiAnalysisResponse }) {
+  const result = analysis.analysis.result;
+  const normalizedMetaSufficiency = analysis.meta.dataSufficiency === "complete" ? "sufficient" : analysis.meta.dataSufficiency;
+  const sufficiencyConflict = normalizedMetaSufficiency !== result.dataSufficiency;
+  return (
+    <div className="space-y-4" data-testid="ai-analysis-result">
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <CardTitle>{analysisTypeLabel(analysis.analysis.analysisType)}</CardTitle>
+              <CardDescription>{formatPeriod(analysis.analysis.periodStart, analysis.analysis.periodEnd)} donemi icin kayitli analiz</CardDescription>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">{labelFrom(STATUS_LABELS, analysis.analysis.status)}</Badge>
+              <Badge variant="outline">{analysis.meta.provider}</Badge>
+              <Badge variant="outline">{analysis.meta.cacheHit ? "Cache hit" : "Yeni AI cagrisi"}</Badge>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Metric label="Olusturma" value={formatDateTime(analysis.meta.createdAt ?? analysis.analysis.createdAt)} />
+            <Metric label="Tamamlanma" value={formatDateTime(analysis.meta.completedAt ?? analysis.analysis.completedAt)} />
+            <Metric label="Veri yeterliligi" value={labelFrom(META_SUFFICIENCY_LABELS, analysis.meta.dataSufficiency)} />
+            <Metric label="Model" value={analysis.meta.model} />
+          </div>
+          {analysis.meta.cacheHit ? (
+            <Alert>
+              <CheckCircle2 className="h-4 w-4" />
+              <AlertTitle>Cache hit</AlertTitle>
+              <AlertDescription>Bu sonuc ayni veri surumu icin daha once olusturulan dogrulanmis analizden getirildi. Yeni AI cagrisi yapilmadi.</AlertDescription>
+            </Alert>
+          ) : (
+            <Alert>
+              <Zap className="h-4 w-4" />
+              <AlertTitle>Yeni analiz</AlertTitle>
+              <AlertDescription>Bu veri surumu icin yeni analiz olusturuldu.</AlertDescription>
+            </Alert>
+          )}
+          {analysis.meta.contextTruncated && (
+            <Alert>
+              <FileWarning className="h-4 w-4" />
+              <AlertTitle>Context sinirlandi</AlertTitle>
+              <AlertDescription>Analiz context'i guvenli limitler nedeniyle kisaltilmis olabilir.</AlertDescription>
+            </Alert>
+          )}
+          {sufficiencyConflict && (
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertTitle>Veri yeterliligi farki</AlertTitle>
+              <AlertDescription>Backend meta durumu ana durum olarak kullanildi; AI sonucundaki yeterlilik etiketi farkli olabilir.</AlertDescription>
+            </Alert>
+          )}
+          <div>
+            <h2 className="text-base font-semibold">Ozet</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{result.summary}</p>
+          </div>
+          {result.overallLimitations.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium">Genel sinirlamalar</h3>
+              <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                {result.overallLimitations.map((item) => <li key={item}>- {item}</li>)}
+              </ul>
+            </div>
           )}
         </CardContent>
       </Card>
 
-      {triggered && !getSuggestions.isPending && (
-        <TechnicalProfileReadinessCard readiness={technicalProfileReadiness} />
-      )}
-      {triggered && !getSuggestions.isPending && (
-        <EquipmentReadinessCard readiness={equipmentInventoryReadiness} />
-      )}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {result.findings.map((finding) => <FindingCard key={finding.id} finding={finding} />)}
+      </div>
+      <Alert>
+        <Info className="h-4 w-4" />
+        <AlertTitle>AI sonuc aciklamasi</AlertTitle>
+        <AlertDescription>{result.disclaimer}</AlertDescription>
+      </Alert>
+    </div>
+  );
+}
 
-      {triggered && !getSuggestions.isPending && suggestions.length > 0 && (
-        <div className="grid grid-cols-3 gap-4">
-          <Card><CardContent className="p-4 text-center">
-            <p className="text-3xl font-bold text-teal-400">{suggestions.length}</p>
-            <p className="text-xs text-muted-foreground mt-1">Öneri</p>
-          </CardContent></Card>
-          <Card><CardContent className="p-4 text-center">
-            <p className="text-3xl font-bold text-green-400">{Math.round(totalSavingKwh).toLocaleString("tr-TR")}</p>
-            <p className="text-xs text-muted-foreground mt-1">Tahmini Tasarruf (kWh)</p>
-          </CardContent></Card>
-          <Card><CardContent className="p-4 text-center">
-            <p className="text-3xl font-bold text-amber-400">
-              {Math.round(suggestions.reduce((a, s) => a + (s.potentialSavingPercent ?? 0), 0) * 10) / 10}%
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">Potansiyel Azaltım</p>
-          </CardContent></Card>
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border px-3 py-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function FindingCard({ finding }: { finding: AiFinding }) {
+  const route = MODULE_ROUTES[finding.moduleTarget];
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base leading-snug">{finding.title}</CardTitle>
+            <CardDescription>{labelFrom(RESULT_SUFFICIENCY_LABELS, finding.dataSufficiency)} veri yeterliligi</CardDescription>
+          </div>
+          <Badge variant="outline" className={PRIORITY_CLASSES[finding.priority] ?? ""}>
+            {labelFrom(PRIORITY_LABELS, finding.priority)}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm leading-relaxed text-muted-foreground">{finding.observation}</p>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant="secondary">{labelFrom(CONFIDENCE_LABELS, finding.confidence)}</Badge>
+          <Badge variant="secondary">{labelFrom(IMPACT_TYPE_LABELS, finding.estimatedImpact.type)}</Badge>
+        </div>
+        {finding.confidence === "low" && (
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertDescription>Bu oneri sinirli veya eksik verilere dayanmaktadir.</AlertDescription>
+          </Alert>
+        )}
+        <div className="space-y-2">
+          <h4 className="text-sm font-medium">Onerilen aksiyon</h4>
+          <p className="text-sm text-muted-foreground">{finding.recommendedAction}</p>
+        </div>
+        <Impact impact={finding.estimatedImpact} />
+        <Accordion type="single" collapsible>
+          <AccordionItem value="detail">
+            <AccordionTrigger>Gerekce, kanit ve sinirlamalar</AccordionTrigger>
+            <AccordionContent className="space-y-4">
+              <div>
+                <h4 className="text-sm font-medium">Gerekce</h4>
+                <p className="mt-1 text-sm text-muted-foreground">{finding.reasoning}</p>
+              </div>
+              <EvidenceList evidence={finding.evidence} />
+              <CompactList title="Eksik veriler" items={finding.missingData} />
+              <CompactList title="Sinirlamalar" items={finding.limitations} />
+              <div className="grid gap-2 text-sm sm:grid-cols-2">
+                <Metric label="Ekipman referansi" value={finding.equipmentRefs.length > 0 ? `${finding.equipmentRefs.length} kayit` : "-"} />
+                <Metric label="Enerji kaynagi referansi" value={finding.energySourceRefs.length > 0 ? `${finding.energySourceRefs.length} kayit` : "-"} />
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+        {route && (
+          <Button variant="outline" size="sm" asChild className="gap-2">
+            <Link href={route.href}>{route.label}<ArrowRight className="h-3.5 w-3.5" /></Link>
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Impact({ impact }: { impact: AiFinding["estimatedImpact"] }) {
+  const numericAllowed = impact.type === "verified_calculation" || impact.type === "backend_scenario";
+  return (
+    <div className="rounded-md border p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">Tahmini etki</span>
+        <Badge variant="outline">{labelFrom(IMPACT_TYPE_LABELS, impact.type)}</Badge>
+      </div>
+      <p className="mt-2 text-sm text-muted-foreground">{impact.description}</p>
+      {numericAllowed && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <Metric label="Enerji" value={formatNumber(impact.annualKwh, " kWh/yil")} />
+          <Metric label="Maliyet" value={formatNumber(impact.annualCost)} />
+          <Metric label="Oran" value={formatNumber(impact.percent, "%")} />
         </div>
       )}
+      {impact.type === "qualitative_estimate" && (
+        <p className="mt-2 text-xs text-muted-foreground">Sayisal tasarruf garantisi olarak yorumlanmamalidir.</p>
+      )}
+    </div>
+  );
+}
 
-      {triggered && !getSuggestions.isPending && suggestions.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {suggestions.map((s, idx) => (
-            <Card key={idx} className="group hover:shadow-lg transition-shadow">
-              <CardContent className="p-5">
-                <div className="flex items-start justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2">
-                    <div className="h-8 w-8 rounded-lg bg-teal-500/10 flex items-center justify-center shrink-0">
-                      <Lightbulb className="h-4 w-4 text-teal-400" />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-sm leading-tight">{s.title}</h3>
-                      <span className="text-xs text-muted-foreground">{s.category}</span>
-                    </div>
+function EvidenceList({ evidence }: { evidence: AiFinding["evidence"] }) {
+  if (evidence.length === 0) return <CompactList title="Kanitlar" items={["Kanit kaydi bulunmuyor."]} />;
+  return (
+    <div className="space-y-2">
+      <h4 className="text-sm font-medium">Kanitlar</h4>
+      <div className="space-y-2">
+        {evidence.map((item) => (
+          <div key={`${item.source}:${item.description}`} className="rounded-md border px-3 py-2 text-sm">
+            <div className="font-medium">{item.source}</div>
+            <div className="text-muted-foreground">{item.description}</div>
+            {item.value && <div className="mt-1 text-xs text-muted-foreground">Deger: {item.value}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CompactList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div>
+      <h4 className="text-sm font-medium">{title}</h4>
+      <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
+        {items.map((item) => <li key={item}>- {item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function AnalysisHistory(props: {
+  items: AiAnalysisHistoryItem[];
+  isLoading: boolean;
+  error: unknown;
+  offset: number;
+  pageSize: number;
+  typeFilter: AiAnalysisType | "all";
+  statusFilter: string;
+  onTypeFilterChange: (value: AiAnalysisType | "all") => void;
+  onStatusFilterChange: (value: string) => void;
+  onPrevious: () => void;
+  onNext: () => void;
+  onRefresh: () => void;
+  onOpenDetail: (id: number) => void;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <CardTitle>Analiz gecmisi</CardTitle>
+            <CardDescription>Liste backend pagination ile yuklenir; tam sonuc detaya tiklandiginda alinir.</CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={props.onRefresh} className="w-fit gap-2">
+            <RefreshCw className="h-3.5 w-3.5" /> Yenile
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="space-y-1.5">
+            <Label>Analiz turu</Label>
+            <Select value={props.typeFilter} onValueChange={(value) => props.onTypeFilterChange(value as AiAnalysisType | "all")}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Tum analizler</SelectItem>
+                {ANALYSIS_TYPE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Status</Label>
+            <Select value={props.statusFilter} onValueChange={props.onStatusFilterChange}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Tum durumlar</SelectItem>
+                {Object.entries(STATUS_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        {props.isLoading && <DetailSkeleton />}
+        {Boolean(props.error) && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Gecmis yuklenemedi</AlertTitle>
+            <AlertDescription>{errorDescription(props.error)}</AlertDescription>
+          </Alert>
+        )}
+        {!props.isLoading && !props.error && props.items.length === 0 && (
+          <Empty className="border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon"><Clock className="h-5 w-5" /></EmptyMedia>
+              <EmptyTitle>Analiz gecmisi bos</EmptyTitle>
+              <EmptyDescription>Bu kapsam icin henuz kayitli AI analizi yok.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+        {!props.isLoading && props.items.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Tarih</TableHead>
+                <TableHead>Tur</TableHead>
+                <TableHead>Donem</TableHead>
+                <TableHead>Kapsam</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Provider</TableHead>
+                <TableHead>Cache</TableHead>
+                <TableHead className="text-right">Detay</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {props.items.map((item) => (
+                <TableRow key={item.id}>
+                  <TableCell>{formatDateTime(item.createdAt)}</TableCell>
+                  <TableCell>{analysisTypeLabel(item.analysisType)}</TableCell>
+                  <TableCell>{formatPeriod(item.periodStart, item.periodEnd)}</TableCell>
+                  <TableCell>{item.unitId === null ? "Tum birimler" : `Unit #${item.unitId}`}</TableCell>
+                  <TableCell><Badge variant="outline">{labelFrom(STATUS_LABELS, item.status)}</Badge></TableCell>
+                  <TableCell>{item.provider}</TableCell>
+                  <TableCell>{item.cacheHit ? "Hit" : "Miss"}</TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="sm" onClick={() => props.onOpenDetail(item.id)} className="gap-2">
+                      <Eye className="h-3.5 w-3.5" /> Goster
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+        <div className="flex items-center justify-between gap-3">
+          <Button variant="outline" size="sm" onClick={props.onPrevious} disabled={props.offset === 0}>Onceki</Button>
+          <span className="text-xs text-muted-foreground">Offset {props.offset}</span>
+          <Button variant="outline" size="sm" onClick={props.onNext} disabled={props.items.length < props.pageSize}>Sonraki</Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LegacySuggestions(props: {
+  focus: string;
+  onFocusChange: (value: string) => void;
+  isVisible: boolean;
+  response: LegacySuggestionsResponse | null;
+  isLoading: boolean;
+  onLoad: () => void;
+}) {
+  const suggestions = props.response?.suggestions ?? [];
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Kural tabanli oneriler</CardTitle>
+        <CardDescription>Legacy oneriler otomatik calismaz; isterseniz manuel olarak acabilirsiniz.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="space-y-1.5">
+            <Label>Odak</Label>
+            <Select value={props.focus} onValueChange={props.onFocusChange}>
+              <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {LEGACY_FOCUS_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button variant="outline" onClick={props.onLoad} disabled={props.isLoading} className="gap-2">
+            {props.isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lightbulb className="h-4 w-4" />}
+            Kural tabanli onerileri goster
+          </Button>
+        </div>
+        {props.isVisible && suggestions.length === 0 && (
+          <p className="text-sm text-muted-foreground">Kural tabanli oneri uretilemedi.</p>
+        )}
+        {props.isVisible && suggestions.length > 0 && (
+          <div className="grid gap-3 md:grid-cols-2">
+            {suggestions.map((suggestion) => (
+              <div key={`${suggestion.title}:${suggestion.category}`} className="rounded-md border p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-medium">{suggestion.title}</h3>
+                    <p className="text-xs text-muted-foreground">{suggestion.category}</p>
                   </div>
-                  <Badge variant="outline" className={`text-xs shrink-0 ${PRIORITY_CONFIG[s.priority]?.color ?? ""}`}>
-                    {PRIORITY_CONFIG[s.priority]?.label ?? s.priority}
-                  </Badge>
+                  <Badge variant="outline">{suggestion.priority}</Badge>
                 </div>
-
-                <p className="text-xs text-muted-foreground leading-relaxed mb-4">{s.description}</p>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-muted/30 rounded-md p-2 text-center">
-                    <div className="flex items-center justify-center gap-1 mb-0.5">
-                      <TrendingDown className="h-3 w-3 text-green-400" />
-                      <span className="text-xs text-muted-foreground">Tasarruf</span>
-                    </div>
-                    <p className="text-xs font-bold text-green-400">{Math.round(s.potentialSavingKwh).toLocaleString("tr-TR")} kWh</p>
-                    <p className="text-xs text-muted-foreground">%{s.potentialSavingPercent?.toFixed(1)}</p>
-                  </div>
-                  <div className="bg-muted/30 rounded-md p-2 text-center">
-                    <div className="flex items-center justify-center gap-1 mb-0.5">
-                      <Timer className="h-3 w-3 text-blue-400" />
-                      <span className="text-xs text-muted-foreground">Geri Dönüş</span>
-                    </div>
-                    <p className="text-xs font-bold text-blue-400">
-                      {s.paybackMonths > 0 ? `${s.paybackMonths} ay` : "—"}
-                    </p>
-                  </div>
+                <p className="mt-2 text-sm text-muted-foreground">{suggestion.description}</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <Metric label="Tasarruf" value={formatNumber(suggestion.potentialSavingKwh, " kWh")} />
+                  <Metric label="Azaltim" value={formatNumber(suggestion.potentialSavingPercent, "%")} />
                 </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
-      {triggered && !getSuggestions.isPending && getSuggestions.isError && (
-        <Card role="alert">
-          <CardContent className="py-10 text-center text-destructive">
-            <AlertCircle className="h-10 w-10 mx-auto mb-3" />
-            <p className="font-medium">Öneriler üretilemedi</p>
-            <p className="text-sm mt-1">{errorMessage}</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {triggered && !getSuggestions.isPending && !getSuggestions.isError && suggestions.length === 0 && (
-        <Card>
-          <CardContent className="py-16 text-center text-muted-foreground">
-            <Lightbulb className="h-10 w-10 mx-auto mb-3 opacity-30" />
-            <p>Öneri üretilemedi. Daha fazla tüketim verisi girildiğinde daha iyi sonuçlar elde edilir.</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {!triggered && (
-        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-          <Zap className="h-12 w-12 mb-4 opacity-20" />
-          <p className="text-sm font-medium">Yapay Zeka Analizi Hazır</p>
-          <p className="text-xs mt-1">Yukarıdan odak seçip "Önerileri Al" butonuna basın</p>
-        </div>
-      )}
+function DetailSkeleton() {
+  return (
+    <div className="space-y-3">
+      <Skeleton className="h-16 w-full" />
+      <Skeleton className="h-28 w-full" />
+      <Skeleton className="h-28 w-full" />
     </div>
   );
 }

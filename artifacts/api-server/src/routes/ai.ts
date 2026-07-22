@@ -2,7 +2,7 @@ import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { aiAnalysisTypeSchema } from "@workspace/api-zod";
 import { db, consumptionTable, metersTable, seuTable, unitsTable } from "@workspace/db";
-import { requireAuth } from "../middlewares/auth.js";
+import { requireAuth, requireCompanyAdmin } from "../middlewares/auth.js";
 import {
   buildEquipmentInventoryContext,
   toEquipmentAiReadiness,
@@ -15,6 +15,15 @@ import { readAiRuntimeConfig } from "../lib/ai/config.js";
 import { AiProviderError, providerErrorResponse } from "../lib/ai/errors.js";
 import { createAiProvider } from "../lib/ai/registry.js";
 import { buildAiAnalysisContext } from "../lib/ai/context-builder.js";
+import {
+  getAiAnalysisDetail,
+  listAiAnalyses,
+  loadCompanyAiPolicy,
+  runPersistedAiAnalysis,
+  upsertCompanyAiPolicy,
+  type CompanyAiDataPolicy,
+} from "../lib/ai/analysis-service.js";
+import { writeBestEffortAudit } from "../lib/audit.js";
 import {
   aiReadinessFromTechnicalProfile,
   AI_SUGGESTION_FOCUS_VALUES,
@@ -38,6 +47,28 @@ function parseFocus(value: unknown) {
 
 function requestIdFromHeaders(header: unknown) {
   return typeof header === "string" && header.trim().length > 0 ? header.trim() : undefined;
+}
+
+function parseLimit(value: unknown) {
+  const raw = parseMatchingPositiveInteger(undefined, value, "limit") ?? 20;
+  return Math.max(1, Math.min(100, raw));
+}
+
+function parseOffset(value: unknown) {
+  const raw = parseOptionalNonNegativeInteger(value, "offset") ?? 0;
+  return Math.max(0, raw);
+}
+
+function parsePolicy(value: unknown): CompanyAiDataPolicy {
+  if (value === "disabled" || value === "synthetic_only" || value === "production_allowed") return value;
+  throw new AiScopeError(400, "Gecersiz AI dataPolicy");
+}
+
+function parseOptionalNonNegativeInteger(value: unknown, field: string) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value.trim())) return Number(value.trim());
+  throw new AiScopeError(400, `Gecersiz ${field}`);
 }
 
 router.post("/ai/suggestions", requireAuth, async (req, res) => {
@@ -184,6 +215,173 @@ router.post("/ai/analyses/preview", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Sunucu hatasi" });
   } finally {
     if (timeout) clearTimeout(timeout);
+  }
+});
+
+router.post("/ai/analyses", requireAuth, async (req, res) => {
+  try {
+    const body = req.body as { analysisType?: unknown } | undefined;
+    const analysisType = aiAnalysisTypeSchema.parse(body?.analysisType);
+    parseMatchingPositiveInteger(undefined, req.query.companyId, "companyId");
+    const scope = await resolveAiScopeFromRequest(req);
+    const result = await runPersistedAiAnalysis({
+      scope,
+      analysisType,
+      user: req.user!,
+      requestId: requestIdFromHeaders(req.headers["x-request-id"]) ?? String(req.id ?? "ai-analysis"),
+    });
+    res.status(result.meta.cacheHit ? 200 : 201).json(result);
+  } catch (err) {
+    if (err instanceof AiScopeError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    if (err instanceof AiProviderError) {
+      res.status(err.status).json(providerErrorResponse(err));
+      return;
+    }
+    if (err && typeof err === "object" && "name" in err && err.name === "ZodError") {
+      res.status(400).json({ error: "Gecersiz analiz istegi" });
+      return;
+    }
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatasi" });
+  }
+});
+
+router.get("/ai/analyses", requireAuth, async (req, res) => {
+  try {
+    const scope = await resolveAiScopeFromRequest(req);
+    const analysisType = req.query.analysisType === undefined ? undefined : aiAnalysisTypeSchema.parse(req.query.analysisType);
+    const status = typeof req.query.status === "string" && ["pending", "processing", "completed", "failed"].includes(req.query.status)
+      ? req.query.status
+      : undefined;
+    const items = await listAiAnalyses(scope, {
+      limit: parseLimit(req.query.limit),
+      offset: parseOffset(req.query.offset),
+      analysisType,
+      status,
+    });
+    res.json({ items, pagination: { limit: parseLimit(req.query.limit), offset: parseOffset(req.query.offset) } });
+  } catch (err) {
+    if (err instanceof AiScopeError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    if (err && typeof err === "object" && "name" in err && err.name === "ZodError") {
+      res.status(400).json({ error: "Gecersiz analiz filtreleri" });
+      return;
+    }
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatasi" });
+  }
+});
+
+router.get("/ai/analyses/:id", requireAuth, async (req, res) => {
+  try {
+    const id = parseMatchingPositiveInteger(undefined, req.params.id, "id");
+    if (id === undefined) throw new AiScopeError(400, "Gecersiz id");
+    const scope = await resolveAiScopeFromRequest(req);
+    const detail = await getAiAnalysisDetail(scope, id);
+    if (!detail) {
+      res.status(404).json({ error: "Analiz bulunamadi" });
+      return;
+    }
+    res.json({
+      analysis: {
+        id: detail.analysis.id,
+        status: detail.analysis.status,
+        analysisType: detail.analysis.analysisType,
+        periodStart: detail.analysis.periodStart,
+        periodEnd: detail.analysis.periodEnd,
+        result: detail.result,
+        createdAt: detail.analysis.createdAt,
+        completedAt: detail.analysis.completedAt,
+      },
+      meta: {
+        provider: detail.analysis.provider,
+        model: detail.analysis.model,
+        cacheHit: detail.analysis.cacheHit,
+        sourceAnalysisId: detail.analysis.sourceAnalysisId,
+        fallbackUsed: detail.analysis.fallbackUsed,
+        dataVersion: detail.analysis.dataVersion,
+        dataSufficiency: detail.analysis.dataSufficiency,
+        contextTruncated: detail.analysis.contextTruncated,
+        attempts: detail.attempts,
+      },
+    });
+  } catch (err) {
+    if (err instanceof AiScopeError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatasi" });
+  }
+});
+
+router.get("/company-settings/ai", requireAuth, async (req, res) => {
+  try {
+    const scope = await resolveAiScopeFromRequest(req);
+    const policy = await loadCompanyAiPolicy(scope.companyId);
+    res.json(policy);
+  } catch (err) {
+    if (err instanceof AiScopeError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatasi" });
+  }
+});
+
+router.patch("/company-settings/ai", requireAuth, requireCompanyAdmin, async (req, res) => {
+  try {
+    const body = req.body as { dataPolicy?: unknown; retentionDays?: unknown; expectedSettingsVersion?: unknown } | undefined;
+    const scope = await resolveAiScopeFromRequest(req);
+    const dataPolicy = parsePolicy(body?.dataPolicy);
+    const retentionDays = body?.retentionDays === null || body?.retentionDays === undefined
+      ? null
+      : parseMatchingPositiveInteger(body.retentionDays, undefined, "retentionDays") ?? null;
+    if (retentionDays !== null && (retentionDays < 30 || retentionDays > 3650)) throw new AiScopeError(400, "Gecersiz retentionDays");
+    const expectedSettingsVersion = parseOptionalNonNegativeInteger(body?.expectedSettingsVersion, "expectedSettingsVersion");
+    const result = await upsertCompanyAiPolicy({
+      companyId: scope.companyId,
+      dataPolicy,
+      retentionDays,
+      expectedSettingsVersion,
+      userId: req.user?.userId ?? null,
+    });
+    if (result.status === "conflict") {
+      res.status(409).json({ error: "AI ayar surumu guncel degil", currentVersion: result.settings.settingsVersion });
+      return;
+    }
+    await writeBestEffortAudit(db, {
+      request: req,
+      action: result.status === "created" ? "company_ai_settings.created" : "company_ai_settings.updated",
+      entityType: "company_ai_settings",
+      entityId: result.settings.id,
+      companyId: scope.companyId,
+      unitId: null,
+      metadata: {
+        dataPolicy: result.settings.dataPolicy,
+        retentionDays: result.settings.retentionDays,
+        version: result.settings.settingsVersion,
+      },
+    });
+    res.json({
+      dataPolicy: result.settings.dataPolicy,
+      retentionDays: result.settings.retentionDays,
+      version: result.settings.settingsVersion,
+      updatedAt: result.settings.updatedAt.toISOString(),
+    });
+  } catch (err) {
+    if (err instanceof AiScopeError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    req.log.error(err);
+    res.status(500).json({ error: "Sunucu hatasi" });
   }
 });
 

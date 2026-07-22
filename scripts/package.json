@@ -35,6 +35,7 @@
     "test:equipment-context": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-equipment-context.ts",
     "test:ai-provider": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-ai-provider.ts",
     "test:ai-context-builder": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-ai-context-builder.ts",
+    "test:ai-analysis-persistence": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-ai-analysis-persistence.ts",
     "test:gemini-smoke": "tsx ./src/test-gemini-smoke.ts",
     "test:report-migration-readiness": "tsx ./src/test-db.ts --with-child -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-migration-readiness.ts",
     "test:report-archive-retention": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-archive-retention.ts",
