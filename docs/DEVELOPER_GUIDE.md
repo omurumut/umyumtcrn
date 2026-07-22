@@ -111,6 +111,25 @@ NODE_ENV=development
 
 API `PORT` olmadan baslamaz. Local gelistirme icin frontend varsayilan olarak `5000` portunu kullanir ve `/api` isteklerini `http://localhost:8080` adresine proxy'ler.
 
+AI provider baglantisi backend environment uzerinden yapilir. Gercek anahtar repo dosyalarina yazilmaz; local veya deployment secret olarak saglanir.
+
+```env
+AI_ENABLED=false
+AI_PROVIDER=mock
+AI_ALLOW_MOCK_PROVIDER=true
+AI_TIMEOUT_MS=30000
+AI_MAX_OUTPUT_TOKENS=4096
+AI_DEVELOPMENT_DATA_POLICY=demo_only
+
+GEMINI_API_KEY=
+GEMINI_MODEL=
+GEMINI_MAX_RETRIES=1
+GEMINI_TEMPERATURE=0.2
+GEMINI_API_VERSION=
+```
+
+`AI_PROVIDER=gemini` yalniz backend tarafinda Gemini provider'i etkinlestirir; frontend'e SDK veya secret gonderilmez. Gercek Gemini smoke testi otomatik suite'e dahil degildir; yalniz sentetik veriyle ve `RUN_GEMINI_SMOKE=true` verildiginde `pnpm run test:gemini-smoke` ile calisir.
+
 4. Kurulumdan sonra temel kontrolu calistirin:
 
 ```bash

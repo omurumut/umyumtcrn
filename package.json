@@ -38,6 +38,8 @@
     "test:equipment-custom-fields": "pnpm --filter @workspace/scripts run test:equipment-custom-fields",
     "test:equipment-import-export": "pnpm --filter @workspace/scripts run test:equipment-import-export",
     "test:equipment-context": "pnpm --filter @workspace/scripts run test:equipment-context",
+    "test:ai-provider": "pnpm --filter @workspace/scripts run test:ai-provider",
+    "test:gemini-smoke": "pnpm --filter @workspace/scripts run test:gemini-smoke",
     "verify:ci": "pnpm run typecheck && pnpm run build && pnpm run test:db:smoke && pnpm run test:fixtures && pnpm run test:audit && pnpm run test:audit-restore && pnpm run test:e2e && pnpm run test:production-readiness",
     "auth:cleanup": "pnpm --filter @workspace/scripts run auth:cleanup",
     "start": "ts-node scripts/index.ts",

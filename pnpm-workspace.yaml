@@ -69,9 +69,11 @@ catalog:
 autoInstallPeers: false
 
 onlyBuiltDependencies:
+  - '@google/genai'
   - '@swc/core'
   - esbuild
   - msw
+  - protobufjs
   - unrs-resolver
 
 overrides:
@@ -160,4 +162,6 @@ overrides:
   esbuild: "0.27.3"
 
 allowBuilds:
+  '@google/genai': true
   esbuild: true
+  protobufjs: true
