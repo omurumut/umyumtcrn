@@ -19,12 +19,27 @@ export function buildGeminiSystemInstruction() {
 }
 
 export function buildGeminiUserContent(request: AiProviderRequest) {
+  const context = request.context;
   const safeContext = {
     promptPolicyVersion: GEMINI_PROMPT_POLICY_VERSION,
     analysisType: request.analysisType,
     instruction: analysisTypeInstruction(request.analysisType),
     scope: request.scope,
+    dataVersion: request.dataVersion ?? ("dataVersion" in context ? context.dataVersion : undefined),
+    evidenceIds: request.evidenceRegistry?.records.map((record) => record.evidenceId) ?? [],
     context: {
+      metadata: "contextSchemaVersion" in context ? {
+        contextSchemaVersion: context.contextSchemaVersion,
+        scopeType: context.scopeType,
+        companyRef: context.companyRef,
+        unitRef: context.unitRef,
+        periodStart: context.periodStart,
+        periodEnd: context.periodEnd,
+        effectiveDate: context.effectiveDate,
+        dataSufficiency: context.dataSufficiency,
+        limitations: context.limitations,
+        sourceSummary: context.sourceSummary,
+      } : undefined,
       technicalProfile: {
         status: request.context.technicalProfile.status,
         effectiveDate: request.context.technicalProfile.effectiveDate,
@@ -69,6 +84,9 @@ export function buildGeminiUserContent(request: AiProviderRequest) {
         })),
       },
       consumption: request.context.consumption,
+      monitoring: "monitoring" in context ? context.monitoring : undefined,
+      performance: "performance" in context ? context.performance : undefined,
+      actions: "actions" in context ? context.actions : undefined,
       seu: request.context.seu,
     },
     outputRules: {
@@ -76,6 +94,7 @@ export function buildGeminiUserContent(request: AiProviderRequest) {
       noMarkdown: true,
       noVerifiedCalculation: true,
       noFabricatedRefs: true,
+      evidenceSourceMustBeOneOfEvidenceIds: true,
     },
   };
   return JSON.stringify(safeContext);

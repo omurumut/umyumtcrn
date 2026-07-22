@@ -1,7 +1,9 @@
 import { aiAnalysisResultSchema, type AiAnalysisResult } from "@workspace/api-zod";
 import { AiProviderError } from "./errors.js";
+import type { AiEvidenceRegistry } from "./context-types.js";
+import { validateFindingEvidenceRefs } from "./context-utils.js";
 
-export function validateProviderAnalysis(value: unknown): AiAnalysisResult {
+export function validateProviderAnalysis(value: unknown, evidenceRegistry?: AiEvidenceRegistry): AiAnalysisResult {
   const parsed = aiAnalysisResultSchema.safeParse(value);
   if (!parsed.success) {
     throw new AiProviderError({
@@ -17,5 +19,6 @@ export function validateProviderAnalysis(value: unknown): AiAnalysisResult {
       message: "Provider dogrulanmis hesap sonucu uretemez",
     });
   }
+  validateFindingEvidenceRefs(parsed.data, evidenceRegistry);
   return parsed.data;
 }

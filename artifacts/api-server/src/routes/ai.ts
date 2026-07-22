@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { aiAnalysisTypeSchema } from "@workspace/api-zod";
-import { db, consumptionTable, metersTable, seuTable } from "@workspace/db";
+import { db, consumptionTable, metersTable, seuTable, unitsTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth.js";
 import {
   buildEquipmentInventoryContext,
@@ -14,6 +14,7 @@ import {
 import { readAiRuntimeConfig } from "../lib/ai/config.js";
 import { AiProviderError, providerErrorResponse } from "../lib/ai/errors.js";
 import { createAiProvider } from "../lib/ai/registry.js";
+import { buildAiAnalysisContext } from "../lib/ai/context-builder.js";
 import {
   aiReadinessFromTechnicalProfile,
   AI_SUGGESTION_FOCUS_VALUES,
@@ -116,56 +117,28 @@ router.post("/ai/analyses/preview", requireAuth, async (req, res) => {
       });
       return;
     }
+    if (config.provider === "gemini" && !await isTrustedDemoScope(scope.companyId, scope.unitId)) {
+      res.status(403).json({
+        error: "Gemini preview bu fazda yalniz guvenilir demo unit context'i ile calisir",
+        code: "AI_INVALID_REQUEST",
+      });
+      return;
+    }
     const provider = createAiProvider(config);
 
-    const consumptionConditions = [
-      eq(consumptionTable.year, scope.year),
-      eq(consumptionTable.companyId, scope.companyId),
-      eq(metersTable.companyId, scope.companyId),
-    ];
-    if (scope.unitId !== null) consumptionConditions.push(eq(metersTable.unitId, scope.unitId));
-    const rows = await db.select({ kwh: consumptionTable.kwh })
-      .from(consumptionTable)
-      .innerJoin(metersTable, eq(consumptionTable.meterId, metersTable.id))
-      .where(and(...consumptionConditions));
-
-    const seuConditions = [eq(seuTable.companyId, scope.companyId)];
-    if (scope.unitId !== null) seuConditions.push(eq(seuTable.unitId, scope.unitId));
-    const seuItems = await db.select({ category: seuTable.category })
-      .from(seuTable)
-      .where(and(...seuConditions));
-
-    const [technicalProfile, equipmentInventory] = await Promise.all([
-      buildTechnicalProfileAiContext({
-        companyId: scope.companyId,
-        unitId: scope.unitId,
-        effectiveDate,
-      }),
-      buildEquipmentInventoryContext({
-        companyId: scope.companyId,
-        unitId: scope.unitId,
-        effectiveDate,
-        includeItems: config.developmentDataPolicy === "full_context",
-      }),
-    ]);
+    const builtContext = await buildAiAnalysisContext(scope, {
+      analysisType,
+      effectiveDate,
+    });
 
     const controller = new AbortController();
     timeout = setTimeout(() => controller.abort(), config.timeoutMs);
     const providerRequest: AiProviderRequest = {
       analysisType,
       scope,
-      context: {
-        technicalProfile,
-        equipmentInventory,
-        consumption: {
-          totalKwh: rows.reduce((sum, row) => sum + row.kwh, 0),
-          recordCount: rows.length,
-        },
-        seu: {
-          itemCount: seuItems.length,
-          categories: Array.from(new Set(seuItems.map((item) => item.category))).sort(),
-        },
-      },
+      context: builtContext.context,
+      evidenceRegistry: builtContext.evidenceRegistry,
+      dataVersion: builtContext.dataVersion,
     };
     const result = await provider.generateAnalysis(providerRequest, {
       signal: controller.signal,
@@ -182,6 +155,11 @@ router.post("/ai/analyses/preview", requireAuth, async (req, res) => {
         model: result.meta.model,
         cacheHit: false,
         fallbackUsed: false,
+        dataVersion: builtContext.dataVersion,
+        contextSchemaVersion: builtContext.context.contextSchemaVersion,
+        dataSufficiency: builtContext.context.dataSufficiency,
+        contextWarnings: builtContext.warnings,
+        contextTruncated: builtContext.context.contextTruncated,
         providerRequestId: result.meta.providerRequestId,
         startedAt: result.meta.startedAt,
         finishedAt: result.meta.finishedAt,
@@ -208,5 +186,14 @@ router.post("/ai/analyses/preview", requireAuth, async (req, res) => {
     if (timeout) clearTimeout(timeout);
   }
 });
+
+async function isTrustedDemoScope(companyId: number, unitId: number | null) {
+  if (unitId === null) return false;
+  const [unit] = await db.select({ isDemo: unitsTable.isDemo })
+    .from(unitsTable)
+    .where(and(eq(unitsTable.companyId, companyId), eq(unitsTable.id, unitId)))
+    .limit(1);
+  return unit?.isDemo === true;
+}
 
 export default router;

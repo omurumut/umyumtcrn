@@ -503,13 +503,32 @@ async function endpointTests() {
       body: JSON.stringify({ analysisType: "energy_performance_overview", year: 2026, companyId: admin.company_id }),
     });
     await expectStatus(preview, 200, "AI preview");
-    const previewBody = await json(preview) as { mode?: string; analysis?: unknown; meta?: { provider?: string; model?: string; cacheHit?: boolean; fallbackUsed?: boolean } };
+    const previewBody = await json(preview) as {
+      mode?: string;
+      analysis?: unknown;
+      meta?: {
+        provider?: string;
+        model?: string;
+        cacheHit?: boolean;
+        fallbackUsed?: boolean;
+        dataVersion?: string;
+        contextSchemaVersion?: string;
+        dataSufficiency?: string;
+        contextWarnings?: unknown[];
+        contextTruncated?: boolean;
+      };
+    };
     assert(previewBody.mode === "mock", "Preview mode mock olmali");
     assert(previewBody.meta?.provider === "mock", "Preview meta provider mock olmali");
     assert(previewBody.meta?.model === "mock-v1", "Preview mock model donmeli");
     assert(previewBody.meta?.cacheHit === false && previewBody.meta?.fallbackUsed === false, "Preview cache/fallback false olmali");
+    assert(typeof previewBody.meta?.dataVersion === "string" && previewBody.meta.dataVersion.startsWith("sha256:"), "Preview dataVersion meta tasimali");
+    assert(previewBody.meta?.contextSchemaVersion === "1", "Preview context schema version tasimali");
+    assert(["sufficient", "partial", "insufficient"].includes(String(previewBody.meta?.dataSufficiency)), "Preview data sufficiency meta tasimali");
+    assert(Array.isArray(previewBody.meta?.contextWarnings), "Preview context warnings meta tasimali");
+    assert(typeof previewBody.meta?.contextTruncated === "boolean", "Preview truncation meta tasimali");
     assert(aiAnalysisResultSchema.safeParse(previewBody.analysis).success, "Preview analysis Zod semasindan gecmeli");
-    assertions += 5;
+    assertions += 10;
 
     const forbiddenStandard = await fetch(`${server.baseUrl}/api/ai/analyses/preview`, {
       method: "POST",

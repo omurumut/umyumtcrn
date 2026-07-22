@@ -70,7 +70,7 @@ export class GeminiAiProvider implements AiProvider {
         });
       }
       const parsedJson = parseJson(response.text);
-      const analysis = validateProviderAnalysis(normalizeGeminiAnalysis(parsedJson, request));
+      const analysis = validateProviderAnalysis(normalizeGeminiAnalysis(parsedJson, request), request.evidenceRegistry);
       const finished = Date.now();
       return {
         analysis,

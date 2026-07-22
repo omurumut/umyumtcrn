@@ -1,5 +1,6 @@
 import type { AiAnalysisResult, AiAnalysisType } from "@workspace/api-zod";
 import type { AiProviderError } from "./errors.js";
+import type { AiAnalysisContext, AiEvidenceRegistry } from "./context-types.js";
 import type { EquipmentInventoryContext } from "../equipment-inventory-context.js";
 import type { TechnicalProfileAiContext } from "../unit-technical-profile-effective.js";
 
@@ -14,7 +15,7 @@ export type AiProviderScope = {
 export type AiProviderRequest = {
   analysisType: AiAnalysisType;
   scope: AiProviderScope;
-  context: {
+  context: AiAnalysisContext | {
     technicalProfile: TechnicalProfileAiContext;
     equipmentInventory: EquipmentInventoryContext;
     consumption: {
@@ -26,6 +27,8 @@ export type AiProviderRequest = {
       categories: string[];
     };
   };
+  evidenceRegistry?: AiEvidenceRegistry;
+  dataVersion?: string;
 };
 
 export type AiProviderCallOptions = {

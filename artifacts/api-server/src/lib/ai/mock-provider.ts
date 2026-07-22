@@ -65,11 +65,11 @@ export class MockAiProvider implements AiProvider {
       });
     }
     if (this.mode === "invalid_schema") {
-      validateProviderAnalysis({ schemaVersion: "1.0", findings: [] });
+      validateProviderAnalysis({ schemaVersion: "1.0", findings: [] }, request.evidenceRegistry);
     }
 
     const rawAnalysis = buildMockAnalysis(request, providerRequestId);
-    const analysis = validateProviderAnalysis(rawAnalysis);
+    const analysis = validateProviderAnalysis(rawAnalysis, request.evidenceRegistry);
     const finished = Date.now();
     return {
       analysis,
@@ -98,6 +98,7 @@ function stableHash(value: unknown) {
 
 function buildMockAnalysis(request: AiProviderRequest, providerRequestId: string): AiAnalysisResult {
   const { analysisType, scope, context } = request;
+  const evidenceSource = request.evidenceRegistry?.records[0]?.evidenceId ?? "backend_context";
   const technicalReady = context.technicalProfile.status === "resolved";
   const equipmentReady = context.equipmentInventory.readiness.ready;
   const dataSufficiency = technicalReady && equipmentReady && context.consumption.recordCount > 0
@@ -134,7 +135,7 @@ function buildMockAnalysis(request: AiProviderRequest, providerRequestId: string
         reasoning: "Mock provider yalniz backend tarafindan hazirlanan baglam ozetlerini kullanir; kullanici promptu veya serbest metin calistirmaz.",
         evidence: [
           {
-            source: "backend_context",
+            source: evidenceSource,
             description: "Tuketim, teknik profil ve ekipman readiness ozetleri backend tarafinda scope uygulanarak hazirlandi.",
             value: `${Math.round(context.consumption.totalKwh)} kWh toplam tuketim`,
           },
