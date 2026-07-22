@@ -42,6 +42,7 @@
     "test:ai-context-builder": "pnpm --filter @workspace/scripts run test:ai-context-builder",
     "test:ai-analysis-persistence": "pnpm --filter @workspace/scripts run test:ai-analysis-persistence",
     "test:ai-resilience": "pnpm --filter @workspace/scripts run test:ai-resilience",
+    "test:ai-draft-action": "pnpm --filter @workspace/scripts run test:ai-draft-action",
     "test:gemini-smoke": "pnpm --filter @workspace/scripts run test:gemini-smoke",
     "verify:ci": "pnpm run typecheck && pnpm run build && pnpm run test:db:smoke && pnpm run test:fixtures && pnpm run test:audit && pnpm run test:audit-restore && pnpm run test:e2e && pnpm run test:production-readiness",
     "auth:cleanup": "pnpm --filter @workspace/scripts run auth:cleanup",

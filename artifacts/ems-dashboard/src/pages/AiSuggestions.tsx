@@ -1,7 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getListUnitsQueryKey, useListUnits, type ListUnitsParams } from "@workspace/api-client-react";
+import {
+  getListTargetsQueryKey,
+  getListUnitsQueryKey,
+  useListTargets,
+  useListUnits,
+  type EnergyTargetWithProgress,
+  type ListTargetsParams,
+  type ListUnitsParams,
+} from "@workspace/api-client-react";
 import type { AiFinding } from "@workspace/api-zod";
 import {
   AlertCircle,
@@ -27,6 +35,7 @@ import { useYear } from "@/context/YearContext";
 import {
   ApiError,
   createAiAnalysis,
+  createDraftActionFromFinding,
   getAiAnalysisDetail,
   getAiPolicy,
   getLegacySuggestions,
@@ -35,6 +44,7 @@ import {
   type AiAnalysisResponse,
   type AiAnalysisType,
   type AiCompanyPolicy,
+  type DraftActionResponse,
   type LegacySuggestionsResponse,
 } from "@/lib/ai-api";
 import {
@@ -58,6 +68,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -74,9 +85,11 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useToast } from "@/hooks/use-toast";
 
@@ -99,6 +112,25 @@ type Scope = {
   companyId: number | null;
   unitId: number | null;
   year: number;
+};
+
+type DraftDialogState = {
+  analysis: AiAnalysisResponse;
+  finding: AiFinding;
+} | null;
+
+type DraftActionForm = {
+  targetId: string;
+  title: string;
+  description: string;
+  priority: string;
+  responsibleUserId: string;
+  startDate: string;
+  dueDate: string;
+  estimatedCost: string;
+  estimatedSavingKwh: string;
+  humanApproval: boolean;
+  fallbackAcknowledgement: boolean;
 };
 
 function isAdminRole(role: string | undefined) {
@@ -143,6 +175,7 @@ export default function AiSuggestions() {
   const [selectedAnalysisId, setSelectedAnalysisId] = useState<number | null>(null);
   const [legacyFocus, setLegacyFocus] = useState("genel");
   const [legacyVisible, setLegacyVisible] = useState(false);
+  const [draftDialog, setDraftDialog] = useState<DraftDialogState>(null);
 
   const isSuperAdmin = user?.role === "superadmin";
   const isAdmin = isAdminRole(user?.role);
@@ -152,6 +185,13 @@ export default function AiSuggestions() {
   const unitsParams: ListUnitsParams = isSuperAdmin && companyId !== null ? { companyId } : {};
   const unitsQuery = useListUnits<UnitOption[]>(unitsParams, {
     query: { queryKey: [...getListUnitsQueryKey(), companyId], enabled: isAdmin && canResolveCompany },
+  });
+  const targetParams: ListTargetsParams = {
+    ...(isSuperAdmin && companyId !== null ? { companyId } : {}),
+    ...(effectiveUnitId !== null ? { unitId: effectiveUnitId } : {}),
+  };
+  const targetsQuery = useListTargets<EnergyTargetWithProgress[]>(targetParams, {
+    query: { queryKey: [...getListTargetsQueryKey(targetParams), companyId, effectiveUnitId], enabled: !!token && canResolveCompany },
   });
 
   const policyQuery = useQuery<AiCompanyPolicy, ApiError>({
@@ -204,6 +244,34 @@ export default function AiSuggestions() {
     onSuccess: () => setLegacyVisible(true),
     onError: (error) => {
       toast({ title: "Kural tabanli oneriler alinamadi", description: errorDescription(error), variant: "destructive" });
+    },
+  });
+
+  const draftActionMutation = useMutation<DraftActionResponse, ApiError, { analysis: AiAnalysisResponse; finding: AiFinding; form: DraftActionForm }>({
+    mutationFn: ({ analysis, finding, form }) => createDraftActionFromFinding(scope, analysis.analysis.id, finding.id, {
+      targetId: Number(form.targetId),
+      title: form.title,
+      description: form.description,
+      priority: form.priority,
+      responsibleUserId: form.responsibleUserId ? Number(form.responsibleUserId) : null,
+      startDate: form.startDate || undefined,
+      dueDate: form.dueDate || undefined,
+      estimatedCost: form.estimatedCost ? Number(form.estimatedCost) : null,
+      estimatedSavingKwh: form.estimatedSavingKwh ? Number(form.estimatedSavingKwh) : null,
+      humanApproval: form.humanApproval,
+      fallbackAcknowledgement: analysis.meta.fallbackUsed ? form.fallbackAcknowledgement : undefined,
+    }),
+    onSuccess: (data) => {
+      setDraftDialog(null);
+      toast({
+        title: data.created ? "Taslak aksiyon kaydedildi" : "Bu bulgu daha once donusturulmus",
+        description: data.created
+          ? "Aksiyon mevcut eylem planlari modulunde planned durumuyla olusturuldu."
+          : "Mevcut aksiyon kaydi acilabilir.",
+      });
+    },
+    onError: (error) => {
+      toast({ title: "Taslak aksiyon olusturulamadi", description: errorDescription(error), variant: "destructive" });
     },
   });
 
@@ -280,7 +348,12 @@ export default function AiSuggestions() {
         </Alert>
       )}
 
-      <LatestAnalysis analysis={lastAnalysis} />
+      <LatestAnalysis
+        analysis={lastAnalysis}
+        targets={targetsQuery.data ?? []}
+        canCreateDraftAction={canResolveCompany}
+        onCreateDraftAction={(analysis, finding) => setDraftDialog({ analysis, finding })}
+      />
 
       <AnalysisHistory
         items={historyQuery.data?.items ?? []}
@@ -329,9 +402,24 @@ export default function AiSuggestions() {
               <AlertDescription>Analiz bulunamadi veya bu kayda erisim yetkiniz yok.</AlertDescription>
             </Alert>
           )}
-          {detailQuery.data && <AnalysisResultView analysis={detailQuery.data} />}
+          {detailQuery.data && (
+            <AnalysisResultView
+              analysis={detailQuery.data}
+              targets={targetsQuery.data ?? []}
+              canCreateDraftAction={canResolveCompany}
+              onCreateDraftAction={(analysis, finding) => setDraftDialog({ analysis, finding })}
+            />
+          )}
         </DialogContent>
       </Dialog>
+      <DraftActionDialog
+        state={draftDialog}
+        targets={targetsQuery.data ?? []}
+        isSubmitting={draftActionMutation.isPending}
+        result={draftActionMutation.data ?? null}
+        onClose={() => setDraftDialog(null)}
+        onSubmit={(analysis, finding, form) => draftActionMutation.mutate({ analysis, finding, form })}
+      />
     </div>
   );
 }
@@ -504,7 +592,13 @@ function StatusLine({ icon, label, value }: { icon: React.ReactNode; label: stri
   );
 }
 
-function LatestAnalysis({ analysis }: { analysis: AiAnalysisResponse | null }) {
+function LatestAnalysis(props: {
+  analysis: AiAnalysisResponse | null;
+  targets: EnergyTargetWithProgress[];
+  canCreateDraftAction: boolean;
+  onCreateDraftAction: (analysis: AiAnalysisResponse, finding: AiFinding) => void;
+}) {
+  const { analysis } = props;
   if (!analysis) {
     return (
       <Empty className="border">
@@ -516,10 +610,23 @@ function LatestAnalysis({ analysis }: { analysis: AiAnalysisResponse | null }) {
       </Empty>
     );
   }
-  return <AnalysisResultView analysis={analysis} />;
+  return (
+    <AnalysisResultView
+      analysis={analysis}
+      targets={props.targets}
+      canCreateDraftAction={props.canCreateDraftAction}
+      onCreateDraftAction={props.onCreateDraftAction}
+    />
+  );
 }
 
-function AnalysisResultView({ analysis }: { analysis: AiAnalysisResponse }) {
+function AnalysisResultView(props: {
+  analysis: AiAnalysisResponse;
+  targets: EnergyTargetWithProgress[];
+  canCreateDraftAction: boolean;
+  onCreateDraftAction: (analysis: AiAnalysisResponse, finding: AiFinding) => void;
+}) {
+  const { analysis } = props;
   const result = analysis.analysis.result;
   const normalizedMetaSufficiency = analysis.meta.dataSufficiency === "complete" ? "sufficient" : analysis.meta.dataSufficiency;
   const sufficiencyConflict = normalizedMetaSufficiency !== result.dataSufficiency;
@@ -598,7 +705,16 @@ function AnalysisResultView({ analysis }: { analysis: AiAnalysisResponse }) {
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        {result.findings.map((finding) => <FindingCard key={finding.id} finding={finding} />)}
+        {result.findings.map((finding) => (
+          <FindingCard
+            key={finding.id}
+            analysis={analysis}
+            finding={finding}
+            targetCount={props.targets.length}
+            canCreateDraftAction={props.canCreateDraftAction}
+            onCreateDraftAction={props.onCreateDraftAction}
+          />
+        ))}
       </div>
       <Alert>
         <Info className="h-4 w-4" />
@@ -618,8 +734,16 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function FindingCard({ finding }: { finding: AiFinding }) {
+function FindingCard(props: {
+  analysis: AiAnalysisResponse;
+  finding: AiFinding;
+  targetCount: number;
+  canCreateDraftAction: boolean;
+  onCreateDraftAction: (analysis: AiAnalysisResponse, finding: AiFinding) => void;
+}) {
+  const { analysis, finding } = props;
   const route = MODULE_ROUTES[finding.moduleTarget];
+  const canDraft = props.canCreateDraftAction && finding.draftActionEligibility.eligible && props.targetCount > 0;
   return (
     <Card className="overflow-hidden">
       <CardHeader className="pb-3">
@@ -668,14 +792,197 @@ function FindingCard({ finding }: { finding: AiFinding }) {
             </AccordionContent>
           </AccordionItem>
         </Accordion>
-        {route && (
-          <Button variant="outline" size="sm" asChild className="gap-2">
-            <Link href={route.href}>{route.label}<ArrowRight className="h-3.5 w-3.5" /></Link>
-          </Button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {finding.draftActionEligibility.eligible ? (
+            <Button size="sm" className="gap-2" disabled={!canDraft} onClick={() => props.onCreateDraftAction(analysis, finding)}>
+              <Lightbulb className="h-3.5 w-3.5" />
+              Taslak aksiyon olustur
+            </Button>
+          ) : (
+            <Badge variant="outline">Aksiyona uygun degil: {finding.draftActionEligibility.reason}</Badge>
+          )}
+          {route && (
+            <Button variant="outline" size="sm" asChild className="gap-2">
+              <Link href={route.href}>{route.label}<ArrowRight className="h-3.5 w-3.5" /></Link>
+            </Button>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
+}
+
+function DraftActionDialog(props: {
+  state: DraftDialogState;
+  targets: EnergyTargetWithProgress[];
+  isSubmitting: boolean;
+  result: DraftActionResponse | null;
+  onClose: () => void;
+  onSubmit: (analysis: AiAnalysisResponse, finding: AiFinding, form: DraftActionForm) => void;
+}) {
+  const finding = props.state?.finding ?? null;
+  const analysis = props.state?.analysis ?? null;
+  const [form, setForm] = useState<DraftActionForm>(() => emptyDraftForm(finding));
+
+  useEffect(() => {
+    setForm(emptyDraftForm(finding));
+  }, [finding?.id]);
+
+  if (!finding || !analysis) return null;
+  const scopedTargets = props.targets.filter((target) => target.unitId === finding.scope.unitId);
+  const canSubmit = form.humanApproval
+    && (!analysis.meta.fallbackUsed || form.fallbackAcknowledgement)
+    && form.targetId !== ""
+    && form.title.trim().length > 0
+    && !props.isSubmitting;
+  const previousAction = props.result?.created === false && props.result.source.analysisId === analysis.analysis.id && props.result.source.findingId === finding.id
+    ? props.result.action
+    : null;
+
+  function update<K extends keyof DraftActionForm>(key: K, value: DraftActionForm[K]) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  return (
+    <Dialog open={props.state !== null} onOpenChange={(open) => !open && props.onClose()}>
+      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Taslak aksiyon olustur</DialogTitle>
+          <DialogDescription>Kayit yalniz onay verilip kaydet butonuna basildiginda olusturulur.</DialogDescription>
+        </DialogHeader>
+
+        {previousAction && (
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertTitle>Bu bulgu icin taslak aksiyon zaten olusturulmus.</AlertTitle>
+            <AlertDescription>
+              {previousAction.title} kaydi mevcut. <Link href="/targets" className="underline">Mevcut aksiyonu goruntule</Link>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <div className="space-y-4">
+          <div className="rounded-md border p-3">
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">{labelFrom(PRIORITY_LABELS, finding.priority)}</Badge>
+              <Badge variant="outline">{labelFrom(IMPACT_TYPE_LABELS, finding.estimatedImpact.type)}</Badge>
+              <Badge variant="outline">{labelFrom(CONFIDENCE_LABELS, finding.confidence)}</Badge>
+            </div>
+            <h3 className="mt-3 text-base font-semibold">{finding.title}</h3>
+            <p className="mt-2 text-sm text-muted-foreground">{finding.observation}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{finding.reasoning}</p>
+          </div>
+
+          <EvidenceList evidence={finding.evidence} />
+          <CompactList title="Eksik veriler" items={finding.missingData} />
+          <CompactList title="Sinirlamalar" items={finding.limitations} />
+
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertTitle>AI karar destegi uyarisi</AlertTitle>
+            <AlertDescription>
+              Bu oneri muhendislik fizibilitesi, tasarruf garantisi veya dogrulanmis hesap kaydi degildir. Sorumlu kisi, hedef tarih ve sayisal degerler kullanici kontroluyle girilmelidir.
+            </AlertDescription>
+          </Alert>
+
+          {analysis.meta.fallbackUsed && (
+            <Alert>
+              <FileWarning className="h-4 w-4" />
+              <AlertTitle>Fallback sonucu</AlertTitle>
+              <AlertDescription>Bu bulgu Gemini yerine kural tabanli fallback sonucundan gelmistir; ek manuel onay zorunludur.</AlertDescription>
+            </Alert>
+          )}
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="draft-title">Aksiyon basligi</Label>
+              <Input id="draft-title" value={form.title} onChange={(event) => update("title", event.target.value)} />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="draft-description">Aciklama</Label>
+              <Textarea id="draft-description" rows={5} value={form.description} onChange={(event) => update("description", event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="draft-target">Baglanacak hedef</Label>
+              <Select value={form.targetId} onValueChange={(value) => update("targetId", value)}>
+                <SelectTrigger id="draft-target"><SelectValue placeholder="Hedef secin" /></SelectTrigger>
+                <SelectContent>
+                  {scopedTargets.map((target) => (
+                    <SelectItem key={target.id} value={String(target.id)}>{target.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="draft-priority">Oncelik</Label>
+              <Select value={form.priority} onValueChange={(value) => update("priority", value)}>
+                <SelectTrigger id="draft-priority"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="low">Dusuk</SelectItem>
+                  <SelectItem value="medium">Orta</SelectItem>
+                  <SelectItem value="high">Yuksek</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="draft-start">Baslangic tarihi</Label>
+              <Input id="draft-start" type="date" value={form.startDate} onChange={(event) => update("startDate", event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="draft-due">Hedef tarih</Label>
+              <Input id="draft-due" type="date" value={form.dueDate} onChange={(event) => update("dueDate", event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="draft-cost">Tahmini maliyet</Label>
+              <Input id="draft-cost" inputMode="decimal" value={form.estimatedCost} onChange={(event) => update("estimatedCost", event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="draft-saving">Tahmini tasarruf kWh/yil</Label>
+              <Input id="draft-saving" inputMode="decimal" value={form.estimatedSavingKwh} onChange={(event) => update("estimatedSavingKwh", event.target.value)} />
+            </div>
+          </div>
+
+          <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+            <Checkbox checked={form.humanApproval} onCheckedChange={(checked) => update("humanApproval", checked === true)} />
+            <span>Bu onerinin AI destekli karar destegi oldugunu, muhendislik fizibilitesi veya tasarruf garantisi olmadigini ve aksiyon alanlarini kontrol ettigimi onayliyorum.</span>
+          </label>
+          {analysis.meta.fallbackUsed && (
+            <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+              <Checkbox checked={form.fallbackAcknowledgement} onCheckedChange={(checked) => update("fallbackAcknowledgement", checked === true)} />
+              <span>Bu bulgunun kural tabanli fallback sonucundan geldigini ve ek manuel degerlendirme gerektirdigini onayliyorum.</span>
+            </label>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <Button variant="outline" onClick={props.onClose}>Vazgec</Button>
+          <Button disabled={!canSubmit} onClick={() => props.onSubmit(analysis, finding, form)}>
+            {props.isSubmitting ? "Kaydediliyor..." : "Taslak aksiyonu kaydet"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function emptyDraftForm(finding: AiFinding | null): DraftActionForm {
+  return {
+    targetId: "",
+    title: finding?.title ?? "",
+    description: finding ? `${finding.observation}\n\nOnerilen aksiyon: ${finding.recommendedAction}` : "",
+    priority: finding ? priorityToDraftPriority(finding.priority) : "medium",
+    responsibleUserId: "",
+    startDate: "",
+    dueDate: "",
+    estimatedCost: "",
+    estimatedSavingKwh: "",
+    humanApproval: false,
+    fallbackAcknowledgement: false,
+  };
+}
+
+function priorityToDraftPriority(priority: AiFinding["priority"]) {
+  return priority === "critical" ? "high" : priority;
 }
 
 function Impact({ impact }: { impact: AiFinding["estimatedImpact"] }) {

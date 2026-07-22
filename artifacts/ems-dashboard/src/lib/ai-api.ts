@@ -105,12 +105,26 @@ const legacySuggestionsResponseSchema = z.object({
   equipmentInventoryReadiness: legacyReadinessSchema.optional(),
 });
 
+const draftActionResponseSchema = z.object({
+  action: z.object({
+    id: z.number(),
+    status: z.string(),
+    title: z.string(),
+  }),
+  source: z.object({
+    analysisId: z.number(),
+    findingId: z.string(),
+  }),
+  created: z.boolean(),
+});
+
 export type AiAnalysisResponse = z.infer<typeof aiAnalysisResponseSchema>;
 export type AiAnalysisHistoryItem = z.infer<typeof aiAnalysisHistoryItemSchema>;
 export type AiAnalysisHistoryResponse = z.infer<typeof aiAnalysisHistoryResponseSchema>;
 export type AiCompanyPolicy = z.infer<typeof aiPolicySchema>;
 export type LegacySuggestion = z.infer<typeof legacySuggestionSchema>;
 export type LegacySuggestionsResponse = z.infer<typeof legacySuggestionsResponseSchema>;
+export type DraftActionResponse = z.infer<typeof draftActionResponseSchema>;
 export type { AiAnalysisResult, AiAnalysisType };
 
 export class ApiError extends Error {
@@ -206,5 +220,12 @@ export function getLegacySuggestions(scope: ScopeParams, focus: string) {
       ...(scope.companyId !== null ? { companyId: scope.companyId } : {}),
       ...(scope.unitId !== null ? { unitId: scope.unitId } : {}),
     }),
+  });
+}
+
+export function createDraftActionFromFinding(scope: ScopeParams, analysisId: number, findingId: string, body: Record<string, unknown>) {
+  return apiFetch(scope.token, `/api/ai/analyses/${analysisId}/findings/${encodeURIComponent(findingId)}/draft-action?${scopeQuery(scope)}`, draftActionResponseSchema, {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }

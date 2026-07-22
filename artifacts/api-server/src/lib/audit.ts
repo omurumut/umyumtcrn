@@ -114,6 +114,7 @@ export const AUDIT_ACTIONS = [
   "ai.circuit.probe",
   "ai.circuit.closed",
   "ai.processing.stale_recovered",
+  "AI_FINDING_CONVERTED_TO_DRAFT_ACTION",
   "company_ai_settings.created",
   "company_ai_settings.updated",
 ] as const;

@@ -36,6 +36,7 @@ import {
 } from "../lib/ai/scope.js";
 import type { AiProviderRequest } from "../lib/ai/provider.js";
 import { getCircuitDiagnostics } from "../lib/ai/circuit-breaker.js";
+import { AiDraftActionError, createDraftActionFromAiFinding } from "../lib/ai/draft-action-service.js";
 
 const router = Router();
 
@@ -329,6 +330,42 @@ router.get("/ai/analyses/:id", requireAuth, async (req, res) => {
     }
     req.log.error(err);
     res.status(500).json({ error: "Sunucu hatasi" });
+  }
+});
+
+router.post("/ai/analyses/:analysisId/findings/:findingId/draft-action", requireAuth, async (req, res) => {
+  try {
+    const analysisId = parseMatchingPositiveInteger(undefined, req.params.analysisId, "analysisId");
+    if (analysisId === undefined) throw new AiScopeError(400, "Gecersiz analysisId");
+    const findingId = typeof req.params.findingId === "string" && req.params.findingId.trim().length > 0
+      ? req.params.findingId.trim()
+      : null;
+    if (!findingId || findingId.length > 80) throw new AiScopeError(400, "Gecersiz findingId");
+    parseMatchingPositiveInteger(undefined, req.query.companyId, "companyId");
+    const scope = await resolveAiScopeFromRequest(req);
+    const result = await createDraftActionFromAiFinding({
+      scope,
+      analysisId,
+      findingId,
+      body: req.body as Record<string, unknown>,
+      user: req.user!,
+      request: req,
+    });
+    res.status(result.created ? 201 : 200).json(result);
+  } catch (err) {
+    if (err instanceof AiScopeError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    if (err instanceof AiDraftActionError) {
+      res.status(err.status).json({ error: err.message, code: err.code });
+      return;
+    }
+    req.log.error({
+      errorName: err instanceof Error ? err.name : "UnknownError",
+      requestId: req.id,
+    }, "AI finding draft action conversion failed");
+    res.status(500).json({ error: "Taslak aksiyon olusturulamadi" });
   }
 });
 

@@ -4,6 +4,11 @@ import { db, companiesTable, energyActionPlansTable, energyTargetsTable, usersTa
 import { eq, and, SQL } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { changedAuditFields, writeAuditEvent } from "../lib/audit.js";
+import {
+  ActionPlanBadRequestError,
+  ActionPlanForbiddenError,
+  createEnergyActionPlan,
+} from "../lib/energy-action-plan-service.js";
 
 const router = Router();
 
@@ -88,6 +93,10 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
 }
 
 function handleBadRequest(res: Response, err: unknown) {
+  if (err instanceof ActionPlanBadRequestError) {
+    res.status(400).json({ error: err.message });
+    return true;
+  }
   if (!(err instanceof BadRequestError)) return false;
   res.status(400).json({ error: err.message });
   return true;
@@ -185,6 +194,30 @@ router.get("/energy-action-plans", requireAuth, async (req, res) => {
 });
 
 // POST /api/energy-action-plans
+router.post("/energy-action-plans", requireAuth, async (req, res) => {
+  try {
+    const item = await createEnergyActionPlan({
+      session: req.user!,
+      body: req.body as Record<string, unknown>,
+      companyIdInput: (req.body as { companyId?: unknown }).companyId,
+      request: req,
+    });
+    res.status(201).json(item.action);
+  } catch (err) {
+    if (handleBadRequest(res, err)) return;
+    if (err instanceof ActionPlanForbiddenError) {
+      res.status(403).json({ error: err.message });
+      return;
+    }
+    req.log.error({
+      errorName: err instanceof Error ? err.name : "UnknownError",
+      requestId: req.id,
+    }, "Energy action plan create failed");
+    res.status(500).json({ error: "Sunucu hatasÄ±" });
+  }
+});
+
+// Legacy body retained for update/delete helper locality; the service handler above owns creates.
 router.post("/energy-action-plans", requireAuth, async (req, res) => {
   try {
     const { role, companyId: sessionCompanyId, unitId: sessionUnitId, name: userName } = req.user!;

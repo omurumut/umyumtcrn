@@ -1361,6 +1361,25 @@ export const insertAiAnalysisAttemptSchema = createInsertSchema(aiAnalysisAttemp
 export type InsertAiAnalysisAttempt = z.infer<typeof insertAiAnalysisAttemptSchema>;
 export type AiAnalysisAttemptRecord = typeof aiAnalysisAttemptsTable.$inferSelect;
 
+export const aiFindingActionLinksTable = pgTable("ai_finding_action_links", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "cascade" }).notNull(),
+  unitId: integer("unit_id").references(() => unitsTable.id, { onDelete: "set null" }),
+  analysisId: integer("analysis_id").references(() => aiAnalysesTable.id, { onDelete: "cascade" }).notNull(),
+  findingId: text("finding_id").notNull(),
+  actionId: integer("action_id").references(() => energyActionPlansTable.id, { onDelete: "cascade" }).notNull(),
+  createdByUserId: integer("created_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  uniqueActive: uniqueIndex("ai_finding_action_links_unique_active").on(table.companyId, table.analysisId, table.findingId),
+  companyUnitIdx: index("ai_finding_action_links_company_unit_idx").on(table.companyId, table.unitId, table.createdAt),
+  actionIdx: index("ai_finding_action_links_action_idx").on(table.actionId),
+}));
+
+export const insertAiFindingActionLinkSchema = createInsertSchema(aiFindingActionLinksTable).omit({ id: true, createdAt: true });
+export type InsertAiFindingActionLink = z.infer<typeof insertAiFindingActionLinkSchema>;
+export type AiFindingActionLinkRecord = typeof aiFindingActionLinksTable.$inferSelect;
+
 export const reportsTable = pgTable("reports", {
   id: serial("id").primaryKey(),
   companyId: integer("company_id").references(() => companiesTable.id).notNull().default(1),
