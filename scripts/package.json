@@ -38,6 +38,7 @@
     "test:ai-analysis-persistence": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-ai-analysis-persistence.ts",
     "test:ai-resilience": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-ai-resilience.ts",
     "test:ai-draft-action": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-ai-draft-action.ts",
+    "test:ai-security-regression": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-ai-security-regression.ts",
     "test:gemini-smoke": "tsx ./src/test-gemini-smoke.ts",
     "test:report-migration-readiness": "tsx ./src/test-db.ts --with-child -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-migration-readiness.ts",
     "test:report-archive-retention": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-archive-retention.ts",

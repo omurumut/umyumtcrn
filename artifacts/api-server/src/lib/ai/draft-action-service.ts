@@ -74,7 +74,7 @@ export async function createDraftActionFromAiFinding(input: {
   try {
     return await db.transaction(async (tx) => {
       const analysis = await loadAnalysisForConversion(tx, input.scope, input.analysisId);
-      const result = parseStoredAnalysisResult(analysis.resultJson);
+      const result = await loadAnalysisResultForConversion(tx, analysis);
       const finding = result.findings.find((item) => item.id === input.findingId);
       if (!finding) throw new AiDraftActionError(404, "Finding bulunamadi", "AI_FINDING_NOT_FOUND");
       validateFindingForConversion({ finding, result, analysis, scope: input.scope, user: input.user, body: input.body });
@@ -165,10 +165,25 @@ async function loadAnalysisForConversion(tx: DbTransaction, scope: AiResolvedSco
   if (scope.unitId !== null) conditions.push(eq(aiAnalysesTable.unitId, scope.unitId));
   const [analysis] = await tx.select().from(aiAnalysesTable).where(and(...conditions)).limit(1);
   if (!analysis) throw new AiDraftActionError(404, "Analiz bulunamadi", "AI_ANALYSIS_NOT_FOUND");
-  if (analysis.status !== "completed" || !analysis.resultJson) {
+  if (analysis.status !== "completed" || (!analysis.resultJson && analysis.sourceAnalysisId === null)) {
     throw new AiDraftActionError(409, "Analiz tamamlanmadan aksiyona donusturulemez", "AI_ANALYSIS_NOT_COMPLETED");
   }
   return analysis;
+}
+
+async function loadAnalysisResultForConversion(tx: DbTransaction, analysis: typeof aiAnalysesTable.$inferSelect): Promise<AiAnalysisResult> {
+  if (analysis.resultJson) return parseStoredAnalysisResult(analysis.resultJson);
+  if (analysis.sourceAnalysisId !== null) {
+    const [source] = await tx.select({ resultJson: aiAnalysesTable.resultJson })
+      .from(aiAnalysesTable)
+      .where(and(
+        eq(aiAnalysesTable.id, analysis.sourceAnalysisId),
+        eq(aiAnalysesTable.companyId, analysis.companyId),
+      ))
+      .limit(1);
+    if (source?.resultJson) return parseStoredAnalysisResult(source.resultJson);
+  }
+  throw new AiDraftActionError(409, "Analiz tamamlanmadan aksiyona donusturulemez", "AI_ANALYSIS_NOT_COMPLETED");
 }
 
 function parseStoredAnalysisResult(value: unknown): AiAnalysisResult {

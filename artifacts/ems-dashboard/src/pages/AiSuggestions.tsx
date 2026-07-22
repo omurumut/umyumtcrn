@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -176,6 +176,7 @@ export default function AiSuggestions() {
   const [legacyFocus, setLegacyFocus] = useState("genel");
   const [legacyVisible, setLegacyVisible] = useState(false);
   const [draftDialog, setDraftDialog] = useState<DraftDialogState>(null);
+  const createInFlightRef = useRef(false);
 
   const isSuperAdmin = user?.role === "superadmin";
   const isAdmin = isAdminRole(user?.role);
@@ -237,6 +238,9 @@ export default function AiSuggestions() {
     onError: (error) => {
       toast({ title: "AI analizi olusturulamadi", description: errorDescription(error), variant: "destructive" });
     },
+    onSettled: () => {
+      createInFlightRef.current = false;
+    },
   });
 
   const legacyMutation = useMutation<LegacySuggestionsResponse, ApiError>({
@@ -289,7 +293,8 @@ export default function AiSuggestions() {
     : unitsQuery.data?.find((unit) => unit.id === effectiveUnitId)?.name ?? (isAdmin ? "Secili birim" : "Kendi biriminiz");
 
   function submitAnalysis() {
-    if (submitDisabledReason || createMutation.isPending) return;
+    if (submitDisabledReason || createMutation.isPending || createInFlightRef.current) return;
+    createInFlightRef.current = true;
     createMutation.mutate(analysisType);
   }
 

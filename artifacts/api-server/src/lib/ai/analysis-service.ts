@@ -328,7 +328,17 @@ export async function getAiAnalysisDetail(scope: AiResolvedScope, id: number) {
   if (scope.unitId !== null) conditions.push(eq(aiAnalysesTable.unitId, scope.unitId));
   const [analysis] = await db.select().from(aiAnalysesTable).where(and(...conditions)).limit(1);
   if (!analysis) return null;
-  const result = analysis.resultJson ? parseStoredResult(analysis.resultJson) : null;
+  let result = analysis.resultJson ? parseStoredResult(analysis.resultJson) : null;
+  if (!result && analysis.sourceAnalysisId !== null) {
+    const [source] = await db.select({ resultJson: aiAnalysesTable.resultJson })
+      .from(aiAnalysesTable)
+      .where(and(
+        eq(aiAnalysesTable.id, analysis.sourceAnalysisId),
+        eq(aiAnalysesTable.companyId, scope.companyId),
+      ))
+      .limit(1);
+    result = source?.resultJson ? parseStoredResult(source.resultJson) : null;
+  }
   const attempts = await db.select({
     id: aiAnalysisAttemptsTable.id,
     attemptNumber: aiAnalysisAttemptsTable.attemptNumber,
