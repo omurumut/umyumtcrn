@@ -31,6 +31,7 @@ import VapProjects from "@/pages/VapProjects";
 import EnergyReview from "@/pages/EnergyReview";
 import PendingWorkItems from "@/pages/PendingWorkItems";
 import AuditEvents from "@/pages/AuditEvents";
+import AiOperations from "@/pages/AiOperations";
 
 const logoutRef = { fn: () => {} };
 
@@ -87,6 +88,9 @@ function Router() {
       <Route path="/bekleyen-isler" component={PendingWorkItems} />
       <Route path="/audit">
         {() => <AdminRoute component={AuditEvents} />}
+      </Route>
+      <Route path="/admin/ai-operations">
+        {() => <AdminRoute component={AiOperations} />}
       </Route>
       <Route path="/firmalar">
         {() => <SuperAdminRoute component={Companies} />}

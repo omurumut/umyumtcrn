@@ -17,7 +17,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  Activity, AlertTriangle, BarChart2, Box, Building2, FileText,
+  Activity, AlertTriangle, BarChart2, Box, BrainCircuit, Building2, FileText,
   ClipboardList, Gauge, Home, LayoutDashboard, Lightbulb, ShieldAlert, Target, User, LogOut, Globe, Building, Layers, Variable, TrendingUp, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -77,6 +77,7 @@ const AUDIT_NAV = [
     title: "Yönetim",
     items: [
       { title: "Firma Ayarları", url: "/firma-ayarlari", icon: Building2 },
+      { title: "AI Operasyonları", url: "/admin/ai-operations", icon: BrainCircuit },
       { title: "İşlem Geçmişi", url: "/audit", icon: ClipboardList },
     ],
   },
