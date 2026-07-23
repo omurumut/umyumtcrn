@@ -171,7 +171,13 @@ async function main() {
     await pool.query("DELETE FROM ai_analyses");
     await pool.query("DELETE FROM company_ai_settings WHERE company_id=$1", [admin.company_id]);
 
-    const limitServer = await startServer({ AI_PROVIDER: "gemini", GEMINI_API_KEY: "test-key", GEMINI_MODEL: "gemini-test-model" });
+    const limitServer = await startServer({
+      AI_PROVIDER: "gemini",
+      AI_PRODUCTION_DATA_ENABLED: "true",
+      RUN_GEMINI_SMOKE: "false",
+      GEMINI_API_KEY: "test-key",
+      GEMINI_MODEL: "gemini-test-model",
+    });
     try {
       const adminToken = await login(limitServer.baseUrl, process.env.E2E_ADMIN_USERNAME!);
       const policy = await patchPolicy(limitServer.baseUrl, adminToken, admin.company_id, { dailyAnalysisLimit: 1, monthlyAnalysisLimit: 1, fallbackEnabled: true });
