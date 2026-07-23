@@ -11,6 +11,7 @@ export type AiRuntimeConfig = {
   circuitBreakerFailureThreshold: number;
   circuitBreakerWindowMs: number;
   circuitBreakerCooldownMs: number;
+  productionDataEnabled: boolean;
   developmentDataPolicy: "demo_only" | "summary_only" | "full_context";
   mockMode: "success" | "timeout" | "rate_limited" | "invalid_schema" | "empty_response" | "provider_unavailable";
   gemini: GeminiRuntimeConfig;
@@ -71,6 +72,7 @@ export function readAiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AiRun
     circuitBreakerFailureThreshold: readPositiveInteger(env.AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD, 3, 1, 100),
     circuitBreakerWindowMs: readPositiveInteger(env.AI_CIRCUIT_BREAKER_WINDOW_MS, 60_000, 1_000, 60 * 60_000),
     circuitBreakerCooldownMs: readPositiveInteger(env.AI_CIRCUIT_BREAKER_COOLDOWN_MS, 120_000, 1_000, 24 * 60 * 60_000),
+    productionDataEnabled: readBoolean(env.AI_PRODUCTION_DATA_ENABLED, false),
     developmentDataPolicy: readDevelopmentDataPolicy(env.AI_DEVELOPMENT_DATA_POLICY),
     mockMode: ["timeout", "rate_limited", "invalid_schema", "empty_response", "provider_unavailable"].includes(mockMode)
       ? mockMode as AiRuntimeConfig["mockMode"]

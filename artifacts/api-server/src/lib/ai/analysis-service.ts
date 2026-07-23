@@ -23,6 +23,7 @@ import { createAiProvider } from "./registry.js";
 import { RuleBasedAiProvider } from "./rule-based-provider.js";
 import { shouldTripCircuit, shouldUseFallback } from "./fallback-policy.js";
 import { beforeProviderCall, recordProviderFailure, recordProviderSuccess } from "./circuit-breaker.js";
+import { estimateModelUsageCost } from "./model-pricing.js";
 import type { AiProviderRequest, AiProviderResult, AiProviderUsage } from "./provider.js";
 import type { AiResolvedScope } from "./scope.js";
 import { canonicalJson, sha256Canonical } from "./context-utils.js";
@@ -78,6 +79,17 @@ type RunInput = {
   maxOutputTokens?: number;
   requestId?: string;
   signal?: AbortSignal;
+};
+
+type AttemptMetadata = {
+  dataPolicy: CompanyAiDataPolicy;
+  productionDataEnabled: boolean;
+  contextSchemaVersion: string;
+  redactionPolicyVersion: string;
+  contextTruncated: boolean;
+  dataSufficiency: string;
+  syntheticContext: boolean;
+  providerDataClassification: string;
 };
 
 export async function loadCompanyAiPolicy(companyId: number): Promise<CompanyAiPolicy> {
@@ -170,13 +182,6 @@ export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysi
   const config = readAiRuntimeConfig();
   const policy = await loadCompanyAiPolicy(input.scope.companyId);
   ensureProviderAllowed(config, policy);
-  if (config.provider === "gemini" && policy.dataPolicy !== "production_allowed") {
-    throw new AiProviderError({
-      code: "AI_DISABLED",
-      status: 403,
-      message: "Firma AI veri politikasi gercek provider icin uygun degil",
-    });
-  }
 
   const built = await buildAiAnalysisContext(input.scope, {
     analysisType: input.analysisType,
@@ -242,7 +247,8 @@ export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysi
   });
   await auditAnalysis(input, "ai.analysis.requested", analysis.id, { cacheHit: false, dataVersion: built.dataVersion, provider: provider.providerName, model });
 
-  const attempt = await createAttempt(analysis.id, provider.providerName, model, 1);
+  const primaryAttemptMetadata = buildAttemptMetadata(config, policy, built, provider.providerName);
+  const attempt = await createAttempt(analysis.id, provider.providerName, model, 1, primaryAttemptMetadata);
   const started = Date.now();
   const providerRequest: AiProviderRequest = {
     analysisType: input.analysisType,
@@ -252,20 +258,20 @@ export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysi
     dataVersion: built.dataVersion,
   };
   try {
-    beforeProviderCall(provider.providerName, model, config);
+    await beforeProviderCall(provider.providerName, model, config, input.requestId);
     const result = await provider.generateAnalysis(providerRequest, {
       signal: input.signal,
       timeoutMs: input.timeoutMs ?? config.timeoutMs,
       maxOutputTokens: input.maxOutputTokens ?? config.maxOutputTokens,
       requestId: input.requestId,
     });
-    recordProviderSuccess(provider.providerName, model);
+    await recordProviderSuccess(provider.providerName, model);
     const safeResult = validateProviderAnalysis(result.analysis, built.evidenceRegistry);
     const cost = estimateUsageCost(result.meta.provider, result.meta.model, result.meta.usage);
     await completeAttempt(attempt.id, result, started, cost);
     const completed = await completeAnalysis(analysis.id, safeResult, result);
     await auditAnalysis(input, "ai.analysis.completed", analysis.id, { cacheHit: false, dataVersion: built.dataVersion, provider: provider.providerName, model, totalTokens: result.meta.usage.totalTokens });
-    return toResponse(completed, safeResult, { ...result.meta.usage, estimatedCost: cost.estimatedCost, currency: cost.currency });
+    return toResponse(completed, safeResult, { ...result.meta.usage, estimatedCost: costToNumber(cost.estimatedCost), currency: cost.currency });
   } catch (error) {
     const classified = error instanceof AiProviderError ? error : new AiProviderError({
       code: "AI_UNKNOWN_PROVIDER_ERROR",
@@ -273,7 +279,7 @@ export async function runPersistedAiAnalysis(input: RunInput): Promise<AiAnalysi
       message: "AI analiz hatasi",
     });
     if (shouldTripCircuit(classified)) {
-      const circuit = recordProviderFailure(provider.providerName, model, classified.code, config);
+      const circuit = await recordProviderFailure(provider.providerName, model, classified.code, config);
       if (circuit.opened) await auditAnalysis(input, "ai.circuit.opened", analysis.id, { provider: provider.providerName, model, errorCode: classified.code });
     }
     await failAttempt(attempt.id, classified, started);
@@ -488,18 +494,26 @@ async function createCacheHitAnalysis(input: {
   return row;
 }
 
-async function createAttempt(analysisId: number, provider: string, model: string, attemptNumber: number) {
+async function createAttempt(analysisId: number, provider: string, model: string, attemptNumber: number, metadata: AttemptMetadata) {
   const [attempt] = await db.insert(aiAnalysisAttemptsTable).values({
     analysisId,
     attemptNumber,
     provider,
     model,
     startedAt: new Date(),
+    dataPolicy: metadata.dataPolicy,
+    productionDataEnabled: metadata.productionDataEnabled,
+    contextSchemaVersion: metadata.contextSchemaVersion,
+    redactionPolicyVersion: metadata.redactionPolicyVersion,
+    contextTruncated: metadata.contextTruncated,
+    dataSufficiency: metadata.dataSufficiency,
+    syntheticContext: metadata.syntheticContext,
+    providerDataClassification: metadata.providerDataClassification,
   }).returning();
   return attempt;
 }
 
-async function completeAttempt(attemptId: number, result: AiProviderResult, startedMs: number, cost: { estimatedCost: number | null; currency: string | null; costCalculationVersion: string | null }) {
+async function completeAttempt(attemptId: number, result: AiProviderResult, startedMs: number, cost: { estimatedCost: string | null; currency: string | null; costCalculationVersion: string | null; pricingCatalogVersion: string | null }) {
   const usage = result.meta.usage;
   await db.update(aiAnalysisAttemptsTable).set({
     completedAt: new Date(),
@@ -511,18 +525,16 @@ async function completeAttempt(attemptId: number, result: AiProviderResult, star
     thinkingTokens: usage.thinkingTokens,
     cachedTokens: usage.cachedTokens,
     totalTokens: usage.totalTokens,
-    estimatedCost: cost.estimatedCost === null ? null : String(cost.estimatedCost),
+    estimatedCost: cost.estimatedCost,
     currency: cost.currency,
     costCalculationVersion: cost.costCalculationVersion,
+    pricingCatalogVersion: cost.pricingCatalogVersion,
     latencyMs: Math.max(0, Date.now() - startedMs),
   }).where(eq(aiAnalysisAttemptsTable.id, attemptId));
 }
 
-function estimateUsageCost(provider: string, _model: string, _usage: AiProviderUsage) {
-  if (provider === "mock" || provider === "rule_based") {
-    return { estimatedCost: 0, currency: "USD", costCalculationVersion: "non-billable-provider-v1" };
-  }
-  return { estimatedCost: null, currency: null, costCalculationVersion: null };
+function estimateUsageCost(provider: string, model: string, usage: AiProviderUsage) {
+  return estimateModelUsageCost(provider, model, usage);
 }
 
 async function failAttempt(attemptId: number, error: AiProviderError, startedMs: number) {
@@ -537,6 +549,7 @@ async function failAttempt(attemptId: number, error: AiProviderError, startedMs:
     estimatedCost: null,
     currency: null,
     costCalculationVersion: null,
+    pricingCatalogVersion: null,
     latencyMs: Math.max(0, Date.now() - startedMs),
   }).where(eq(aiAnalysisAttemptsTable.id, attemptId));
 }
@@ -613,6 +626,47 @@ function ensureProviderAllowed(config: AiRuntimeConfig, policy: CompanyAiPolicy)
   if (policy.dataPolicy === "disabled") {
     throw new AiProviderError({ code: "AI_DISABLED", status: 403, message: "Firma AI politikasi kapali" });
   }
+  if (config.provider === "gemini" && policy.dataPolicy !== "production_allowed") {
+    throw new AiProviderError({
+      code: "AI_DISABLED",
+      status: 403,
+      message: "Firma AI veri politikasi gercek provider icin uygun degil",
+    });
+  }
+  if (config.provider === "gemini" && !config.productionDataEnabled) {
+    throw new AiProviderError({
+      code: "AI_DISABLED",
+      status: 403,
+      message: "Gercek musteri verisi icin AI production data bayragi kapali",
+    });
+  }
+}
+
+function buildAttemptMetadata(
+  config: AiRuntimeConfig,
+  policy: CompanyAiPolicy,
+  built: Awaited<ReturnType<typeof buildAiAnalysisContext>>,
+  provider: string,
+): AttemptMetadata {
+  const productionCustomerContext = provider === "gemini" && policy.dataPolicy === "production_allowed" && config.productionDataEnabled;
+  return {
+    dataPolicy: policy.dataPolicy,
+    productionDataEnabled: config.productionDataEnabled,
+    contextSchemaVersion: built.context.contextSchemaVersion,
+    redactionPolicyVersion: AI_REDACTION_POLICY_VERSION,
+    contextTruncated: built.context.contextTruncated,
+    dataSufficiency: built.context.dataSufficiency,
+    syntheticContext: !productionCustomerContext,
+    providerDataClassification: productionCustomerContext
+      ? "customer_production"
+      : provider === "rule_based"
+        ? "local_rule_based"
+        : "mock_or_synthetic",
+  };
+}
+
+function costToNumber(value: string | null) {
+  return value === null ? null : Number(value);
 }
 
 function normalizePolicy(value: string): CompanyAiDataPolicy {
@@ -698,7 +752,13 @@ async function tryFallback(input: {
     return toResponse(hit, parseStoredResult(cachedFallback.resultJson), null);
   }
 
-  const fallbackAttempt = await createAttempt(input.analysis.id, input.fallbackProvider.providerName, input.fallbackProvider.getModelName(), 2);
+  const fallbackAttempt = await createAttempt(
+    input.analysis.id,
+    input.fallbackProvider.providerName,
+    input.fallbackProvider.getModelName(),
+    2,
+    buildAttemptMetadata(readAiRuntimeConfig(), await loadCompanyAiPolicy(input.input.scope.companyId), input.built, input.fallbackProvider.providerName),
+  );
   const started = Date.now();
   try {
     const result = await input.fallbackProvider.generateAnalysis(input.providerRequest, {
@@ -710,7 +770,7 @@ async function tryFallback(input: {
     await completeAttempt(fallbackAttempt.id, result, started, cost);
     const completed = await completeAnalysis(input.analysis.id, result.analysis, result, { cacheKey: input.fallbackCacheKey, fallbackUsed: true });
     await auditAnalysis(input.input, "ai.analysis.fallback_used", input.analysis.id, { primaryErrorCode: input.failedError.code, fallbackProvider: result.meta.provider, fallbackModel: result.meta.model, dataVersion: input.providerRequest.dataVersion });
-    return toResponse(completed, result.analysis, { ...result.meta.usage, estimatedCost: cost.estimatedCost, currency: cost.currency });
+    return toResponse(completed, result.analysis, { ...result.meta.usage, estimatedCost: costToNumber(cost.estimatedCost), currency: cost.currency });
   } catch (fallbackError) {
     const classified = fallbackError instanceof AiProviderError ? fallbackError : new AiProviderError({
       code: "AI_UNKNOWN_PROVIDER_ERROR",

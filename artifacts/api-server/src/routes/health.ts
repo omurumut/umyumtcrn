@@ -10,10 +10,12 @@ import { applicationLifecycleState } from "../lib/lifecycle-state.js";
 import { logger } from "../lib/logger.js";
 import { observeDbEvent } from "../lib/metrics.js";
 import { reportStorageReadinessDetails } from "../lib/report-storage.js";
+import { readAiRuntimeConfig } from "../lib/ai/config.js";
+import { getCircuitDiagnostics } from "../lib/ai/circuit-breaker.js";
 
 const router: IRouter = Router();
 const READINESS_TIMEOUT_MS = 2_000;
-const REQUIRED_MIGRATIONS = 30;
+const REQUIRED_MIGRATIONS = 40;
 const REQUIRED_TABLES = [
   "companies",
   "users",
@@ -22,6 +24,9 @@ const REQUIRED_TABLES = [
   "company_report_section_settings",
   "report_generation_snapshots",
   "report_archives",
+  "ai_analyses",
+  "ai_analysis_attempts",
+  "ai_provider_circuit_state",
 ] as const;
 
 type CheckStatus = "ok" | "fail" | "skip";
@@ -42,6 +47,26 @@ type ReadinessBody = {
     browser: SafeCheck;
     frontend: SafeCheck;
     reportStorage: SafeCheck;
+    ai: SafeCheck;
+  };
+  ai?: {
+    enabled: boolean;
+    provider: string;
+    providerConfigured: boolean;
+    modelConfigured: boolean;
+    secretConfigured: boolean;
+    productionDataEnabled: boolean;
+    circuitBreakerEnabled: boolean;
+    circuitStates: Array<{
+      provider: string;
+      model: string;
+      state: string;
+      failureCount: number;
+      openedAt: string | null;
+      nextProbeAt: string | null;
+    }>;
+    staleProcessing: number | null;
+    retentionCleanupLastRunAt: string | null;
   };
   elapsedMs: number;
 };
@@ -162,6 +187,36 @@ async function checkReportStorageReadiness(): Promise<CheckStatus> {
   throw new Error(category ?? "report_storage");
 }
 
+async function safeAiReadinessDetails(): Promise<ReadinessBody["ai"]> {
+  const config = readAiRuntimeConfig();
+  const stale = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM ai_analyses WHERE status='processing' AND started_at < now() - interval '30 minutes'",
+  );
+  const cleanup = await pool.query<{ updated_at: Date | null }>(
+    "SELECT updated_at FROM ai_operational_state WHERE state_key='ai_retention_cleanup:last_run' LIMIT 1",
+  ).catch(() => ({ rows: [] as Array<{ updated_at: Date | null }> }));
+  const circuitStates = await getCircuitDiagnostics();
+  return {
+    enabled: config.enabled,
+    provider: config.provider,
+    providerConfigured: config.providerConfigured === config.provider,
+    modelConfigured: config.provider === "gemini" ? Boolean(config.gemini.model) : true,
+    secretConfigured: config.provider === "gemini" ? Boolean(config.gemini.apiKey) : false,
+    productionDataEnabled: config.productionDataEnabled,
+    circuitBreakerEnabled: config.circuitBreakerEnabled,
+    circuitStates: circuitStates.map((state) => ({
+      provider: state.provider,
+      model: state.model,
+      state: state.state,
+      failureCount: state.failureCount,
+      openedAt: state.openedAt,
+      nextProbeAt: state.nextProbeAt,
+    })),
+    staleProcessing: Number(stale.rows[0]?.count ?? 0),
+    retentionCleanupLastRunAt: cleanup.rows[0]?.updated_at?.toISOString() ?? null,
+  };
+}
+
 async function safeCheck(name: string, operation: () => Promise<void | CheckStatus>): Promise<SafeCheck> {
   const started = process.hrtime.bigint();
   try {
@@ -197,6 +252,7 @@ router.get("/readyz", async (_req, res) => {
       browser: { status: "fail", category: "not_checked" },
       frontend: { status: "fail", category: "not_checked" },
       reportStorage: { status: "fail", category: "not_checked" },
+      ai: { status: "fail", category: "not_checked" },
     },
     elapsedMs: 0,
   };
@@ -214,6 +270,11 @@ router.get("/readyz", async (_req, res) => {
   body.checks.browser = await safeCheck("browser", checkBrowserReadiness);
   body.checks.frontend = await safeCheck("frontend", checkFrontendReadiness);
   body.checks.reportStorage = await safeCheck("reportStorage", checkReportStorageReadiness);
+  body.checks.ai = body.checks.database.status === "ok"
+    ? await safeCheck("ai", async () => {
+        body.ai = await safeAiReadinessDetails();
+      })
+    : { status: "fail", category: "database_unavailable" };
   body.elapsedMs = elapsedSince(started);
 
   const ready = Object.values(body.checks).every(check => check.status === "ok" || check.status === "skip");
@@ -231,6 +292,7 @@ router.get("/readyz", async (_req, res) => {
     browser: body.checks.browser.status,
     frontend: body.checks.frontend.status,
     reportStorage: body.checks.reportStorage.status,
+    ai: body.checks.ai.status,
   }, "Readiness check failed");
   res.status(503).json(body);
 });

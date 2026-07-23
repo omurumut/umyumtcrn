@@ -44,9 +44,11 @@
     "test:ai-resilience": "pnpm --filter @workspace/scripts run test:ai-resilience",
     "test:ai-draft-action": "pnpm --filter @workspace/scripts run test:ai-draft-action",
     "test:ai-security-regression": "pnpm --filter @workspace/scripts run test:ai-security-regression",
+    "test:ai-production-readiness": "pnpm --filter @workspace/scripts run test:ai-production-readiness",
     "test:gemini-smoke": "pnpm --filter @workspace/scripts run test:gemini-smoke",
     "verify:ci": "pnpm run typecheck && pnpm run build && pnpm run test:db:smoke && pnpm run test:fixtures && pnpm run test:audit && pnpm run test:audit-restore && pnpm run test:e2e && pnpm run test:production-readiness",
     "auth:cleanup": "pnpm --filter @workspace/scripts run auth:cleanup",
+    "ai:retention-cleanup": "pnpm --filter @workspace/scripts run ai:retention-cleanup",
     "start": "ts-node scripts/index.ts",
     "dev": "ts-node-dev scripts/index.ts"
   },

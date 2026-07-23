@@ -1350,6 +1350,15 @@ export const aiAnalysisAttemptsTable = pgTable("ai_analysis_attempts", {
   estimatedCost: numeric("estimated_cost", { precision: 14, scale: 6 }),
   currency: text("currency"),
   costCalculationVersion: text("cost_calculation_version"),
+  dataPolicy: text("data_policy"),
+  productionDataEnabled: boolean("production_data_enabled"),
+  contextSchemaVersion: text("context_schema_version"),
+  redactionPolicyVersion: text("redaction_policy_version"),
+  contextTruncated: boolean("context_truncated"),
+  dataSufficiency: text("data_sufficiency"),
+  syntheticContext: boolean("synthetic_context"),
+  providerDataClassification: text("provider_data_classification"),
+  pricingCatalogVersion: text("pricing_catalog_version"),
   latencyMs: integer("latency_ms"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => ({
@@ -1360,6 +1369,42 @@ export const aiAnalysisAttemptsTable = pgTable("ai_analysis_attempts", {
 export const insertAiAnalysisAttemptSchema = createInsertSchema(aiAnalysisAttemptsTable).omit({ id: true, createdAt: true });
 export type InsertAiAnalysisAttempt = z.infer<typeof insertAiAnalysisAttemptSchema>;
 export type AiAnalysisAttemptRecord = typeof aiAnalysisAttemptsTable.$inferSelect;
+
+export const aiProviderCircuitStateTable = pgTable("ai_provider_circuit_state", {
+  id: serial("id").primaryKey(),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  state: text("state").notNull().default("closed"),
+  failureCount: integer("failure_count").notNull().default(0),
+  windowStartedAt: timestamp("window_started_at"),
+  openedAt: timestamp("opened_at"),
+  nextProbeAt: timestamp("next_probe_at"),
+  probeLeaseOwner: text("probe_lease_owner"),
+  probeLeaseExpiresAt: timestamp("probe_lease_expires_at"),
+  lastFailureCode: text("last_failure_code"),
+  lastFailureAt: timestamp("last_failure_at"),
+  lastSuccessAt: timestamp("last_success_at"),
+  version: integer("version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  providerModelUnique: uniqueIndex("ai_provider_circuit_state_provider_model_unique").on(table.provider, table.model),
+  nextProbeIdx: index("ai_provider_circuit_state_next_probe_idx").on(table.state, table.nextProbeAt),
+  probeLeaseIdx: index("ai_provider_circuit_state_probe_lease_idx").on(table.state, table.probeLeaseExpiresAt),
+}));
+
+export type AiProviderCircuitStateRecord = typeof aiProviderCircuitStateTable.$inferSelect;
+
+export const aiOperationalStateTable = pgTable("ai_operational_state", {
+  id: serial("id").primaryKey(),
+  stateKey: text("state_key").notNull(),
+  valueJson: jsonb("value_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  stateKeyUnique: uniqueIndex("ai_operational_state_key_unique").on(table.stateKey),
+}));
+
+export type AiOperationalStateRecord = typeof aiOperationalStateTable.$inferSelect;
 
 export const aiFindingActionLinksTable = pgTable("ai_finding_action_links", {
   id: serial("id").primaryKey(),

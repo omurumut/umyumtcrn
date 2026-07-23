@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { and, eq, sql } from "drizzle-orm";
 import { aiAnalysisTypeSchema } from "@workspace/api-zod";
-import { aiAnalysesTable, aiAnalysisAttemptsTable, db, consumptionTable, metersTable, seuTable, unitsTable } from "@workspace/db";
+import { aiAnalysesTable, aiAnalysisAttemptsTable, db, pool, consumptionTable, metersTable, seuTable, unitsTable } from "@workspace/db";
 import { requireAuth, requireCompanyAdmin, requireSuperAdmin } from "../middlewares/auth.js";
 import {
   buildEquipmentInventoryContext,
@@ -486,17 +486,22 @@ router.get("/admin/ai/diagnostics", requireAuth, requireSuperAdmin, async (req, 
       totalTokens: sql<number | null>`sum(${aiAnalysisAttemptsTable.totalTokens})::int`,
       estimatedCost: sql<string | null>`sum(${aiAnalysisAttemptsTable.estimatedCost})::text`,
     }).from(aiAnalysisAttemptsTable);
+    const cleanup = await pool.query<{ value_json: Record<string, unknown> | null; updated_at: Date | null }>(
+      "SELECT value_json, updated_at FROM ai_operational_state WHERE state_key='ai_retention_cleanup:last_run' LIMIT 1",
+    ).catch(() => ({ rows: [] as Array<{ value_json: Record<string, unknown> | null; updated_at: Date | null }> }));
+    const circuit = await getCircuitDiagnostics();
     res.json({
       globalEnabled: config.enabled,
       provider: config.provider,
-      model: config.provider === "gemini" ? config.gemini.model : "mock-v1",
+      modelConfigured: config.provider === "gemini" ? Boolean(config.gemini.model) : true,
       secretConfigured: config.provider === "gemini" ? Boolean(config.gemini.apiKey) : false,
+      productionDataEnabled: config.productionDataEnabled,
       limits: {
         globalMaxConcurrent: config.globalMaxConcurrent,
         globalDailyLimit: config.globalDailyLimit,
         circuitBreakerEnabled: config.circuitBreakerEnabled,
       },
-      circuit: getCircuitDiagnostics(),
+      circuit,
       usage: {
         activeProcessing: totals?.activeProcessing ?? 0,
         staleProcessing: totals?.staleProcessing ?? 0,
@@ -506,8 +511,11 @@ router.get("/admin/ai/diagnostics", requireAuth, requireSuperAdmin, async (req, 
         todayAttempts: attemptTotals?.todayAttempts ?? 0,
         monthAttempts: attemptTotals?.monthAttempts ?? 0,
         totalTokens: attemptTotals?.totalTokens ?? null,
-        estimatedCost: attemptTotals?.estimatedCost === null ? null : Number(attemptTotals?.estimatedCost),
+        estimatedCost: attemptTotals?.estimatedCost ?? null,
       },
+      retentionCleanup: cleanup.rows[0]
+        ? { lastRunAt: cleanup.rows[0].updated_at?.toISOString() ?? null, summary: cleanup.rows[0].value_json ?? {} }
+        : null,
       lastCompletedAt: totals?.lastCompletedAt ?? null,
       lastErrorCode: totals?.lastErrorCode ?? null,
     });
