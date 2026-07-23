@@ -44,6 +44,7 @@
     "test:gemini-smoke": "tsx ./src/test-gemini-smoke.ts",
     "test:report-migration-readiness": "tsx ./src/test-db.ts --with-child -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-migration-readiness.ts",
     "test:report-archive-retention": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-archive-retention.ts",
+    "test:report-data-manifest": "tsx ./src/test-db.ts --with-fixtures -- node ./node_modules/tsx/dist/cli.mjs ./src/test-report-data-manifest.ts",
     "test:report-storage-s3": "tsx ./src/test-report-storage-s3.ts",
     "test:report-storage-s3-smoke": "tsx ./src/test-report-storage-s3-smoke.ts",
     "report-archive-cleanup": "tsx ./src/report-archive-cleanup.ts",

@@ -100,6 +100,8 @@ export async function resolveEffectiveCompanyReportSettings({
           width: brand.activeLogo.width,
           height: brand.activeLogo.height,
           version: brand.activeLogo.version,
+          altText: brand.settings?.logoAltText ?? null,
+          content: brand.content,
         }
       : null,
   };

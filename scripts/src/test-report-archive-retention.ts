@@ -48,6 +48,7 @@ const counters = {
   archiveRestoreScenarios: 0,
   archivePurgeScenarios: 0,
   archiveDiagnosticsScenarios: 0,
+  archiveDetailScenarios: 0,
   archiveCleanupCliScenarios: 0,
   archiveSecurityScenarios: 0,
   archiveAuditScenarios: 0,
@@ -154,6 +155,7 @@ async function seedArchive(input: {
   retentionExpiresAt?: Date | null;
   purgeEligibleAt?: Date | null;
   generatedAt?: Date;
+  snapshotId?: number | null;
 }): Promise<{ id: number; key: string | null; content: Buffer }> {
   const reportType = input.reportType ?? "annual_energy_performance";
   const reportYear = input.reportYear ?? 2026;
@@ -169,9 +171,9 @@ async function seedArchive(input: {
        status, generated_by, generated_at, completed_at, failed_at, failure_category,
        deleted_at, deleted_by, delete_reason, purge_eligible_at, purged_at, purged_by,
        purge_failure_category, retention_expires_at, deletion_locked, previous_status,
-       size_bytes, checksum_sha256, storage_provider, storage_key
+       size_bytes, checksum_sha256, storage_provider, storage_key, snapshot_id
      )
-     VALUES($1,$2,$3,$4,$5,$6,'text/html; charset=utf-8',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,null,null,null,null)
+     VALUES($1,$2,$3,$4,$5,$6,'text/html; charset=utf-8',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,null,null,null,null,$23)
      RETURNING id`,
     [
       input.companyId,
@@ -196,6 +198,7 @@ async function seedArchive(input: {
       input.retentionExpiresAt ?? null,
       input.deletionLocked === true,
       input.previousStatus ?? (input.status === "deleted" || input.status === "purge_failed" ? "completed" : null),
+      input.snapshotId ?? null,
     ],
   );
   const id = result.rows[0]!.id;
@@ -210,6 +213,38 @@ async function seedArchive(input: {
     );
   }
   return { id, key, content };
+}
+
+async function seedSnapshot(input: {
+  companyId: number;
+  unitId?: number | null;
+  generatedBy: number;
+  reportType?: string;
+  year?: number;
+  payload: Record<string, unknown>;
+  dataManifest?: Record<string, unknown> | null;
+}): Promise<number> {
+  const reportType = input.reportType ?? "annual_energy_performance";
+  const result = await pool.query<{ id: number }>(
+    `INSERT INTO report_generation_snapshots(
+       company_id, unit_id, report_type, year, status, storage_status, filename,
+       settings_snapshot_json, data_manifest_json, generated_by, completed_at
+     )
+     VALUES($1,$2,$3,$4,'completed','not_stored',$5,$6::jsonb,$7::jsonb,$8,$9)
+     RETURNING id`,
+    [
+      input.companyId,
+      input.unitId ?? null,
+      reportType,
+      input.year ?? 2026,
+      `retention-fixture-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
+      JSON.stringify({ fixture: "archive-detail", reportType, ...input.payload }),
+      input.dataManifest === undefined ? null : JSON.stringify(input.dataManifest),
+      input.generatedBy,
+      new Date(),
+    ],
+  );
+  return result.rows[0]!.id;
 }
 
 async function archiveRow(id: number): Promise<Record<string, unknown>> {
@@ -247,6 +282,7 @@ async function setupFixtures(storage: StorageModule["reportStorage"]) {
   const kontrolB = await getUser("e2e_report_kontrol_b");
 
   await pool.query("DELETE FROM report_archives WHERE title LIKE 'retention fixture %'");
+  await pool.query("DELETE FROM report_generation_snapshots WHERE filename LIKE 'retention-fixture-%' OR settings_snapshot_json->>'fixture' = 'archive-detail'");
   await pool.query("DELETE FROM company_report_retention_settings WHERE company_id IN ($1,$2)", [adminA.company_id, standardB.company_id]);
 
   return { adminA, kontrolA, standardA, standardB, adminB, kontrolB, superadmin, companyA: adminA.company_id, companyB: standardB.company_id };
@@ -371,6 +407,158 @@ async function testExpiryMaterialization(storageModule: StorageModule, companyA:
   });
   assert((await archiveRow(failedId.id)).retention_expires_at instanceof Date, "Failed retention was not materialized.");
   bump("retentionExpiryScenarios", 4);
+}
+
+function asRecord(value: unknown, message: string): Record<string, unknown> {
+  assert(typeof value === "object" && value !== null && !Array.isArray(value), message);
+  return value as Record<string, unknown>;
+}
+
+function assertNoDetailLeak(text: string): void {
+  for (const forbidden of ["storageKey", "storageProvider", "storage_key", "storage_provider", "bucket", "secret", "companies/", "settingsSnapshot", "settings_snapshot_json"]) {
+    assert(!text.includes(forbidden), `Detail response leaked forbidden token: ${forbidden}`);
+  }
+}
+
+async function testArchiveDetail(baseUrl: string, tokens: TokenSet, storageModule: StorageModule, users: Awaited<ReturnType<typeof setupFixtures>>): Promise<void> {
+  const fixtureManifest = {
+    schemaVersion: 1,
+    reportType: "annual_energy_performance",
+    scope: {
+      companyId: users.companyA,
+      unitId: users.standardA.unit_id,
+      companyWide: false,
+      periodStart: "2026-01-01",
+      periodEnd: "2026-12-31",
+      year: 2026,
+      timezone: "Europe/Istanbul",
+    },
+    filters: { includeSwot: true, includeRisks: true, includeSeu: true },
+    sources: [
+      {
+        sourceType: "annual_consumption",
+        recordCount: 12,
+        identityHash: "a".repeat(64),
+        identityAlgorithm: "sha256",
+        identitySchemaVersion: 1,
+        summary: { mustNotExpose: "hidden" },
+      },
+      {
+        sourceType: "annual_seu",
+        recordCount: 2,
+        identityHash: "b".repeat(64),
+        identityAlgorithm: "sha256",
+        identitySchemaVersion: 1,
+      },
+    ],
+    qualityWarnings: [
+      {
+        code: "MISSING_CONSUMPTION_MONTHS",
+        severity: "warning",
+        sourceType: "annual_consumption",
+        count: 1,
+        periods: ["2026-12"],
+        message: "safe typed warning",
+      },
+    ],
+    isPartial: true,
+    settings: {
+      profileVersion: 7,
+      typeSettingsVersion: 9,
+      documentNumber: "ENR-RPT-001",
+      revisionNumber: "R1",
+      revisionDate: "2026-07-23",
+    },
+    generatedAt: "2026-07-23T10:00:00.000Z",
+    manifestHash: "c".repeat(64),
+  };
+  const snapshotId = await seedSnapshot({
+    companyId: users.companyA,
+    unitId: users.standardA.unit_id,
+    generatedBy: users.adminA.id,
+    payload: {
+      reportDisplayName: "Fixture Annual Detail",
+      profileVersion: 7,
+      typeSettingsVersion: 9,
+      periodStart: "2026-01-01",
+      periodEnd: "2026-12-31",
+      documentNumber: "ENR-RPT-001",
+      revisionNumber: "R1",
+      revisionDate: "2026-07-23",
+      preparedBy: "Prep User",
+      checkedBy: "Check User",
+      approvedBy: "Approve User",
+      confidentiality: "internal",
+      footerText: "Footer",
+      evaluatorSummary: { consumptionRows: 12, includesRegression: true, note: "safe", nested: { raw: true }, tooLong: "x".repeat(200) },
+      technicalProfile: { warning: "technical warning" },
+      equipmentInventory: { warnings: ["inventory warning", { raw: true }] },
+      storageKey: "must-not-leak",
+    },
+    dataManifest: fixtureManifest,
+  });
+  const completed = await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: users.standardA.unit_id, generatedBy: users.adminA.id, status: "completed", title: "retention fixture detail completed", withObject: true, snapshotId });
+  const adminDetail = await api(baseUrl, "GET", `/api/reports/archive/${completed.id}/detail`, tokens.adminA);
+  assert(adminDetail.status === 200, `Admin detail failed: ${adminDetail.status}`);
+  assertNoDetailLeak(adminDetail.text);
+  const adminBody = asRecord(adminDetail.json, "Detail body is not an object.");
+  const archive = asRecord(adminBody.archive, "Detail archive missing.");
+  const scope = asRecord(adminBody.scope, "Detail scope missing.");
+  const generation = asRecord(adminBody.generation, "Detail generation missing.");
+  const document = asRecord(adminBody.document, "Detail document missing.");
+  const dataScope = asRecord(adminBody.dataScope, "Detail dataScope missing.");
+  const failure = asRecord(adminBody.failure, "Detail failure missing.");
+  assert(archive.id === completed.id && archive.status === "completed" && archive.canDownload === true && archive.canRestore === false, "Completed archive detail flags are wrong.");
+  assert(scope.companyId === users.companyA && scope.unitId === users.standardA.unit_id && scope.periodStart === "2026-01-01", "Detail scope fields are wrong.");
+  assert(generation.snapshotId === snapshotId && generation.settingsProfileVersion === 7 && generation.reportTypeSettingsVersion === 9, "Snapshot version fields are wrong.");
+  assert(document.documentNumber === "ENR-RPT-001" && document.confidentialityLevel === "internal", "Document fields are wrong.");
+  assert(dataScope.manifestHash === "c".repeat(64) && dataScope.isPartial === true, "Manifest summary hash/partial failed.");
+  assert(asRecord(dataScope.period, "Manifest period missing.").periodStart === "2026-01-01", "Manifest period summary failed.");
+  const sources = dataScope.sources as Array<Record<string, unknown>>;
+  assert(Array.isArray(sources) && sources.length === 2 && sources[0]?.sourceType === "annual_consumption" && sources[0].recordCount === 12, "Manifest source summary failed.");
+  assert(!JSON.stringify(dataScope).includes("mustNotExpose"), "Manifest summary exposed source internals.");
+  const warnings = dataScope.qualityWarnings as Array<Record<string, unknown>>;
+  assert(Array.isArray(warnings) && warnings[0]?.code === "MISSING_CONSUMPTION_MONTHS" && warnings[0].sourceType === "annual_consumption", "Manifest warning summary failed.");
+  assert(failure.category === null && failure.message === null && failure.retryable === false, "Completed failure contract is wrong.");
+  assert((await api(baseUrl, "GET", `/api/reports/archive/${completed.id}/detail`, tokens.kontrolA)).status === 200, "Kontrol admin detail failed.");
+  assert((await api(baseUrl, "GET", `/api/reports/archive/${completed.id}/detail`, tokens.standardA)).status === 200, "Standard own-unit detail failed.");
+
+  const outsideUnit = await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id, status: "completed", title: "retention fixture detail outside unit", withObject: true });
+  const foreign = await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyB, unitId: users.standardB.unit_id, generatedBy: users.standardB.id, status: "completed", title: "retention fixture detail foreign", withObject: true });
+  const notFound = await api(baseUrl, "GET", `/api/reports/archive/${outsideUnit.id}/detail`, tokens.standardA);
+  const foreignHidden = await api(baseUrl, "GET", `/api/reports/archive/${foreign.id}/detail`, tokens.adminA);
+  const missing = await api(baseUrl, "GET", "/api/reports/archive/999999999/detail", tokens.adminA);
+  assert(notFound.status === 404 && foreignHidden.status === 404 && missing.status === 404, "Detail safe 404 behavior failed.");
+  assert(foreignHidden.text === missing.text, "Foreign archive existence leaked through error body.");
+  assert((await api(baseUrl, "GET", `/api/reports/archive/${completed.id}/detail`, tokens.superadmin)).status === 400, "Superadmin implicit detail accepted.");
+  assert((await api(baseUrl, "GET", `/api/reports/archive/${completed.id}/detail?companyId=${users.companyA}`, tokens.superadmin)).status === 200, "Superadmin explicit detail failed.");
+  assert((await api(baseUrl, "GET", `/api/reports/archive/${completed.id}/detail?companyId=${users.companyB}`, tokens.superadmin)).status === 404, "Superadmin wrong-company detail did not hide archive.");
+
+  const deleted = await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "deleted", title: "retention fixture detail deleted", withObject: true, previousStatus: "completed" });
+  const deletedResponse = await api(baseUrl, "GET", `/api/reports/archive/${deleted.id}/detail`, tokens.adminA);
+  assert(deletedResponse.status === 200, "Deleted detail failed.");
+  const deletedArchive = asRecord(asRecord(deletedResponse.json, "Deleted detail body missing.").archive, "Deleted detail archive missing.");
+  assert(deletedArchive.status === "deleted" && deletedArchive.canDownload === false && deletedArchive.canRestore === true && typeof deletedArchive.deletedAt === "string", "Deleted lifecycle detail is wrong.");
+  const failed = await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "failed", title: "retention fixture detail failed", withObject: true });
+  const failedResponse = await api(baseUrl, "GET", `/api/reports/archive/${failed.id}/detail`, tokens.adminA);
+  assert(failedResponse.status === 200, "Failed detail failed.");
+  const failedFailure = asRecord(asRecord(failedResponse.json, "Failed detail body missing.").failure, "Failed detail failure missing.");
+  assert(failedFailure.category === "render_failed" && failedFailure.message === "render_failed" && failedFailure.retryable === false, "Failed detail contract is wrong.");
+  const noSnapshot = await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "completed", title: "retention fixture detail no snapshot", withObject: true });
+  const noSnapshotResponse = await api(baseUrl, "GET", `/api/reports/archive/${noSnapshot.id}/detail`, tokens.adminA);
+  assert(noSnapshotResponse.status === 200, "No-snapshot detail failed.");
+  const noSnapshotDetail = asRecord(noSnapshotResponse.json, "No-snapshot detail body missing.");
+  assert(asRecord(noSnapshotDetail.generation, "No-snapshot generation missing.").snapshotId === null, "No-snapshot snapshotId is wrong.");
+  assert(noSnapshotDetail.dataScope === null, "No-snapshot dataScope should be null.");
+  const invalidSnapshotId = await seedSnapshot({ companyId: users.companyA, generatedBy: users.adminA.id, payload: { profileVersion: "bad", evaluatorSummary: { ok: 1, nested: { raw: true } }, equipmentInventory: { warnings: ["valid warning", { raw: true }] } } });
+  const invalid = await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "completed", title: "retention fixture detail invalid snapshot", withObject: true, snapshotId: invalidSnapshotId });
+  const invalidResponse = await api(baseUrl, "GET", `/api/reports/archive/${invalid.id}/detail`, tokens.adminA);
+  assert(invalidResponse.status === 200, "Invalid-snapshot detail failed.");
+  const invalidDetail = asRecord(invalidResponse.json, "Invalid-snapshot detail body missing.");
+  assert(asRecord(invalidDetail.generation, "Invalid generation missing.").settingsProfileVersion === null, "Invalid snapshot profile version should be null.");
+  assert(invalidDetail.dataScope === null, "Invalid manifest dataScope should be null.");
+  assert(await auditCount("report_archive.detail_viewed", completed.id) === 0, "Read-only detail wrote audit event.");
+  bump("archiveDetailScenarios", 18);
 }
 
 async function testLifecycle(baseUrl: string, tokens: TokenSet, storageModule: StorageModule, users: Awaited<ReturnType<typeof setupFixtures>>): Promise<void> {
@@ -688,6 +876,7 @@ async function main(): Promise<void> {
     assert(tokens.kontrolB && tokens.standardB, "Tenant B readonly/standard tokens missing.");
     await testRetentionSettings(server.baseUrl, tokens, fixtures.companyA, fixtures.companyB);
     await testExpiryMaterialization(storageModule, fixtures.companyA, fixtures.adminA);
+    await testArchiveDetail(server.baseUrl, tokens, storageModule, fixtures);
     await testLifecycle(server.baseUrl, tokens, storageModule, fixtures);
     await testPurge(server.baseUrl, tokens, storageModule, fixtures);
     await testConcurrency(server.baseUrl, tokens, storageModule, fixtures);

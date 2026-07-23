@@ -16,6 +16,15 @@ type RenderHtmlToPdfOptions = {
   html: string;
   title: string;
   landscape?: boolean;
+  displayHeaderFooter?: boolean;
+  headerTemplate?: string;
+  footerTemplate?: string;
+  margin?: {
+    top?: string;
+    right?: string;
+    bottom?: string;
+    left?: string;
+  };
 };
 
 function reportTypeFromTitle(title: string): string {
@@ -62,6 +71,10 @@ export async function renderHtmlToPdf({
   html,
   title,
   landscape = false,
+  displayHeaderFooter = false,
+  headerTemplate,
+  footerTemplate,
+  margin,
 }: RenderHtmlToPdfOptions): Promise<Buffer> {
   if (!html.trim() || !title.trim()) throw new PdfRenderError();
 
@@ -111,11 +124,14 @@ export async function renderHtmlToPdf({
       printBackground: true,
       preferCSSPageSize: false,
       scale: 0.8,
+      displayHeaderFooter,
+      headerTemplate,
+      footerTemplate,
       margin: {
-        top: "12mm",
-        right: "10mm",
-        bottom: "12mm",
-        left: "10mm",
+        top: margin?.top ?? (displayHeaderFooter ? "18mm" : "12mm"),
+        right: margin?.right ?? "10mm",
+        bottom: margin?.bottom ?? (displayHeaderFooter ? "18mm" : "12mm"),
+        left: margin?.left ?? "10mm",
       },
     }));
     const pdf = Buffer.from(output);

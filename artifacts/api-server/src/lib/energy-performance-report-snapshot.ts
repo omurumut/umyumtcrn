@@ -51,6 +51,8 @@ type EffectiveEnergyPerformanceSettings = {
     approvedBy: string | null;
     footerText: string | null;
     showSignatureFields: boolean;
+    showLogo: boolean;
+    showPageNumbers: boolean;
   };
   profileVersion: number;
   typeSettingsVersion: number;
@@ -59,6 +61,13 @@ type EffectiveEnergyPerformanceSettings = {
   locale: ReportLocale;
   coverStyle: ReportCoverStyle;
   sections: EffectiveEnergyPerformanceSection[];
+  logo: {
+    mimeType: string;
+    width: number;
+    height: number;
+    version: number;
+    altText?: string | null;
+  } | null;
 };
 
 export type EnergyPerformanceReportSnapshotSection = {
@@ -97,6 +106,9 @@ export type EnergyPerformanceReportSnapshot = {
   title: string;
   subtitle: string | null;
   companyName: string;
+  companyLegalName: string | null;
+  companyShortName: string | null;
+  companyAddress: string | null;
   unitLabel: string;
   reportDisplayName: string;
   documentNumber: string | null;
@@ -107,6 +119,15 @@ export type EnergyPerformanceReportSnapshot = {
   approvedBy: string | null;
   footerText: string | null;
   showSignatureFields: boolean;
+  showLogo: boolean;
+  showPageNumbers: boolean;
+  logo: {
+    mimeType: string;
+    width: number;
+    height: number;
+    version: number;
+    altText: string | null;
+  } | null;
   sections: EnergyPerformanceReportSnapshotSection[];
   technicalProfile: TechnicalProfileReportContext;
   equipmentInventory: ReturnType<typeof toEquipmentReportSnapshot>;
@@ -156,6 +177,9 @@ export function buildEnergyPerformanceReportSnapshot({
   companyId,
   unitId,
   companyName,
+  companyLegalName,
+  companyShortName,
+  companyAddress,
   unitLabel,
   year,
   baselineId,
@@ -171,6 +195,9 @@ export function buildEnergyPerformanceReportSnapshot({
   companyId: number;
   unitId: number | null;
   companyName: string;
+  companyLegalName: string | null;
+  companyShortName: string | null;
+  companyAddress: string | null;
   unitLabel: string;
   year: number;
   baselineId: number;
@@ -246,6 +273,9 @@ export function buildEnergyPerformanceReportSnapshot({
     title: effective.title,
     subtitle: effective.subtitle,
     companyName,
+    companyLegalName,
+    companyShortName,
+    companyAddress,
     unitLabel,
     reportDisplayName: effective.reportDefinition.displayName,
     documentNumber: effective.profile.documentNumber,
@@ -256,6 +286,17 @@ export function buildEnergyPerformanceReportSnapshot({
     approvedBy: effective.profile.approvedBy,
     footerText: effective.profile.footerText,
     showSignatureFields: effective.profile.showSignatureFields,
+    showLogo: effective.profile.showLogo,
+    showPageNumbers: effective.profile.showPageNumbers,
+    logo: effective.logo && effective.profile.showLogo
+      ? {
+          mimeType: effective.logo.mimeType,
+          width: effective.logo.width,
+          height: effective.logo.height,
+          version: effective.logo.version,
+          altText: effective.logo.altText ?? null,
+        }
+      : null,
     sections,
     technicalProfile,
     equipmentInventory,

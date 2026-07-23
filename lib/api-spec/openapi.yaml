@@ -1397,6 +1397,34 @@ paths:
                 items:
                   $ref: "#/components/schemas/ReportRecord"
 
+  /reports/archive/{id}/detail:
+    get:
+      operationId: getReportArchiveDetail
+      tags: [reports]
+      summary: Rapor arsiv kaydi detayini getir
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+        - in: query
+          name: companyId
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportArchiveDetailResponse"
+        "400":
+          description: Bad request or missing superadmin companyId
+        "404":
+          description: Report archive not found
+
   /companies:
     get:
       operationId: listCompanies
@@ -2425,6 +2453,172 @@ components:
           type: ["boolean", "null"]
         createdAt:
           type: string
+
+    ReportArchiveDetailResponse:
+      type: object
+      required: [archive, scope, generation, document, dataScope, failure]
+      properties:
+        archive:
+          type: object
+          required: [id, reportType, reportName, status, fileName, mimeType, sizeBytes, checksum, createdAt, completedAt, failedAt, deletedAt, restoredAt, expiresAt, lifecycleVersion, canDownload, canRestore]
+          properties:
+            id:
+              type: integer
+            reportType:
+              type: string
+            reportName:
+              type: string
+            status:
+              type: string
+              enum: [generating, completed, failed, deleted, purging, purged, purge_failed]
+            fileName:
+              type: string
+            mimeType:
+              type: string
+            sizeBytes:
+              type: ["integer", "null"]
+            checksum:
+              type: ["string", "null"]
+            createdAt:
+              type: string
+            completedAt:
+              type: ["string", "null"]
+            failedAt:
+              type: ["string", "null"]
+            deletedAt:
+              type: ["string", "null"]
+            restoredAt:
+              type: ["string", "null"]
+            expiresAt:
+              type: ["string", "null"]
+            lifecycleVersion:
+              type: integer
+            canDownload:
+              type: boolean
+            canRestore:
+              type: boolean
+        scope:
+          type: object
+          required: [companyId, unitId, periodStart, periodEnd]
+          properties:
+            companyId:
+              type: integer
+            unitId:
+              type: ["integer", "null"]
+            periodStart:
+              type: ["string", "null"]
+            periodEnd:
+              type: ["string", "null"]
+        generation:
+          type: object
+          required: [generatedByUserId, generatedAt, snapshotId, settingsProfileVersion, reportTypeSettingsVersion]
+          properties:
+            generatedByUserId:
+              type: ["integer", "null"]
+            generatedAt:
+              type: ["string", "null"]
+            snapshotId:
+              type: ["integer", "null"]
+            settingsProfileVersion:
+              type: ["integer", "null"]
+            reportTypeSettingsVersion:
+              type: ["integer", "null"]
+        document:
+          type: object
+          required: [documentNumber, revisionNumber, revisionDate, preparedBy, checkedBy, approvedBy, confidentialityLevel, footerText]
+          properties:
+            documentNumber:
+              type: ["string", "null"]
+            revisionNumber:
+              type: ["string", "null"]
+            revisionDate:
+              type: ["string", "null"]
+            preparedBy:
+              type: ["string", "null"]
+            checkedBy:
+              type: ["string", "null"]
+            approvedBy:
+              type: ["string", "null"]
+            confidentialityLevel:
+              type: ["string", "null"]
+            footerText:
+              type: ["string", "null"]
+        dataScope:
+          type: ["object", "null"]
+          required: [schemaVersion, period, sources, qualityWarnings, isPartial, manifestHash]
+          properties:
+            schemaVersion:
+              type: integer
+              enum: [1]
+            period:
+              type: object
+              required: [periodStart, periodEnd, year, timezone]
+              properties:
+                periodStart:
+                  type: string
+                periodEnd:
+                  type: string
+                year:
+                  type: integer
+                timezone:
+                  type: string
+            sources:
+              type: array
+              items:
+                type: object
+                required: [sourceType, recordCount, identityHash, identityAlgorithm, identitySchemaVersion]
+                properties:
+                  sourceType:
+                    type: string
+                  recordCount:
+                    type: integer
+                    minimum: 0
+                  identityHash:
+                    type: string
+                    pattern: "^[a-f0-9]{64}$"
+                  identityAlgorithm:
+                    type: string
+                    enum: [sha256]
+                  identitySchemaVersion:
+                    type: integer
+                    enum: [1]
+            qualityWarnings:
+              type: array
+              items:
+                type: object
+                required: [code, severity, sourceType]
+                properties:
+                  code:
+                    type: string
+                  severity:
+                    type: string
+                    enum: [info, warning]
+                  sourceType:
+                    type: ["string", "null"]
+                  count:
+                    type: integer
+                    minimum: 0
+                  periods:
+                    type: array
+                    items:
+                      type: string
+                  message:
+                    type: string
+            isPartial:
+              type: boolean
+            manifestHash:
+              type: string
+              pattern: "^[a-f0-9]{64}$"
+        failure:
+          type: object
+          required: [category, message, retryable]
+          properties:
+            category:
+              type: ["string", "null"]
+            message:
+              type: ["string", "null"]
+            retryable:
+              type: boolean
 
     Company:
       type: object

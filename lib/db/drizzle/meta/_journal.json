@@ -281,6 +281,13 @@
       "when": 1785700000000,
       "tag": "0040_ai_production_readiness",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1785800000000,
+      "tag": "0041_report_data_manifest",
+      "breakpoints": true
     }
   ]
 }

@@ -5,3 +5,5 @@ export * from "./unit-technical-profile-contract";
 export * from "./equipment-contract";
 export * from "./equipment-custom-field-contract";
 export * from "./ai-analysis-contract";
+export * from "./report-archive-detail-contract";
+export * from "./report-data-manifest-contract";

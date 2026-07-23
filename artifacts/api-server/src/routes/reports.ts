@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { pipeline } from "node:stream/promises";
 import { db, pool, companiesTable, reportsTable, reportGenerationSnapshotsTable, reportArchivesTable, usersTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
+import { REPORT_TYPE_REGISTRY, type ReportArchiveDetailResponse, type ReportDataManifestV1 } from "@workspace/api-zod";
 import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc, count, ilike } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { renderHtmlToPdf, safePdfFilename } from "../lib/pdf-render.js";
@@ -50,6 +51,18 @@ import {
   buildEquipmentInventoryContext,
   toEquipmentReportSnapshot,
 } from "../lib/equipment-inventory-context.js";
+import {
+  buildCorporateReportHtml,
+  buildCorporateSectionHeading,
+  logoBufferToDataUri,
+} from "../lib/report-pdf-layout.js";
+import {
+  buildAnnualReportDataManifest,
+  buildEnergyPerformanceReportDataManifest,
+  buildEnergyTargetsReportDataManifest,
+  manifestAuditMetadata,
+  summarizeReportDataManifest,
+} from "../lib/report-data-manifest.js";
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
@@ -226,7 +239,158 @@ function parseArchiveDate(value: unknown, field: string): Date | undefined {
 function safeContentDisposition(filename: string): string {
   const safe = sanitizeArchiveFilename(filename).replace(/"/g, "");
   const ascii = safe.replace(/[^\x20-\x7E]/g, "_");
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(safe)}`;
+  return `attachment; filename="${ascii}"`;
+}
+
+async function readCompanyPdfIdentity(companyId: number) {
+  const [company] = await db.select({
+    name: companiesTable.name,
+    legalName: companiesTable.legalName,
+    shortName: companiesTable.shortName,
+    address: companiesTable.address,
+  })
+    .from(companiesTable)
+    .where(eq(companiesTable.id, companyId))
+    .limit(1);
+  return company ?? null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function safeString(value: unknown): string | null {
+  return typeof value === "string" && value.length <= 1_000 ? value : null;
+}
+
+function safeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function dateToIso(value: Date | null | undefined): string | null {
+  return value instanceof Date ? value.toISOString() : null;
+}
+
+function reportNameFor(reportType: string, snapshot: unknown): string {
+  const snapshotTitle = isRecord(snapshot) ? safeString(snapshot.reportDisplayName) ?? safeString(snapshot.title) : null;
+  return snapshotTitle ?? REPORT_TYPE_REGISTRY.find((item) => item.code === reportType)?.displayName ?? reportType;
+}
+
+function safeFailureCategory(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  return /^[a-z][a-z0-9_-]{0,79}$/.test(value) ? value : "redacted";
+}
+
+function reportManifestSettings(snapshot: {
+  profileVersion?: number | null;
+  typeSettingsVersion?: number | null;
+  documentNumber?: string | null;
+  revisionNumber?: string | null;
+  revisionDate?: string | null;
+}) {
+  return {
+    profileVersion: snapshot.profileVersion ?? null,
+    typeSettingsVersion: snapshot.typeSettingsVersion ?? null,
+    documentNumber: snapshot.documentNumber ?? null,
+    revisionNumber: snapshot.revisionNumber ?? null,
+    revisionDate: snapshot.revisionDate ?? null,
+  };
+}
+
+async function persistReportDataManifest(snapshotId: number, manifest: ReportDataManifestV1): Promise<void> {
+  await db.update(reportGenerationSnapshotsTable)
+    .set({ dataManifest: manifest })
+    .where(eq(reportGenerationSnapshotsTable.id, snapshotId));
+}
+
+function buildArchiveDetailResponse(input: {
+  archive: typeof reportArchivesTable.$inferSelect;
+  snapshot: typeof reportGenerationSnapshotsTable.$inferSelect | null;
+}): ReportArchiveDetailResponse {
+  const { archive, snapshot } = input;
+  const snapshotJson = snapshot?.settingsSnapshot;
+  const snapshotRecord = isRecord(snapshotJson) ? snapshotJson : null;
+  const profileVersion = safeNumber(snapshotRecord?.profileVersion);
+  const typeSettingsVersion = safeNumber(snapshotRecord?.typeSettingsVersion);
+  const previousStatus = archive.previousStatus;
+  const failureCategory = safeFailureCategory(archive.status === "purge_failed" ? archive.purgeFailureCategory : archive.failureCategory);
+  const canRestore = archive.status === "deleted"
+    && archive.deletionLocked !== true
+    && Boolean(archive.storageKey)
+    && (previousStatus === "completed" || previousStatus === "failed");
+
+  return {
+    archive: {
+      id: archive.id,
+      reportType: archive.reportType,
+      reportName: reportNameFor(archive.reportType, snapshotJson),
+      status: archive.status as ReportArchiveDetailResponse["archive"]["status"],
+      fileName: archive.outputName,
+      mimeType: archive.contentType,
+      sizeBytes: archive.sizeBytes,
+      checksum: archive.checksumSha256,
+      createdAt: archive.createdAt.toISOString(),
+      completedAt: dateToIso(archive.completedAt),
+      failedAt: dateToIso(archive.failedAt),
+      deletedAt: dateToIso(archive.deletedAt),
+      restoredAt: null,
+      expiresAt: dateToIso(archive.retentionExpiresAt),
+      lifecycleVersion: archive.lifecycleVersion,
+      canDownload: archiveDownloadable(archive.status),
+      canRestore,
+    },
+    scope: {
+      companyId: archive.companyId,
+      unitId: archive.unitId,
+      periodStart: safeString(snapshotRecord?.periodStart),
+      periodEnd: safeString(snapshotRecord?.periodEnd),
+    },
+    generation: {
+      generatedByUserId: archive.generatedBy ?? snapshot?.generatedBy ?? null,
+      generatedAt: dateToIso(archive.generatedAt ?? snapshot?.generatedAt ?? null),
+      snapshotId: archive.snapshotId,
+      settingsProfileVersion: profileVersion,
+      reportTypeSettingsVersion: typeSettingsVersion,
+    },
+    document: {
+      documentNumber: safeString(snapshotRecord?.documentNumber),
+      revisionNumber: safeString(snapshotRecord?.revisionNumber),
+      revisionDate: safeString(snapshotRecord?.revisionDate),
+      preparedBy: safeString(snapshotRecord?.preparedBy),
+      checkedBy: safeString(snapshotRecord?.checkedBy),
+      approvedBy: safeString(snapshotRecord?.approvedBy),
+      confidentialityLevel: safeString(snapshotRecord?.confidentiality),
+      footerText: safeString(snapshotRecord?.footerText),
+    },
+    dataScope: summarizeReportDataManifest(snapshot?.dataManifest),
+    failure: {
+      category: failureCategory,
+      message: failureCategory,
+      retryable: false,
+    },
+  };
+}
+
+async function findScopedArchiveDetail(req: Request, archiveId: number) {
+  const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
+  if (scope.companyId === undefined) throw new ReportScopeError(400, "companyId zorunludur");
+  const conditions: SQL[] = [
+    eq(reportArchivesTable.id, archiveId),
+    eq(reportArchivesTable.companyId, scope.companyId),
+  ];
+  if (scope.unitId !== null) conditions.push(eq(reportArchivesTable.unitId, scope.unitId));
+  const [row] = await db.select({
+    archive: reportArchivesTable,
+    snapshot: reportGenerationSnapshotsTable,
+  })
+    .from(reportArchivesTable)
+    .leftJoin(reportGenerationSnapshotsTable, and(
+      eq(reportArchivesTable.snapshotId, reportGenerationSnapshotsTable.id),
+      eq(reportGenerationSnapshotsTable.companyId, reportArchivesTable.companyId),
+    ))
+    .where(and(...conditions))
+    .limit(1);
+  return row ?? null;
 }
 
 async function getOfficialSeuReportSection({
@@ -622,6 +786,23 @@ router.get("/reports/archive", requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/reports/archive/:id/detail
+router.get("/reports/archive/:id/detail", requireAuth, async (req, res) => {
+  try {
+    const archiveId = parseRequiredId(req.params.id, "id");
+    const row = await findScopedArchiveDetail(req, archiveId);
+    if (!row) {
+      res.status(404).json({ error: "Rapor bulunamadi" });
+      return;
+    }
+    res.json(buildArchiveDetailResponse(row));
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Rapor detayi alinamadi" });
+  }
+});
+
 // GET /api/reports/archive/:id/download
 router.get("/reports/archive/:id/download", requireAuth, async (req, res) => {
   try {
@@ -956,6 +1137,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
   let snapshotRecordId: number | null = null;
   let archiveRecordId: number | null = null;
   let snapshotForFailure: AnnualEnergyReportSnapshot | null = null;
+  let dataManifestForFailure: ReportDataManifestV1 | null = null;
   try {
     const { year, unitId: bodyUnitId, includeSwot, includeRisks, includeSeu, includeRegression } = req.body;
     const allowedBodyKeys = new Set(["year", "unitId", "companyId", "includeSwot", "includeRisks", "includeSeu", "includeRegression"]);
@@ -1102,6 +1284,29 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       metadata: auditMetadata,
     });
 
+    const dataManifest = buildAnnualReportDataManifest({
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      year: yr,
+      generatedAt: snapshot.generatedAt,
+      settings: reportManifestSettings(snapshot),
+      filters: {
+        includeSwot: snapshot.legacyOverrides.swot?.value ?? true,
+        includeRisks: snapshot.legacyOverrides.risks?.value ?? true,
+        includeSeu: snapshot.legacyOverrides.seu?.value ?? true,
+        includeRegression: snapshot.legacyOverrides.regression?.value ?? true,
+      },
+      consumptionRows,
+      meters,
+      swotItems,
+      riskItems,
+      seuItems: officialSeu.items,
+      seuAssessmentCount: officialSeu.assessmentCount,
+    });
+    dataManifestForFailure = dataManifest;
+    await persistReportDataManifest(snapshotRecordId, dataManifest);
+    const completedAuditMetadata = { ...auditMetadata, ...manifestAuditMetadata(dataManifest) };
+
     const totalKwh = consumptionRows.reduce((a, r) => a + r.kwh, 0);
     const totalTep = consumptionRows.reduce((a, r) => a + r.tep, 0);
     const totalCo2 = consumptionRows.reduce((a, r) => a + r.co2, 0);
@@ -1234,7 +1439,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
       action: "annual_energy_performance_report.generation_completed",
       entityType: "report",
       entityId: report.id,
-      metadata: auditMetadata,
+      metadata: completedAuditMetadata,
     });
 
     res.json({
@@ -1288,6 +1493,7 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
           outputName: snapshotForFailure?.outputName ?? null,
           sectionCodes: snapshotForFailure?.sections.filter((section) => section.finalVisibility).map((section) => section.code) ?? [],
           legacyOverrides: snapshotForFailure ? Object.values(snapshotForFailure.legacyOverrides).map((override) => override.param) : [],
+          ...(dataManifestForFailure ? manifestAuditMetadata(dataManifestForFailure) : {}),
           failureCategory: err instanceof AnnualEnergyReportSnapshotError ? "settings_snapshot" : reportStorageFailureCategory(err, "render_or_update"),
         },
       });
@@ -1325,6 +1531,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
   let snapshotRecordId: number | null = null;
   let archiveRecordId: number | null = null;
   let snapshotForFailure: EnergyTargetsReportSnapshot | null = null;
+  let dataManifestForFailure: ReportDataManifestV1 | null = null;
   try {
     const statusParam = parseTargetReportStatus(req.query.status);
     const legacyOverrides = parseEnergyTargetsLegacyOverrides({
@@ -1463,11 +1670,17 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     }
     const unitLabelHtml = escapeHtml(unitLabel);
 
-    const [company] = await db.select({ name: companiesTable.name })
+    const [company] = await db.select({
+      name: companiesTable.name,
+      legalName: companiesTable.legalName,
+      shortName: companiesTable.shortName,
+      address: companiesTable.address,
+    })
       .from(companiesTable)
       .where(eq(companiesTable.id, effectiveCompanyId))
       .limit(1);
     if (!company) throw new ReportScopeError(400, "Gecersiz companyId");
+    const companyIdentity = await readCompanyPdfIdentity(effectiveCompanyId);
 
     const effectiveSettings = await resolveEffectiveCompanyReportSettings({
       companyId: effectiveCompanyId,
@@ -1478,6 +1691,9 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       companyId: effectiveCompanyId,
       unitId: resolvedUnitId,
       companyName: company.name,
+      companyLegalName: companyIdentity?.legalName ?? null,
+      companyShortName: companyIdentity?.shortName ?? null,
+      companyAddress: companyIdentity?.address ?? null,
       unitLabel,
       year: yearParam,
       generatedAt: new Date(),
@@ -1533,6 +1749,26 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       entityId: snapshotRecordId,
       metadata: auditMetadata,
     });
+
+    const dataManifest = buildEnergyTargetsReportDataManifest({
+      companyId: effectiveCompanyId,
+      unitId: resolvedUnitId,
+      year: yearParam,
+      generatedAt: snapshot.generatedAt,
+      settings: reportManifestSettings(snapshot),
+      filters: {
+        status: statusParam ?? null,
+        includeVap: legacyOverrides.vap_portfolio?.value ?? null,
+        includeProgress: legacyOverrides.progress_chronology?.value ?? null,
+      },
+      targets,
+      actions,
+      progressRows: allProgressRows,
+      vapProjects,
+    });
+    dataManifestForFailure = dataManifest;
+    await persistReportDataManifest(snapshotRecordId, dataManifest);
+    const completedAuditMetadata = { ...auditMetadata, ...manifestAuditMetadata(dataManifest) };
 
     // ── Summary stats ─────────────────────────────────────────────────────────
     const totalTargets = targets.length;
@@ -1687,7 +1923,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
     };
     const renderedSectionsHtml = visibleEnergyTargetsSections(snapshot)
       .filter((section) => section.code !== "cover")
-      .map((section, index) => `<h2>${index + 1}. ${escapeHtml(section.finalTitle)}</h2>\n${sectionFragments[section.code] ?? ""}`)
+      .map((section, index) => `${buildCorporateSectionHeading(index + 1, section.finalTitle)}\n${sectionFragments[section.code] ?? ""}`)
       .join("\n\n");
     const coverClass = snapshot.coverStyle === "compact" ? "cover cover-compact" : "cover";
     const subtitleHtml = snapshot.subtitle ? `<p>${escapeHtml(snapshot.subtitle)}</p>` : "";
@@ -1755,10 +1991,56 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
 </body>
 </html>`;
 
+    const corporatePdf = buildCorporateReportHtml({
+      identity: {
+        companyName: snapshot.companyName,
+        companyLegalName: snapshot.companyLegalName,
+        companyShortName: snapshot.companyShortName,
+        companyAddress: snapshot.companyAddress,
+        reportTitle: snapshot.title,
+        reportDisplayName: snapshot.reportDisplayName,
+        reportPeriod: String(yearParam),
+        unitLabel: snapshot.unitLabel,
+        documentNumber: snapshot.documentNumber,
+        revisionNumber: snapshot.revisionNumber,
+        revisionDate: snapshot.revisionDate,
+        preparedBy: snapshot.preparedBy,
+        checkedBy: snapshot.checkedBy,
+        approvedBy: snapshot.approvedBy,
+        confidentialityLabel: snapshot.confidentialityLabel,
+        footerText: snapshot.footerText,
+        generatedAt: generatedDate,
+        generatedByName: req.user?.name ?? null,
+        locale,
+        showSignatureFields: snapshot.showSignatureFields,
+        showPageNumbers: snapshot.showPageNumbers,
+        logoDataUri: snapshot.showLogo ? logoBufferToDataUri({ mimeType: effectiveSettings.logo?.mimeType, content: effectiveSettings.logo?.content }) : null,
+        logoAltText: snapshot.logo?.altText ?? null,
+      },
+      bodyHtml: `<p class="report-note">Bu rapor, secili yilda aktif olan hedefleri ve secili yila ait gerceklesme kayitlarini icerir.</p>${renderedSectionsHtml}`,
+      extraCss: `
+        .report-note { margin:0 0 18px; padding:8px 12px; background:#f0fdf4; border-left:3px solid #0f766e; font-size:12px; color:#065f46; page-break-inside:avoid; }
+        .kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:16px 0; }
+        .kpi-box { background:#f8fafc; border:1px solid #e2e8f0; padding:12px; text-align:center; }
+        .kpi-value { font-size:22px; font-weight:700; color:#0f766e; }
+        .kpi-label { font-size:10px; color:#64748b; margin-top:4px; }
+        .badge { display:inline-block; padding:2px 7px; border-radius:3px; font-size:10px; font-weight:700; }
+        .badge-active { background:#d1fae5; color:#065f46; }
+        .badge-completed { background:#dbeafe; color:#1d4ed8; }
+        .badge-cancelled { background:#fee2e2; color:#991b1b; }
+        .badge-on_hold { background:#fef3c7; color:#92400e; }
+        .badge-planned { background:#e0f2fe; color:#0369a1; }
+        .badge-in_progress { background:#fef9c3; color:#713f12; }
+      `,
+    });
+
     const pdf = await renderHtmlToPdf({
-      html: htmlContent,
+      html: corporatePdf.html,
       title: `Enerji Hedefleri ${yearParam}`,
       landscape: true,
+      displayHeaderFooter: corporatePdf.displayHeaderFooter,
+      headerTemplate: corporatePdf.headerTemplate,
+      footerTemplate: corporatePdf.footerTemplate,
     });
     await completeReportArchive({
       request: req,
@@ -1779,12 +2061,12 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
       action: "energy_targets_report.generation_completed",
       entityType: "report_generation_snapshot",
       entityId: snapshotRecordId,
-      metadata: auditMetadata,
+      metadata: completedAuditMetadata,
     });
     const filename = snapshot.filename;
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Disposition": safeContentDisposition(filename),
       "Cache-Control": "no-store",
       "Content-Length": String(pdf.length),
     });
@@ -1827,6 +2109,7 @@ router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
           filename: snapshotForFailure?.filename ?? null,
           sectionCodes: snapshotForFailure?.sections.filter((section) => section.visibilityResult).map((section) => section.code) ?? [],
           legacyOverrideUsed: snapshotForFailure?.sections.some((section) => section.legacyOverride !== null) ?? false,
+          ...(dataManifestForFailure ? manifestAuditMetadata(dataManifestForFailure) : {}),
         },
       });
     }
@@ -1844,6 +2127,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
   let snapshotRecordId: number | null = null;
   let archiveRecordId: number | null = null;
   let snapshotForFailure: EnergyPerformanceReportSnapshot | null = null;
+  let dataManifestForFailure: ReportDataManifestV1 | null = null;
   try {
     const scope = await resolveReportScope(req, req.query as Record<string, unknown>, true);
     const baselineId = parseRequiredId(req.query.baselineId, "baselineId");
@@ -1943,6 +2227,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       companyId: effectiveCompanyId,
       reportType: ENERGY_PERFORMANCE_REPORT_TYPE,
     });
+    const companyIdentity = await readCompanyPdfIdentity(effectiveCompanyId);
     const generatedAt = new Date();
     const technicalProfileContext = await buildTechnicalProfileReportContext({
       companyId: effectiveCompanyId,
@@ -1960,6 +2245,9 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       companyId: effectiveCompanyId,
       unitId: baseline.unitId,
       companyName: company.name,
+      companyLegalName: companyIdentity?.legalName ?? null,
+      companyShortName: companyIdentity?.shortName ?? null,
+      companyAddress: companyIdentity?.address ?? null,
       unitLabel: unitName,
       year,
       baselineId,
@@ -2036,6 +2324,24 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       entityId: snapshotRecordId,
       metadata: auditMetadata,
     });
+
+    const dataManifest = buildEnergyPerformanceReportDataManifest({
+      companyId: effectiveCompanyId,
+      unitId: baseline.unitId,
+      year,
+      generatedAt: snapshot.generatedAt,
+      settings: reportManifestSettings(snapshot),
+      filters: { baselineId },
+      baseline,
+      baselineVariables: bvars,
+      results,
+      seuAssessmentItemId: baseline.seuAssessmentItemId ?? null,
+      technicalProfile: snapshot.technicalProfile,
+      equipmentInventory: snapshot.equipmentInventory,
+    });
+    dataManifestForFailure = dataManifest;
+    await persistReportDataManifest(snapshotRecordId, dataManifest);
+    const completedAuditMetadata = { ...auditMetadata, ...manifestAuditMetadata(dataManifest) };
 
     // ── Ham birim etiketi ─────────────────────────────────────────────────
     // rawUnit: consumptionTable.kwh alanının gerçek birimi — TEP değil, m³/kWh/vb.
@@ -2268,10 +2574,100 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
 </body>
 </html>`;
 
+    const performanceBodyHtml = `
+  ${technicalProfileReportContextHtml(snapshot.technicalProfile)}
+  ${equipmentInventoryReportContextHtml(snapshot.equipmentInventory)}
+
+  ${buildCorporateSectionHeading(1, sectionTitle("regression_model", "Regresyon Modeli"))}
+  <div class="formula-box">${formulaTextHtml}</div>
+  <div class="meta-grid">
+    <div class="meta-item"><div class="meta-label">Model Turu</div><div class="meta-value">${modelLabel}</div></div>
+    <div class="meta-item"><div class="meta-label">R2</div><div class="meta-value">${baseline.rSquared?.toFixed(4) ?? "-"}</div></div>
+    <div class="meta-item"><div class="meta-label">Ayarli R2</div><div class="meta-value">${baseline.adjustedRSquared?.toFixed(4) ?? "-"}</div></div>
+    <div class="meta-item"><div class="meta-label">Ornek Sayisi</div><div class="meta-value">${baseline.sampleSize ?? "-"} ay</div></div>
+    <div class="meta-item"><div class="meta-label">Referans Donemi</div><div class="meta-value">${periodStartHtml} / ${periodEndHtml}</div></div>
+    <div class="meta-item"><div class="meta-label">Bagimli Degisken Birimi</div><div class="meta-value">${rawUnitHtml}</div></div>
+  </div>
+
+  ${visibleSectionCodes.has("model_variables") && varsHtml ? `${buildCorporateSectionHeading(2, sectionTitle("model_variables", "Model Degiskenleri"))}${varsHtml}` : ""}
+
+  ${buildCorporateSectionHeading(visibleSectionCodes.has("model_variables") && varsHtml ? 3 : 2, `${sectionTitle("performance_summary", "Performans Ozeti")} (${year})`)}
+  <div class="kpi-grid">
+    <div class="kpi-box"><div class="kpi-value">${fmtRaw(totalActual, 0)}</div><div class="kpi-label">Toplam Gerceklesen (${rawUnitHtml})</div></div>
+    <div class="kpi-box"><div class="kpi-value">${fmtRaw(totalExpected, 0)}</div><div class="kpi-label">Toplam Beklenen (${rawUnitHtml})</div></div>
+    <div class="kpi-box"><div class="kpi-value diff-${totalDiff < 0 ? "good" : "bad"}">${(totalDiff >= 0 ? "+" : "") + fmtRaw(totalDiff, 0)}</div><div class="kpi-label">Net Sapma (${rawUnitHtml})</div></div>
+    <div class="kpi-box"><div class="kpi-value diff-${finalCusum < 0 ? "good" : "bad"}">${fmtRaw(finalCusum)}</div><div class="kpi-label">CUSUM Son Deger (${rawUnitHtml})</div></div>
+    <div class="kpi-box"><div class="kpi-value diff-${avgEei != null && avgEei < 1 ? "good" : "bad"}">${avgEei != null ? avgEei.toFixed(4) : "-"}</div><div class="kpi-label">Ortalama EEI${negativeMonths.length > 0 ? " *" : ""}</div></div>
+  </div>
+
+  ${negativeNoteHtml}
+
+  ${buildCorporateSectionHeading(visibleSectionCodes.has("model_variables") && varsHtml ? 4 : 3, `${sectionTitle("monthly_results", "Aylik EnPG Sonuclari")} (${year})`)}
+  ${results.length > 0 ? `
+  <table>
+    <tr>
+      <th>Ay</th>
+      <th style="text-align:right">Gerceklesen (${rawUnitHtml})</th>
+      <th style="text-align:right">Beklenen (${rawUnitHtml})</th>
+      <th style="text-align:right">Sapma (${rawUnitHtml})</th>
+      <th style="text-align:right">Sapma (%)</th>
+      <th style="text-align:right">CUSUM (${rawUnitHtml})</th>
+      <th style="text-align:right">EEI</th>
+      <th style="text-align:center">Durum</th>
+    </tr>
+    ${tableRowsHtml}
+    ${totalRowHtml}
+  </table>` : "<p>Bu yil icin hesaplanmis EnPG sonucu bulunamadi. Once EnPG Izleme ekranindan hesaplama yapin.</p>"}`;
+    const corporatePdf = buildCorporateReportHtml({
+      identity: {
+        companyName: snapshot.companyName,
+        companyLegalName: snapshot.companyLegalName,
+        companyShortName: snapshot.companyShortName,
+        companyAddress: snapshot.companyAddress,
+        reportTitle: snapshot.title,
+        reportDisplayName: snapshot.reportDisplayName,
+        reportPeriod: String(year),
+        unitLabel: snapshot.unitLabel,
+        documentNumber: snapshot.documentNumber,
+        revisionNumber: snapshot.revisionNumber,
+        revisionDate: snapshot.revisionDate,
+        preparedBy: snapshot.preparedBy,
+        checkedBy: snapshot.checkedBy,
+        approvedBy: snapshot.approvedBy,
+        confidentialityLabel: snapshot.confidentialityLabel,
+        footerText: snapshot.footerText,
+        generatedAt: generatedDate,
+        generatedByName: req.user?.name ?? null,
+        locale,
+        showSignatureFields: snapshot.showSignatureFields,
+        showPageNumbers: snapshot.showPageNumbers,
+        logoDataUri: snapshot.showLogo ? logoBufferToDataUri({ mimeType: effectiveSettings.logo?.mimeType, content: effectiveSettings.logo?.content }) : null,
+        logoAltText: snapshot.logo?.altText ?? null,
+      },
+      bodyHtml: performanceBodyHtml,
+      extraCss: `
+        .kpi-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin:14px 0; }
+        .kpi-box { background:#f8fafc; border:1px solid #e2e8f0; padding:10px; text-align:center; }
+        .kpi-value { font-size:18px; font-weight:700; color:#0f766e; }
+        .kpi-label { font-size:10px; color:#64748b; margin-top:3px; }
+        .diff-good { color:#059669; }
+        .diff-bad { color:#dc2626; }
+        .formula-box { background:#f0fdf4; border:1px solid #a7f3d0; padding:10px 12px; margin:10px 0; font-family:monospace; font-size:11px; color:#065f46; overflow-wrap:anywhere; }
+        .warning-box { background:#fffbeb; border:1px solid #fde68a; padding:9px 12px; margin:10px 0; font-size:11px; color:#78350f; page-break-inside:avoid; }
+        .meta-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:10px 0; font-size:11px; }
+        .meta-item { background:#f8fafc; border:1px solid #e2e8f0; padding:8px 10px; }
+        .meta-label { color:#64748b; margin-bottom:3px; }
+        .meta-value { font-weight:700; color:#1e3a5f; overflow-wrap:anywhere; }
+      `,
+    });
+
     const pdf = await renderHtmlToPdf({
-      html: htmlContent,
+      html: corporatePdf.html,
       title: `Enerji Performansi ${year}`,
       landscape: true,
+      displayHeaderFooter: corporatePdf.displayHeaderFooter,
+      headerTemplate: corporatePdf.headerTemplate,
+      footerTemplate: corporatePdf.footerTemplate,
     });
     await completeReportArchive({
       request: req,
@@ -2292,12 +2688,12 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
       action: "energy_performance_report.generation_completed",
       entityType: "report_generation_snapshot",
       entityId: snapshotRecordId,
-      metadata: auditMetadata,
+      metadata: completedAuditMetadata,
     });
     const filename = snapshot.filename;
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Disposition": safeContentDisposition(filename),
       "Cache-Control": "no-store",
       "Content-Length": String(pdf.length),
     });
@@ -2344,6 +2740,7 @@ router.get("/reports/energy-performance/pdf", requireAuth, async (req, res) => {
           modelType: snapshotForFailure?.modelType ?? null,
           sectionCodes: snapshotForFailure?.sections.filter((section) => section.visibilityResult).map((section) => section.code) ?? [],
           requestOverrideUsed: false,
+          ...(dataManifestForFailure ? manifestAuditMetadata(dataManifestForFailure) : {}),
           failureCategory: err instanceof EnergyPerformanceReportSnapshotError ? "settings_snapshot" : reportStorageFailureCategory(err, "render_or_update"),
         },
       });

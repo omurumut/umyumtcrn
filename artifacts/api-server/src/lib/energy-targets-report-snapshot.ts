@@ -57,6 +57,8 @@ type EffectiveEnergyTargetsSettings = {
     approvedBy: string | null;
     footerText: string | null;
     showSignatureFields: boolean;
+    showLogo: boolean;
+    showPageNumbers: boolean;
   };
   profileVersion: number;
   typeSettingsVersion: number;
@@ -65,6 +67,13 @@ type EffectiveEnergyTargetsSettings = {
   locale: ReportLocale;
   coverStyle: ReportCoverStyle;
   sections: EffectiveEnergyTargetsSection[];
+  logo: {
+    mimeType: string;
+    width: number;
+    height: number;
+    version: number;
+    altText?: string | null;
+  } | null;
 };
 
 export type EnergyTargetsLegacyOverrides = Partial<Record<LegacySectionCode, {
@@ -106,6 +115,9 @@ export type EnergyTargetsReportSnapshot = {
   title: string;
   subtitle: string | null;
   companyName: string;
+  companyLegalName: string | null;
+  companyShortName: string | null;
+  companyAddress: string | null;
   unitLabel: string;
   reportDisplayName: string;
   documentNumber: string | null;
@@ -116,6 +128,15 @@ export type EnergyTargetsReportSnapshot = {
   approvedBy: string | null;
   footerText: string | null;
   showSignatureFields: boolean;
+  showLogo: boolean;
+  showPageNumbers: boolean;
+  logo: {
+    mimeType: string;
+    width: number;
+    height: number;
+    version: number;
+    altText: string | null;
+  } | null;
   sections: EnergyTargetsReportSnapshotSection[];
 };
 
@@ -193,6 +214,9 @@ export function buildEnergyTargetsReportSnapshot({
   companyId,
   unitId,
   companyName,
+  companyLegalName,
+  companyShortName,
+  companyAddress,
   unitLabel,
   year,
   generatedAt,
@@ -205,6 +229,9 @@ export function buildEnergyTargetsReportSnapshot({
   companyId: number;
   unitId: number | null;
   companyName: string;
+  companyLegalName: string | null;
+  companyShortName: string | null;
+  companyAddress: string | null;
   unitLabel: string;
   year: number;
   generatedAt: Date;
@@ -289,6 +316,9 @@ export function buildEnergyTargetsReportSnapshot({
     title: effective.title,
     subtitle: effective.subtitle,
     companyName,
+    companyLegalName,
+    companyShortName,
+    companyAddress,
     unitLabel,
     reportDisplayName: effective.reportDefinition.displayName,
     documentNumber: effective.profile.documentNumber,
@@ -299,6 +329,17 @@ export function buildEnergyTargetsReportSnapshot({
     approvedBy: effective.profile.approvedBy,
     footerText: effective.profile.footerText,
     showSignatureFields: effective.profile.showSignatureFields,
+    showLogo: effective.profile.showLogo,
+    showPageNumbers: effective.profile.showPageNumbers,
+    logo: effective.logo && effective.profile.showLogo
+      ? {
+          mimeType: effective.logo.mimeType,
+          width: effective.logo.width,
+          height: effective.logo.height,
+          version: effective.logo.version,
+          altText: effective.logo.altText ?? null,
+        }
+      : null,
     sections,
   };
 }

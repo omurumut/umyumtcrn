@@ -34,16 +34,19 @@ Beklenen akis:
 4. Effective settings cozumleme
 5. Conditional evaluator kararlari
 6. `report_generation_snapshots` icin `generating` kaydi
-7. Started audit
-8. HTML/PDF render
-9. `report_archives` icin `generating` kaydi
-10. HTML/PDF binary'nin storage provider'a yazilmasi
-11. Size ve SHA-256 checksum dogrulamasi
-12. Snapshot `completed` ve `storage_status='stored'` update
-13. Archive `completed` update ve completed audit
-14. Hata halinde snapshot/archive `failed` update ve failed audit
+7. `report_archives` icin `generating` kaydi
+8. Started audit
+9. Kapsam manifesti ve kaynak kimlik hash'lerinin snapshot'a yazilmasi
+10. HTML/PDF render
+11. HTML/PDF binary'nin storage provider'a yazilmasi
+12. Size ve SHA-256 checksum dogrulamasi
+13. Snapshot `completed` ve `storage_status='stored'` update
+14. Archive `completed` update ve completed audit
+15. Hata halinde snapshot/archive `failed` update ve failed audit
 
 Snapshot JSON'u karar kaydidir; tam HTML, data URL, PDF binary veya buyuk veri seti saklamaz. Completed kayitlar uygulama tarafindan immutable kabul edilir. Faz 4A'dan sonra yeni rapor binary'leri `reports.download_url` icinde saklanmaz; arama ve indirme icin `report_archives` kullanilir. Annual HTML response'u geriye donuk e2e/istemci uyumu icin gecici `dataUrl` dondurur, ancak bu deger DB'ye yazilmaz.
+
+Hash alanlari farkli amaclar tasir. Archive checksum, storage'a yazilan HTML/PDF binary'nin butunlugunu dogrular. Source identity hash, rapor kapsaminda secilen kaynak kayitlarin stabil kimlik ve anlamli mutation/version alanlarindan uretilen deterministik ozettir; full row payload, notlar veya uzun kullanici metinleri saklanmaz. Manifest hash, `manifestHash` alani haric canonical manifestin butunlugunu temsil eder. Bu hash'ler full veri snapshot'i degildir, ayni rapor binary'sinin gelecekte bire bir yeniden uretilmesini garanti etmez; denetim kanitinin ana immutable ciktisi arsiv binary'sidir.
 
 ## Migration 0028/0029/0030/0031
 

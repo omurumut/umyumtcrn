@@ -237,6 +237,7 @@ export const reportGenerationSnapshotsTable = pgTable("report_generation_snapsho
   storageStatus: text("storage_status").notNull().default("not_stored"),
   filename: text("filename"),
   settingsSnapshot: jsonb("settings_snapshot_json").notNull(),
+  dataManifest: jsonb("data_manifest_json").$type<Record<string, unknown> | null>(),
   generatedBy: integer("generated_by").references(() => usersTable.id, { onDelete: "set null" }),
   generatedAt: timestamp("generated_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
