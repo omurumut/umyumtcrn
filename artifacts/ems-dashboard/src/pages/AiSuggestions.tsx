@@ -1169,6 +1169,9 @@ function LegacySuggestions(props: {
   onLoad: () => void;
 }) {
   const suggestions = props.response?.suggestions ?? [];
+  const equipmentReadinessEntries = Object.entries(props.response?.equipmentInventoryReadiness ?? {})
+    .filter(([, value]) => value !== null && value !== undefined)
+    .slice(0, 4);
   return (
     <Card>
       <CardHeader>
@@ -1196,6 +1199,16 @@ function LegacySuggestions(props: {
         {props.isVisible && suggestions.length === 0 && (
           <p className="text-sm text-muted-foreground">Kural tabanli oneri uretilemedi.</p>
         )}
+        {props.isVisible && equipmentReadinessEntries.length > 0 && (
+          <div data-testid="ai-equipment-readiness" className="rounded-md border p-3">
+            <h3 className="text-sm font-medium">Ekipman envanteri hazirligi</h3>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {equipmentReadinessEntries.map(([key, value]) => (
+                <Metric key={key} label={key} value={formatLegacyReadinessValue(value)} />
+              ))}
+            </div>
+          </div>
+        )}
         {props.isVisible && suggestions.length > 0 && (
           <div className="grid gap-3 md:grid-cols-2">
             {suggestions.map((suggestion) => (
@@ -1219,6 +1232,22 @@ function LegacySuggestions(props: {
       </CardContent>
     </Card>
   );
+}
+
+function formatLegacyReadinessValue(value: unknown): string {
+  if (typeof value === "boolean") {
+    return value ? "Evet" : "Hayir";
+  }
+  if (typeof value === "number") {
+    return formatNumber(value);
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return `${value.length} kayit`;
+  }
+  return "Var";
 }
 
 function DetailSkeleton() {

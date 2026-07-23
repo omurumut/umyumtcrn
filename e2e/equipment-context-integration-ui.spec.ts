@@ -31,6 +31,6 @@ test("equipment context dashboard ve energy review kartlarinda gorunur", async (
 test("AI onerileri equipment readiness metadata kartini gosterir", async ({ page }) => {
   await loginUi(page, credentials.admin);
   await page.goto("/oneriler");
-  await page.getByRole("button").filter({ hasText: /onerileri|önerileri|yenile/i }).click();
+  await page.getByRole("button", { name: /kural tabanli onerileri goster/i }).click();
   await expect(page.getByTestId("ai-equipment-readiness")).toBeVisible();
 });

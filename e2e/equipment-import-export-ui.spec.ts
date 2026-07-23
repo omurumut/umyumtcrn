@@ -126,5 +126,5 @@ test("equipment import/export toolbar ve preview dialog calisir", async ({ page 
   await expect(dialog.getByText(equipmentCode)).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Apply" })).toBeEnabled();
   await dialog.getByRole("button", { name: "Apply" }).click();
-  await expect(page.getByText(/Import uyguland/)).toBeVisible();
+  await expect(page.getByRole("status")).toContainText(/Import uyguland/);
 });
