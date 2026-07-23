@@ -58,4 +58,14 @@ export type ReportArchiveDetailResponse = {
     message: string | null;
     retryable: boolean;
   };
+  retry: {
+    canRetry: boolean;
+    retryOfArchiveId: number | null;
+    latestRetryArchiveId: number | null;
+    latestRetryStatus: ReportArchiveDetailStatus | null;
+    reason: string | null;
+  };
+  lifecycle: {
+    isStale: boolean;
+  };
 };

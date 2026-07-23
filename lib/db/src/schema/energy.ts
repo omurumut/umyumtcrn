@@ -284,6 +284,7 @@ export const reportArchivesTable = pgTable("report_archives", {
   previousStatus: text("previous_status"),
   lifecycleVersion: integer("lifecycle_version").notNull().default(1),
   snapshotId: integer("snapshot_id").references(() => reportGenerationSnapshotsTable.id, { onDelete: "set null" }),
+  retryOfArchiveId: integer("retry_of_archive_id").references((): AnyPgColumn => reportArchivesTable.id, { onDelete: "set null" }),
   legacyReportId: integer("legacy_report_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -293,6 +294,7 @@ export const reportArchivesTable = pgTable("report_archives", {
   companyRetentionIndex: index("report_archives_company_retention_idx").on(table.companyId, table.status, table.retentionExpiresAt),
   companyPurgeEligibleIndex: index("report_archives_company_purge_eligible_idx").on(table.companyId, table.status, table.purgeEligibleAt),
   snapshotIndex: index("report_archives_snapshot_idx").on(table.snapshotId),
+  retryOfIndex: index("report_archives_retry_of_idx").on(table.retryOfArchiveId),
   storageKeyUnique: uniqueIndex("report_archives_storage_key_unique").on(table.storageKey),
 }));
 

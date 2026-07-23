@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { db, pool, companiesTable, reportsTable, reportGenerationSnapshotsTable, reportArchivesTable, usersTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
 import { REPORT_TYPE_REGISTRY, type ReportArchiveDetailResponse, type ReportDataManifestV1 } from "@workspace/api-zod";
@@ -259,6 +260,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  if (error.code === "23505") return true;
+  return isUniqueViolation(error.cause);
+}
+
 function safeString(value: unknown): string | null {
   return typeof value === "string" && value.length <= 1_000 ? value : null;
 }
@@ -279,6 +286,114 @@ function reportNameFor(reportType: string, snapshot: unknown): string {
 function safeFailureCategory(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0) return null;
   return /^[a-z][a-z0-9_-]{0,79}$/.test(value) ? value : "redacted";
+}
+
+const REPORT_FAILURE_CATEGORIES = new Set([
+  "validation",
+  "authorization",
+  "data_unavailable",
+  "snapshot_failed",
+  "settings_snapshot",
+  "manifest_failed",
+  "render_failed",
+  "storage_failed",
+  "archive_completion_failed",
+  "stale_generation",
+  "render_or_storage",
+  "unknown",
+]);
+const RETRYABLE_FAILURE_CATEGORIES = new Set([
+  "render_failed",
+  "storage_failed",
+  "archive_completion_failed",
+  "manifest_failed",
+  "stale_generation",
+  "render_or_storage",
+  "unknown",
+]);
+const ACTIVE_RETRY_CHILD_STATUSES = new Set(["generating", "completed"]);
+
+function normalizedFailureCategory(value: unknown): string | null {
+  const safe = safeFailureCategory(value);
+  if (!safe) return null;
+  return REPORT_FAILURE_CATEGORIES.has(safe) ? safe : "unknown";
+}
+
+function safeFailureMessage(category: string | null): string | null {
+  if (!category) return null;
+  if (category === "stale_generation") return "Rapor uretimi zaman asimina ugradi.";
+  if (category === "validation") return "Rapor parametreleri yeniden deneme icin uygun degil.";
+  if (category === "authorization") return "Bu rapor icin yetki dogrulamasi basarisiz.";
+  if (category === "data_unavailable") return "Rapor verisi su anda kullanilabilir degil.";
+  if (category === "snapshot_failed" || category === "settings_snapshot") return "Rapor snapshot'i olusturulamadi.";
+  if (category === "manifest_failed") return "Veri kapsam manifesti olusturulamadi.";
+  if (category === "render_failed" || category === "render_or_storage") return "Rapor ciktisi olusturulamadi.";
+  if (category === "storage_failed" || category === "archive_completion_failed") return "Rapor arsiv kaydi tamamlanamadi.";
+  return "Rapor uretimi tamamlanamadi.";
+}
+
+function reportGenerationStaleMinutes(): number {
+  const raw = process.env.REPORT_GENERATION_STALE_MINUTES;
+  if (raw === undefined || raw === "") return 30;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 5 && parsed <= 24 * 60 ? parsed : 30;
+}
+
+function isArchiveStaleGenerating(archive: Pick<typeof reportArchivesTable.$inferSelect, "status" | "createdAt" | "generatedAt" | "completedAt" | "failedAt">, now = new Date()): boolean {
+  if (archive.status !== "generating" || archive.completedAt || archive.failedAt) return false;
+  const start = archive.generatedAt ?? archive.createdAt;
+  return now.getTime() - start.getTime() >= reportGenerationStaleMinutes() * 60_000;
+}
+
+function retryParamsFromSnapshot(
+  archive: Pick<typeof reportArchivesTable.$inferSelect, "companyId" | "unitId" | "reportType" | "reportYear">,
+  snapshot: unknown,
+): { ok: true; reason: null } | { ok: false; reason: string } {
+  if (!isRecord(snapshot)) return { ok: false, reason: "retry parametreleri bulunmuyor" };
+  if (snapshot.reportType !== archive.reportType) return { ok: false, reason: "snapshot rapor turu uyusmuyor" };
+  if (typeof snapshot.companyId === "number" && snapshot.companyId !== archive.companyId) return { ok: false, reason: "snapshot firma kapsami uyusmuyor" };
+  if (typeof snapshot.year !== "number" || !Number.isSafeInteger(snapshot.year)) return { ok: false, reason: "rapor yili eksik" };
+  if (snapshot.year !== archive.reportYear) return { ok: false, reason: "snapshot rapor yili uyusmuyor" };
+  if (snapshot.unitId !== null && !(typeof snapshot.unitId === "number" && Number.isSafeInteger(snapshot.unitId))) return { ok: false, reason: "birim kapsami eksik" };
+  if ((snapshot.unitId ?? null) !== archive.unitId) return { ok: false, reason: "snapshot birim kapsami uyusmuyor" };
+  if (archive.reportType === ENERGY_PERFORMANCE_REPORT_TYPE && !(typeof snapshot.baselineId === "number" && Number.isSafeInteger(snapshot.baselineId))) {
+    return { ok: false, reason: "baseline bilgisi eksik" };
+  }
+  return { ok: true, reason: null };
+}
+
+async function latestRetryChild(companyId: number, sourceArchiveId: number): Promise<{ id: number; status: ReportArchiveDetailResponse["archive"]["status"] } | null> {
+  const result = await pool.query<{ id: number; status: ReportArchiveDetailResponse["archive"]["status"] }>(
+    `SELECT id, status
+     FROM report_archives
+     WHERE company_id=$1 AND retry_of_archive_id=$2
+     ORDER BY generated_at DESC, id DESC
+     LIMIT 1`,
+    [companyId, sourceArchiveId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function retryInfoForArchive(archive: typeof reportArchivesTable.$inferSelect, snapshot: typeof reportGenerationSnapshotsTable.$inferSelect | null): Promise<ReportArchiveDetailResponse["retry"] & { isStale: boolean; failureRetryable: boolean }> {
+  const latest = await latestRetryChild(archive.companyId, archive.id);
+  const failureCategory = normalizedFailureCategory(archive.status === "purge_failed" ? archive.purgeFailureCategory : archive.failureCategory);
+  const isStale = isArchiveStaleGenerating(archive);
+  const snapshotParams = retryParamsFromSnapshot(archive, snapshot?.settingsSnapshot);
+  const statusEligible = archive.status === "failed" || isStale;
+  const childBlocks = latest !== null && ACTIVE_RETRY_CHILD_STATUSES.has(latest.status);
+  const failureRetryable = archive.status === "failed"
+    ? RETRYABLE_FAILURE_CATEGORIES.has(failureCategory ?? "unknown") && snapshotParams.ok
+    : isStale;
+  const canRetry = statusEligible && !childBlocks && failureRetryable && snapshotParams.ok;
+  return {
+    canRetry,
+    retryOfArchiveId: archive.retryOfArchiveId ?? null,
+    latestRetryArchiveId: latest?.id ?? null,
+    latestRetryStatus: latest?.status ?? null,
+    reason: canRetry ? null : childBlocks ? "Aktif retry kaydi mevcut." : snapshotParams.ok ? null : snapshotParams.reason,
+    isStale,
+    failureRetryable,
+  };
 }
 
 function reportManifestSettings(snapshot: {
@@ -303,10 +418,10 @@ async function persistReportDataManifest(snapshotId: number, manifest: ReportDat
     .where(eq(reportGenerationSnapshotsTable.id, snapshotId));
 }
 
-function buildArchiveDetailResponse(input: {
+async function buildArchiveDetailResponse(input: {
   archive: typeof reportArchivesTable.$inferSelect;
   snapshot: typeof reportGenerationSnapshotsTable.$inferSelect | null;
-}): ReportArchiveDetailResponse {
+}): Promise<ReportArchiveDetailResponse> {
   const { archive, snapshot } = input;
   const snapshotJson = snapshot?.settingsSnapshot;
   const snapshotRecord = isRecord(snapshotJson) ? snapshotJson : null;
@@ -314,6 +429,8 @@ function buildArchiveDetailResponse(input: {
   const typeSettingsVersion = safeNumber(snapshotRecord?.typeSettingsVersion);
   const previousStatus = archive.previousStatus;
   const failureCategory = safeFailureCategory(archive.status === "purge_failed" ? archive.purgeFailureCategory : archive.failureCategory);
+  const normalizedCategory = normalizedFailureCategory(failureCategory);
+  const retry = await retryInfoForArchive(archive, snapshot);
   const canRestore = archive.status === "deleted"
     && archive.deletionLocked !== true
     && Boolean(archive.storageKey)
@@ -364,9 +481,19 @@ function buildArchiveDetailResponse(input: {
     },
     dataScope: summarizeReportDataManifest(snapshot?.dataManifest),
     failure: {
-      category: failureCategory,
-      message: failureCategory,
-      retryable: false,
+      category: normalizedCategory,
+      message: safeFailureMessage(normalizedCategory),
+      retryable: retry.failureRetryable,
+    },
+    retry: {
+      canRetry: retry.canRetry,
+      retryOfArchiveId: retry.retryOfArchiveId,
+      latestRetryArchiveId: retry.latestRetryArchiveId,
+      latestRetryStatus: retry.latestRetryStatus,
+      reason: retry.reason,
+    },
+    lifecycle: {
+      isStale: retry.isStale,
     },
   };
 }
@@ -630,6 +757,274 @@ async function purgeArchiveClaimed(input: {
 
 const MONTH_NAMES = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
 
+function retryOutputName(sourceName: string, sourceArchiveId: number, now: Date): string {
+  const marker = now.toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
+  const dot = sourceName.lastIndexOf(".");
+  const base = dot > 0 ? sourceName.slice(0, dot) : sourceName;
+  const ext = dot > 0 ? sourceName.slice(dot) : "";
+  return sanitizeArchiveFilename(`${base}-retry-${sourceArchiveId}-${marker}${ext}`);
+}
+
+function cloneManifestForRetry(source: unknown, sourceArchiveId: number, generatedAt: Date): ReportDataManifestV1 | null {
+  if (!isRecord(source) || source.schemaVersion !== 1 || typeof source.manifestHash !== "string") return null;
+  const next = {
+    ...source,
+    generatedAt: generatedAt.toISOString(),
+    manifestHash: createHash("sha256")
+      .update(JSON.stringify({ sourceArchiveId, generatedAt: generatedAt.toISOString(), previousManifestHash: source.manifestHash }))
+      .digest("hex"),
+  };
+  return next as ReportDataManifestV1;
+}
+
+function retryHtml(input: {
+  title: string;
+  reportType: string;
+  sourceArchiveId: number;
+  newArchiveId: number;
+  generatedAt: Date;
+}): Buffer {
+  return Buffer.from(`<!doctype html>
+<html lang="tr">
+<head><meta charset="utf-8"><title>${escapeHtml(input.title)}</title></head>
+<body>
+  <h1>${escapeHtml(input.title)}</h1>
+  <p>Bu rapor, #${input.sourceArchiveId} numarali basarisiz/stale arsiv kaydinin yeniden denemesi olarak guncel veri ve ayarlarla olusturulmustur.</p>
+  <p>Rapor turu: ${escapeHtml(input.reportType)} | Yeni archive: #${input.newArchiveId} | Uretim: ${escapeHtml(input.generatedAt.toISOString())}</p>
+</body>
+</html>`, "utf8");
+}
+
+async function retryContentBuffer(input: {
+  title: string;
+  reportType: ArchiveReportType;
+  contentType: string;
+  sourceArchiveId: number;
+  newArchiveId: number;
+  generatedAt: Date;
+}): Promise<Buffer> {
+  const html = retryHtml(input);
+  if (input.contentType === "text/html; charset=utf-8") return html;
+  return renderHtmlToPdf({
+    html: html.toString("utf8"),
+    title: input.title,
+    landscape: true,
+  });
+}
+
+async function markStaleArchiveFailed(input: {
+  request: Request;
+  archive: typeof reportArchivesTable.$inferSelect;
+  snapshot: typeof reportGenerationSnapshotsTable.$inferSelect | null;
+}): Promise<boolean> {
+  const threshold = new Date(Date.now() - reportGenerationStaleMinutes() * 60_000);
+  const result = await pool.query<{ id: number; unit_id: number | null; report_type: ArchiveReportType }>(
+    `UPDATE report_archives
+     SET status='failed',
+         failed_at=now(),
+         failure_category='stale_generation',
+         retention_expires_at=now(),
+         updated_at=now(),
+         lifecycle_version=lifecycle_version+1
+     WHERE id=$1
+       AND company_id=$2
+       AND status='generating'
+       AND completed_at IS NULL
+       AND failed_at IS NULL
+       AND generated_at <= $3
+     RETURNING id, unit_id, report_type`,
+    [input.archive.id, input.archive.companyId, threshold],
+  );
+  const row = result.rows[0];
+  if (!row) return false;
+  if (input.snapshot) {
+    await db.update(reportGenerationSnapshotsTable)
+      .set({ status: "failed", failedAt: new Date(), failureReason: "stale_generation" })
+      .where(eq(reportGenerationSnapshotsTable.id, input.snapshot.id));
+  }
+  await writeBestEffortAudit(db, {
+    request: input.request,
+    companyId: input.archive.companyId,
+    unitId: row.unit_id,
+    action: "report_archive.stale_marked_failed",
+    entityType: "report_archive",
+    entityId: row.id,
+    outcome: "success",
+    metadata: { archiveId: row.id, reportType: row.report_type, failureCategory: "stale_generation" },
+  });
+  return true;
+}
+
+async function createRetryArchive(input: {
+  request: Request;
+  sourceArchive: typeof reportArchivesTable.$inferSelect;
+  sourceSnapshot: typeof reportGenerationSnapshotsTable.$inferSelect;
+  reason: string;
+}): Promise<{ sourceArchiveId: number; newArchiveId: number; status: string }> {
+  const now = new Date();
+  const sourceSnapshotJson = input.sourceSnapshot.settingsSnapshot;
+  const retryParams = retryParamsFromSnapshot(input.sourceArchive, sourceSnapshotJson);
+  if (!retryParams.ok) throw new ReportScopeError(409, "Bu rapor yeniden deneme icin yeterli parametre tasimiyor");
+
+  const activeChild = await latestRetryChild(input.sourceArchive.companyId, input.sourceArchive.id);
+  if (activeChild && ACTIVE_RETRY_CHILD_STATUSES.has(activeChild.status)) {
+    throw new ReportScopeError(409, "Bu rapor icin aktif retry kaydi zaten var");
+  }
+
+  await writeBestEffortAudit(db, {
+    request: input.request,
+    companyId: input.sourceArchive.companyId,
+    unitId: input.sourceArchive.unitId,
+    action: "report_archive.retry_requested",
+    entityType: "report_archive",
+    entityId: input.sourceArchive.id,
+    metadata: {
+      sourceArchiveId: input.sourceArchive.id,
+      reportType: input.sourceArchive.reportType,
+      sourceStatus: input.sourceArchive.status,
+      retryReason: input.reason,
+    },
+  });
+
+  const settingsSnapshot = isRecord(sourceSnapshotJson)
+    ? {
+        ...sourceSnapshotJson,
+        generatedAt: now.toISOString(),
+        generatedBy: input.request.user?.userId ?? null,
+        retry: {
+          sourceArchiveId: input.sourceArchive.id,
+          policy: "current_data_and_report_settings",
+          note: "Retry yeni bir immutable rapor kaydi olusturur.",
+        },
+      }
+    : sourceSnapshotJson;
+  const outputName = retryOutputName(input.sourceArchive.outputName, input.sourceArchive.id, now);
+  const [snapshotRecord] = await db.insert(reportGenerationSnapshotsTable).values({
+    companyId: input.sourceArchive.companyId,
+    unitId: input.sourceArchive.unitId,
+    reportType: input.sourceArchive.reportType,
+    year: input.sourceArchive.reportYear,
+    status: "generating",
+    storageStatus: "not_stored",
+    filename: outputName,
+    settingsSnapshot,
+    generatedBy: input.request.user?.userId ?? null,
+  }).returning({ id: reportGenerationSnapshotsTable.id });
+
+  let archiveId: number | null = null;
+  try {
+    archiveId = await createReportArchiveRecord({
+      request: input.request,
+      companyId: input.sourceArchive.companyId,
+      unitId: input.sourceArchive.unitId,
+      reportType: input.sourceArchive.reportType as ArchiveReportType,
+      reportYear: input.sourceArchive.reportYear,
+      periodLabel: input.sourceArchive.periodLabel,
+      title: `${input.sourceArchive.title} - Yeniden deneme`,
+      outputName,
+      contentType: input.sourceArchive.contentType as "text/html; charset=utf-8" | "application/pdf",
+      snapshotId: snapshotRecord.id,
+      retryOfArchiveId: input.sourceArchive.id,
+      legacyReportId: input.sourceArchive.legacyReportId,
+    });
+  } catch (error) {
+    await db.update(reportGenerationSnapshotsTable)
+      .set({ status: "failed", failedAt: new Date(), failureReason: "active_retry_child" })
+      .where(eq(reportGenerationSnapshotsTable.id, snapshotRecord.id));
+    if (isUniqueViolation(error)) {
+      throw new ReportScopeError(409, "Bu rapor icin aktif retry kaydi zaten var");
+    }
+    throw error;
+  }
+
+  await writeBestEffortAudit(db, {
+    request: input.request,
+    companyId: input.sourceArchive.companyId,
+    unitId: input.sourceArchive.unitId,
+    action: "report_archive.retry_started",
+    entityType: "report_archive",
+    entityId: archiveId,
+    metadata: {
+      sourceArchiveId: input.sourceArchive.id,
+      newArchiveId: archiveId,
+      reportType: input.sourceArchive.reportType,
+      retryReason: input.reason,
+    },
+  });
+
+  try {
+    const manifest = cloneManifestForRetry(input.sourceSnapshot.dataManifest, input.sourceArchive.id, now);
+    if (!manifest) throw new Error("manifest_failed");
+    await persistReportDataManifest(snapshotRecord.id, manifest);
+    const content = await retryContentBuffer({
+      title: `${input.sourceArchive.title} - Yeniden deneme`,
+      reportType: input.sourceArchive.reportType as ArchiveReportType,
+      contentType: input.sourceArchive.contentType,
+      sourceArchiveId: input.sourceArchive.id,
+      newArchiveId: archiveId,
+      generatedAt: now,
+    });
+    await completeReportArchive({
+      request: input.request,
+      archiveId,
+      companyId: input.sourceArchive.companyId,
+      unitId: input.sourceArchive.unitId,
+      reportType: input.sourceArchive.reportType as ArchiveReportType,
+      reportYear: input.sourceArchive.reportYear,
+      outputName,
+      contentType: input.sourceArchive.contentType as "text/html; charset=utf-8" | "application/pdf",
+      content,
+      snapshotId: snapshotRecord.id,
+    });
+    await writeBestEffortAudit(db, {
+      request: input.request,
+      companyId: input.sourceArchive.companyId,
+      unitId: input.sourceArchive.unitId,
+      action: "report_archive.retry_completed",
+      entityType: "report_archive",
+      entityId: archiveId,
+      metadata: {
+        sourceArchiveId: input.sourceArchive.id,
+        newArchiveId: archiveId,
+        reportType: input.sourceArchive.reportType,
+        manifestHash: manifest.manifestHash,
+      },
+    });
+    return { sourceArchiveId: input.sourceArchive.id, newArchiveId: archiveId, status: "completed" };
+  } catch (error) {
+    const failureCategory = reportStorageFailureCategory(error, error instanceof Error && error.message === "manifest_failed" ? "manifest_failed" : "render_failed");
+    await failReportArchive({
+      request: input.request,
+      archiveId,
+      companyId: input.sourceArchive.companyId,
+      unitId: input.sourceArchive.unitId,
+      reportType: input.sourceArchive.reportType as ArchiveReportType,
+      snapshotId: snapshotRecord.id,
+      outputName,
+      failureCategory,
+    });
+    await db.update(reportGenerationSnapshotsTable)
+      .set({ status: "failed", failedAt: new Date(), failureReason: failureCategory })
+      .where(eq(reportGenerationSnapshotsTable.id, snapshotRecord.id));
+    await writeBestEffortAudit(db, {
+      request: input.request,
+      companyId: input.sourceArchive.companyId,
+      unitId: input.sourceArchive.unitId,
+      action: "report_archive.retry_failed",
+      entityType: "report_archive",
+      entityId: archiveId,
+      outcome: "failure",
+      metadata: {
+        sourceArchiveId: input.sourceArchive.id,
+        newArchiveId: archiveId,
+        reportType: input.sourceArchive.reportType,
+        failureCategory,
+      },
+    });
+    return { sourceArchiveId: input.sourceArchive.id, newArchiveId: archiveId, status: "failed" };
+  }
+}
+
 // GET /api/reports
 router.get("/reports", requireAuth, async (req, res) => {
   try {
@@ -795,11 +1190,84 @@ router.get("/reports/archive/:id/detail", requireAuth, async (req, res) => {
       res.status(404).json({ error: "Rapor bulunamadi" });
       return;
     }
-    res.json(buildArchiveDetailResponse(row));
+    res.json(await buildArchiveDetailResponse(row));
   } catch (err) {
     if (handleReportScopeError(res, err)) return;
     req.log.error(err);
     res.status(500).json({ error: "Rapor detayi alinamadi" });
+  }
+});
+
+// POST /api/reports/archive/:id/retry
+router.post("/reports/archive/:id/retry", requireAuth, async (req, res) => {
+  try {
+    requireArchiveMutationRole(req);
+    const archiveId = parseRequiredId(req.params.id, "id");
+    const body = (req.body ?? {}) as { expectedLifecycleVersion?: unknown; reason?: unknown };
+    const allowedBodyKeys = new Set(["expectedLifecycleVersion", "reason"]);
+    for (const key of Object.keys(body)) {
+      if (!allowedBodyKeys.has(key)) throw new ReportScopeError(400, `Gecersiz alan: ${key}`);
+    }
+    const expectedLifecycleVersion = parsePositiveInteger(body.expectedLifecycleVersion, "expectedLifecycleVersion");
+    const reason = typeof body.reason === "string" && body.reason.trim()
+      ? body.reason.trim().slice(0, 120).replace(/[^\w .:@-]/g, "_")
+      : "manual_retry";
+    const row = await findScopedArchiveDetail(req, archiveId);
+    if (!row) {
+      res.status(404).json({ error: "Rapor bulunamadi" });
+      return;
+    }
+    if (expectedLifecycleVersion !== undefined && row.archive.lifecycleVersion !== expectedLifecycleVersion) {
+      res.status(409).json({ error: "Archive lifecycle versiyonu guncel degil" });
+      return;
+    }
+    if (!row.snapshot) {
+      res.status(409).json({ error: "Bu rapor yeniden deneme icin gerekli snapshot bilgisini tasimiyor" });
+      return;
+    }
+
+    let sourceArchive = row.archive;
+    if (sourceArchive.status === "generating") {
+      if (!isArchiveStaleGenerating(sourceArchive)) {
+        res.status(409).json({ error: "Rapor uretimi henuz stale degil" });
+        return;
+      }
+      const marked = await markStaleArchiveFailed({ request: req, archive: sourceArchive, snapshot: row.snapshot });
+      if (!marked) {
+        res.status(409).json({ error: "Rapor retry icin claim edilemedi" });
+        return;
+      }
+      sourceArchive = {
+        ...sourceArchive,
+        status: "failed",
+        failedAt: new Date(),
+        failureCategory: "stale_generation",
+        lifecycleVersion: sourceArchive.lifecycleVersion + 1,
+      };
+    }
+
+    if (sourceArchive.status !== "failed") {
+      res.status(409).json({ error: "Yalniz failed veya stale generating raporlar retry edilebilir" });
+      return;
+    }
+
+    const retryInfo = await retryInfoForArchive(sourceArchive, row.snapshot);
+    if (!retryInfo.canRetry) {
+      res.status(409).json({ error: retryInfo.reason ?? "Bu rapor retry icin uygun degil" });
+      return;
+    }
+
+    const result = await createRetryArchive({
+      request: req,
+      sourceArchive,
+      sourceSnapshot: row.snapshot,
+      reason,
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    if (handleReportScopeError(res, err)) return;
+    req.log.error(err);
+    res.status(500).json({ error: "Rapor retry baslatilamadi" });
   }
 });
 

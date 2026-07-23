@@ -49,6 +49,7 @@ const counters = {
   archivePurgeScenarios: 0,
   archiveDiagnosticsScenarios: 0,
   archiveDetailScenarios: 0,
+  archiveRetryScenarios: 0,
   archiveCleanupCliScenarios: 0,
   archiveSecurityScenarios: 0,
   archiveAuditScenarios: 0,
@@ -72,6 +73,45 @@ function daysAgo(days: number): Date {
 
 function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function fixtureManifest(input: { companyId: number; unitId: number | null; reportType?: string; year?: number; hash?: string }): Record<string, unknown> {
+  const reportType = input.reportType ?? "annual_energy_performance";
+  const year = input.year ?? 2026;
+  return {
+    schemaVersion: 1,
+    reportType,
+    scope: {
+      companyId: input.companyId,
+      unitId: input.unitId,
+      companyWide: input.unitId === null,
+      periodStart: `${year}-01-01`,
+      periodEnd: `${year}-12-31`,
+      year,
+      timezone: "Europe/Istanbul",
+    },
+    filters: {},
+    sources: [
+      {
+        sourceType: reportType === "energy_targets_management" ? "energy_targets" : reportType === "energy_performance_monitoring" ? "energy_performance_results" : "annual_consumption",
+        recordCount: 1,
+        identityHash: "a".repeat(64),
+        identityAlgorithm: "sha256",
+        identitySchemaVersion: 1,
+      },
+    ],
+    qualityWarnings: [],
+    isPartial: false,
+    settings: {
+      profileVersion: 1,
+      typeSettingsVersion: 1,
+      documentNumber: null,
+      revisionNumber: null,
+      revisionDate: null,
+    },
+    generatedAt: "2026-07-23T09:00:00.000Z",
+    manifestHash: input.hash ?? "c".repeat(64),
+  };
 }
 
 async function listen(app: TestApp): Promise<{ baseUrl: string; close: () => Promise<void> }> {
@@ -146,6 +186,7 @@ async function seedArchive(input: {
   title: string;
   reportType?: string;
   reportYear?: number;
+  contentType?: "text/html; charset=utf-8" | "application/pdf";
   withObject?: boolean;
   storageKeyOnly?: boolean;
   wrongChecksum?: boolean;
@@ -156,6 +197,7 @@ async function seedArchive(input: {
   purgeEligibleAt?: Date | null;
   generatedAt?: Date;
   snapshotId?: number | null;
+  retryOfArchiveId?: number | null;
 }): Promise<{ id: number; key: string | null; content: Buffer }> {
   const reportType = input.reportType ?? "annual_energy_performance";
   const reportYear = input.reportYear ?? 2026;
@@ -171,9 +213,9 @@ async function seedArchive(input: {
        status, generated_by, generated_at, completed_at, failed_at, failure_category,
        deleted_at, deleted_by, delete_reason, purge_eligible_at, purged_at, purged_by,
        purge_failure_category, retention_expires_at, deletion_locked, previous_status,
-       size_bytes, checksum_sha256, storage_provider, storage_key, snapshot_id
+       size_bytes, checksum_sha256, storage_provider, storage_key, snapshot_id, retry_of_archive_id
      )
-     VALUES($1,$2,$3,$4,$5,$6,'text/html; charset=utf-8',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,null,null,null,null,$23)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,null,null,null,null,$24,$25)
      RETURNING id`,
     [
       input.companyId,
@@ -182,6 +224,7 @@ async function seedArchive(input: {
       reportYear,
       input.title,
       `${input.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.html`,
+      input.contentType ?? "text/html; charset=utf-8",
       input.status,
       input.generatedBy,
       now,
@@ -199,6 +242,7 @@ async function seedArchive(input: {
       input.deletionLocked === true,
       input.previousStatus ?? (input.status === "deleted" || input.status === "purge_failed" ? "completed" : null),
       input.snapshotId ?? null,
+      input.retryOfArchiveId ?? null,
     ],
   );
   const id = result.rows[0]!.id;
@@ -520,6 +564,7 @@ async function testArchiveDetail(baseUrl: string, tokens: TokenSet, storageModul
   const warnings = dataScope.qualityWarnings as Array<Record<string, unknown>>;
   assert(Array.isArray(warnings) && warnings[0]?.code === "MISSING_CONSUMPTION_MONTHS" && warnings[0].sourceType === "annual_consumption", "Manifest warning summary failed.");
   assert(failure.category === null && failure.message === null && failure.retryable === false, "Completed failure contract is wrong.");
+  assert(asRecord(adminBody.retry, "Detail retry missing.").canRetry === false && asRecord(adminBody.lifecycle, "Detail lifecycle missing.").isStale === false, "Completed retry/lifecycle flags are wrong.");
   assert((await api(baseUrl, "GET", `/api/reports/archive/${completed.id}/detail`, tokens.kontrolA)).status === 200, "Kontrol admin detail failed.");
   assert((await api(baseUrl, "GET", `/api/reports/archive/${completed.id}/detail`, tokens.standardA)).status === 200, "Standard own-unit detail failed.");
 
@@ -543,7 +588,7 @@ async function testArchiveDetail(baseUrl: string, tokens: TokenSet, storageModul
   const failedResponse = await api(baseUrl, "GET", `/api/reports/archive/${failed.id}/detail`, tokens.adminA);
   assert(failedResponse.status === 200, "Failed detail failed.");
   const failedFailure = asRecord(asRecord(failedResponse.json, "Failed detail body missing.").failure, "Failed detail failure missing.");
-  assert(failedFailure.category === "render_failed" && failedFailure.message === "render_failed" && failedFailure.retryable === false, "Failed detail contract is wrong.");
+  assert(failedFailure.category === "render_failed" && failedFailure.retryable === false, "Failed detail contract is wrong.");
   const noSnapshot = await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "completed", title: "retention fixture detail no snapshot", withObject: true });
   const noSnapshotResponse = await api(baseUrl, "GET", `/api/reports/archive/${noSnapshot.id}/detail`, tokens.adminA);
   assert(noSnapshotResponse.status === 200, "No-snapshot detail failed.");
@@ -618,6 +663,168 @@ async function testLifecycle(baseUrl: string, tokens: TokenSet, storageModule: S
   assert(await auditCount("report_archive.restored", restoreMissing.id) === 0, "Failed restore wrote success audit.");
   await assertNoAuditLeak("report_archive.restored");
   bump("archiveRestoreScenarios", 5);
+}
+
+async function seedRetrySource(input: {
+  storage: StorageModule["reportStorage"];
+  companyId: number;
+  unitId: number | null;
+  generatedBy: number;
+  status?: "failed" | "generating" | "completed" | "deleted";
+  reportType?: string;
+  contentType?: "text/html; charset=utf-8" | "application/pdf";
+  generatedAt?: Date;
+  snapshotPayload?: Record<string, unknown>;
+  manifest?: Record<string, unknown> | null;
+}) {
+  const reportType = input.reportType ?? "annual_energy_performance";
+  const snapshotId = await seedSnapshot({
+    companyId: input.companyId,
+    unitId: input.unitId,
+    generatedBy: input.generatedBy,
+    reportType,
+    payload: {
+      year: 2026,
+      unitId: input.unitId,
+      ...(reportType === "energy_performance_monitoring" ? { baselineId: 12345 } : {}),
+      ...input.snapshotPayload,
+    },
+    dataManifest: input.manifest === undefined ? fixtureManifest({ companyId: input.companyId, unitId: input.unitId, reportType }) : input.manifest,
+  });
+  return seedArchive({
+    storage: input.storage,
+    companyId: input.companyId,
+    unitId: input.unitId,
+    generatedBy: input.generatedBy,
+    status: input.status ?? "failed",
+    title: `retention fixture retry ${reportType} ${Math.random().toString(36).slice(2)}`,
+    reportType,
+    contentType: input.contentType ?? "text/html; charset=utf-8",
+    generatedAt: input.generatedAt,
+    snapshotId,
+  });
+}
+
+async function testRetry(baseUrl: string, tokens: TokenSet, storageModule: StorageModule, users: Awaited<ReturnType<typeof setupFixtures>>): Promise<void> {
+  const retryColumn = await pool.query<{ is_nullable: string }>(
+    "SELECT is_nullable FROM information_schema.columns WHERE table_name='report_archives' AND column_name='retry_of_archive_id'",
+  );
+  assert(retryColumn.rows[0]?.is_nullable === "YES", "retry_of_archive_id nullable olmali.");
+  const retryFk = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM information_schema.table_constraints WHERE table_name='report_archives' AND constraint_name='report_archives_retry_of_archive_id_fk' AND constraint_type='FOREIGN KEY'",
+  );
+  assert(retryFk.rows[0]?.count === "1", "Retry FK bulunamadi.");
+  const retryIndex = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM pg_indexes WHERE tablename='report_archives' AND indexname='report_archives_active_retry_child_unique' AND indexdef LIKE '%status%generating%completed%'",
+  );
+  assert(retryIndex.rows[0]?.count === "1", "Retry partial unique index bulunamadi.");
+  const indexSource = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id });
+  await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "generating", title: "retention fixture retry db active child", retryOfArchiveId: indexSource.id });
+  let partialUniqueBlocked = false;
+  try {
+    await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "completed", title: "retention fixture retry db completed child", retryOfArchiveId: indexSource.id });
+  } catch {
+    partialUniqueBlocked = true;
+  }
+  assert(partialUniqueBlocked, "DB ayni source icin ikinci aktif retry child'i engellemedi.");
+  const failedIndexSource = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id });
+  await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "failed", title: "retention fixture retry db failed child", retryOfArchiveId: failedIndexSource.id });
+  await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "generating", title: "retention fixture retry db active after failed", retryOfArchiveId: failedIndexSource.id });
+  bump("archiveRetryScenarios", 5);
+
+  const source = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: users.standardA.unit_id, generatedBy: users.adminA.id });
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${source.id}/retry`, tokens.kontrolA, {})).status === 403, "Kontrol admin retry was not rejected.");
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${source.id}/retry`, tokens.standardA, {})).status === 403, "Standard retry was not rejected.");
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${source.id}/retry`, tokens.adminB, {})).status === 404, "Foreign admin retry leaked archive.");
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${source.id}/retry`, tokens.superadmin, {})).status === 400, "Superadmin implicit retry accepted.");
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${source.id}/retry?companyId=${users.companyB}`, tokens.superadmin, {})).status === 404, "Superadmin wrong company retry leaked archive.");
+  const retry = await api(baseUrl, "POST", `/api/reports/archive/${source.id}/retry`, tokens.adminA, {});
+  assert(retry.status === 201, `Admin retry failed: ${retry.status} ${retry.text}`);
+  const retryBody = retry.json as { sourceArchiveId?: number; newArchiveId?: number; status?: string };
+  assert(retryBody.sourceArchiveId === source.id && typeof retryBody.newArchiveId === "number" && retryBody.newArchiveId !== source.id, "Retry response IDs invalid.");
+  const sourceRow = await archiveRow(source.id);
+  const childRow = await archiveRow(retryBody.newArchiveId);
+  assert(sourceRow.status === "failed" && sourceRow.retry_of_archive_id === null, "Source archive was overwritten.");
+  assert(childRow.retry_of_archive_id === source.id && childRow.snapshot_id !== sourceRow.snapshot_id, "Retry child relationship/snapshot invalid.");
+  const oldManifest = await pool.query<{ data_manifest_json: Record<string, unknown> | null }>("SELECT data_manifest_json FROM report_generation_snapshots WHERE id=$1", [sourceRow.snapshot_id]);
+  const newManifest = await pool.query<{ data_manifest_json: Record<string, unknown> | null }>("SELECT data_manifest_json FROM report_generation_snapshots WHERE id=$1", [childRow.snapshot_id]);
+  assert(oldManifest.rows[0]?.data_manifest_json?.manifestHash !== newManifest.rows[0]?.data_manifest_json?.manifestHash, "Retry manifest hash was not refreshed.");
+  const detail = await api(baseUrl, "GET", `/api/reports/archive/${source.id}/detail`, tokens.adminA);
+  assert(detail.status === 200 && detail.text.includes("\"latestRetryArchiveId\"") && !detail.text.includes("companies/"), "Retry detail contract/leak failed.");
+  bump("archiveRetryScenarios", 13);
+
+  for (const status of ["completed", "deleted"] as const) {
+    const blocked = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id, status });
+    assert((await api(baseUrl, "POST", `/api/reports/archive/${blocked.id}/retry`, tokens.adminA, {})).status === 409, `${status} retry was not blocked.`);
+    bump("archiveRetryScenarios");
+  }
+  const freshGenerating = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id, status: "generating", generatedAt: new Date() });
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${freshGenerating.id}/retry`, tokens.adminA, {})).status === 409, "Fresh generating retry was not blocked.");
+  const staleGenerating = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id, status: "generating", generatedAt: daysAgo(1) });
+  const staleRetry = await api(baseUrl, "POST", `/api/reports/archive/${staleGenerating.id}/retry`, tokens.adminA, {});
+  assert(staleRetry.status === 201, `Stale retry failed: ${staleRetry.status}`);
+  const staleRow = await archiveRow(staleGenerating.id);
+  assert(staleRow.status === "failed" && staleRow.failure_category === "stale_generation", "Stale source was not safely marked failed.");
+  bump("archiveRetryScenarios", 4);
+
+  const activeSource = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id });
+  await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "generating", title: "retention fixture retry active child", retryOfArchiveId: activeSource.id });
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${activeSource.id}/retry`, tokens.adminA, {})).status === 409, "Active retry child did not block retry.");
+  const failedChildSource = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id });
+  await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "failed", title: "retention fixture retry failed child", retryOfArchiveId: failedChildSource.id });
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${failedChildSource.id}/retry`, tokens.adminA, {})).status === 201, "Failed retry child should allow another retry.");
+  const completedChildSource = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id });
+  await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "completed", title: "retention fixture retry completed child", retryOfArchiveId: completedChildSource.id });
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${completedChildSource.id}/retry`, tokens.adminA, {})).status === 409, "Completed retry child should block another retry.");
+  bump("archiveRetryScenarios", 3);
+
+  const legacy = await seedRetrySource({
+    storage: storageModule.reportStorage,
+    companyId: users.companyA,
+    unitId: null,
+    generatedBy: users.adminA.id,
+    snapshotPayload: { year: undefined },
+  });
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${legacy.id}/retry`, tokens.adminA, {})).status === 409, "Legacy missing retry params accepted.");
+  const companyMismatch = await seedRetrySource({
+    storage: storageModule.reportStorage,
+    companyId: users.companyA,
+    unitId: null,
+    generatedBy: users.adminA.id,
+    snapshotPayload: { companyId: users.companyB },
+  });
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${companyMismatch.id}/retry`, tokens.adminA, {})).status === 409, "Snapshot company mismatch retry accepted.");
+  const unitMismatch = await seedRetrySource({
+    storage: storageModule.reportStorage,
+    companyId: users.companyA,
+    unitId: users.standardA.unit_id,
+    generatedBy: users.adminA.id,
+    snapshotPayload: { unitId: null },
+  });
+  assert((await api(baseUrl, "POST", `/api/reports/archive/${unitMismatch.id}/retry`, tokens.adminA, {})).status === 409, "Snapshot unit mismatch retry accepted.");
+  const concurrent = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id });
+  const concurrentResults = await Promise.all([
+    api(baseUrl, "POST", `/api/reports/archive/${concurrent.id}/retry`, tokens.adminA, {}),
+    api(baseUrl, "POST", `/api/reports/archive/${concurrent.id}/retry`, tokens.adminA, {}),
+  ]);
+  assert(concurrentResults.filter(r => r.status === 201).length === 1 && concurrentResults.some(r => r.status === 409), "Concurrent retry did not single-claim.");
+  const conflictText = concurrentResults.find(r => r.status === 409)?.text ?? "";
+  assert(!/duplicate|unique|constraint|report_archives_active_retry_child_unique|postgres/i.test(conflictText), "Concurrent retry raw DB detail leaked.");
+  bump("archiveRetryScenarios", 6);
+
+  for (const reportType of ["annual_energy_performance", "energy_targets_management", "energy_performance_monitoring"]) {
+    const smoke = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id, reportType });
+    assert((await api(baseUrl, "POST", `/api/reports/archive/${smoke.id}/retry`, tokens.superadmin, {})).status === 400, "Superadmin smoke without context accepted.");
+    const smokeRetry = await api(baseUrl, "POST", `/api/reports/archive/${smoke.id}/retry?companyId=${users.companyA}`, tokens.superadmin, {});
+    assert(smokeRetry.status === 201, `${reportType} retry smoke failed: ${smokeRetry.status}`);
+    bump("archiveRetryScenarios", 2);
+  }
+  assert(await auditCount("report_archive.retry_requested") >= 1, "Retry requested audit missing.");
+  assert(await auditCount("report_archive.retry_started") >= 1, "Retry started audit missing.");
+  assert(await auditCount("report_archive.retry_completed") >= 1, "Retry completed audit missing.");
+  assert(await auditCount("report_archive.stale_marked_failed", staleGenerating.id) === 1, "Stale audit missing.");
+  await assertNoAuditLeak("report_archive.retry_requested");
+  await assertNoAuditLeak("report_archive.retry_completed");
 }
 
 async function testPurge(baseUrl: string, tokens: TokenSet, storageModule: StorageModule, users: Awaited<ReturnType<typeof setupFixtures>>): Promise<void> {
@@ -878,6 +1085,7 @@ async function main(): Promise<void> {
     await testExpiryMaterialization(storageModule, fixtures.companyA, fixtures.adminA);
     await testArchiveDetail(server.baseUrl, tokens, storageModule, fixtures);
     await testLifecycle(server.baseUrl, tokens, storageModule, fixtures);
+    await testRetry(server.baseUrl, tokens, storageModule, fixtures);
     await testPurge(server.baseUrl, tokens, storageModule, fixtures);
     await testConcurrency(server.baseUrl, tokens, storageModule, fixtures);
     await testDiagnosticsAndDownload(server.baseUrl, tokens, storageModule, fixtures);

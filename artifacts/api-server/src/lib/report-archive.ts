@@ -20,6 +20,7 @@ type CreateArchiveInput = {
   outputName: string;
   contentType: ArchiveContentType;
   snapshotId: number;
+  retryOfArchiveId?: number | null;
   legacyReportId?: number | null;
 };
 
@@ -96,6 +97,7 @@ function archiveAuditMetadata(input: {
   sizeBytes?: number | null;
   checksumSha256?: string | null;
   failureCategory?: string | null;
+  retryOfArchiveId?: number | null;
 }) {
   return {
     archiveId: input.archiveId,
@@ -105,6 +107,7 @@ function archiveAuditMetadata(input: {
     sizeBytes: input.sizeBytes ?? null,
     checksumSha256: input.checksumSha256 ? input.checksumSha256.slice(0, 16) : null,
     failureCategory: input.failureCategory ?? null,
+    retryOfArchiveId: input.retryOfArchiveId ?? null,
   };
 }
 
@@ -122,6 +125,7 @@ export async function createReportArchiveRecord(input: CreateArchiveInput): Prom
     generatedBy: input.request.user?.userId ?? null,
     generatedAt: new Date(),
     snapshotId: input.snapshotId,
+    retryOfArchiveId: input.retryOfArchiveId ?? null,
     legacyReportId: input.legacyReportId ?? null,
   }).returning({ id: reportArchivesTable.id });
   await writeBestEffortAudit(db, {
@@ -136,6 +140,7 @@ export async function createReportArchiveRecord(input: CreateArchiveInput): Prom
       reportType: input.reportType,
       snapshotId: input.snapshotId,
       outputName: input.outputName,
+      retryOfArchiveId: input.retryOfArchiveId ?? null,
     }),
   });
   return archive.id;
