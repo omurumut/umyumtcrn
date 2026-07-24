@@ -678,6 +678,20 @@ async function seedRetrySource(input: {
   manifest?: Record<string, unknown> | null;
 }) {
   const reportType = input.reportType ?? "annual_energy_performance";
+  let baselineId: number | undefined;
+  if (reportType === "energy_performance_monitoring") {
+    const requestedBaselineId = input.snapshotPayload?.baselineId;
+    if (typeof requestedBaselineId === "number") {
+      baselineId = requestedBaselineId;
+    } else {
+      const baseline = await pool.query<{ id: number }>(
+        "SELECT id FROM energy_baselines WHERE company_id=$1 AND ($2::int IS NULL OR unit_id=$2) ORDER BY id LIMIT 1",
+        [input.companyId, input.unitId],
+      );
+      baselineId = baseline.rows[0]?.id;
+      assert(typeof baselineId === "number", "Retry performance fixture baseline bulunamadi.");
+    }
+  }
   const snapshotId = await seedSnapshot({
     companyId: input.companyId,
     unitId: input.unitId,
@@ -686,7 +700,7 @@ async function seedRetrySource(input: {
     payload: {
       year: 2026,
       unitId: input.unitId,
-      ...(reportType === "energy_performance_monitoring" ? { baselineId: 12345 } : {}),
+      ...(reportType === "energy_performance_monitoring" ? { baselineId } : {}),
       ...input.snapshotPayload,
     },
     dataManifest: input.manifest === undefined ? fixtureManifest({ companyId: input.companyId, unitId: input.unitId, reportType }) : input.manifest,
