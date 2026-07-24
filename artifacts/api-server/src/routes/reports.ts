@@ -1,36 +1,21 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
-import { db, pool, companiesTable, reportsTable, reportGenerationSnapshotsTable, reportArchivesTable, usersTable, consumptionTable, swotTable, risksTable, metersTable, weatherTable, energyTargetsTable, energyActionPlansTable, energyTargetProgressTable, vapProjectsTable, unitsTable, subUnitsTable, energySourcesTable, energyBaselinesTable, energyBaselineVariablesTable, energyPerformanceResultsTable, seuAssessmentItemsTable, seuAssessmentsTable } from "@workspace/db";
-import { REPORT_TYPE_REGISTRY, type ReportArchiveDetailResponse, type ReportDataManifestV1 } from "@workspace/api-zod";
-import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, asc, count, ilike } from "drizzle-orm";
+import { db, pool, companiesTable, reportsTable, reportGenerationSnapshotsTable, reportArchivesTable, usersTable, unitsTable } from "@workspace/db";
+import { REPORT_TYPE_REGISTRY, type ReportArchiveDetailResponse } from "@workspace/api-zod";
+import { eq, and, or, isNull, SQL, inArray, lte, gte, desc, count, ilike } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { renderHtmlToPdf, safePdfFilename } from "../lib/pdf-render.js";
-import { resolveEffectiveCompanyReportSettings } from "../lib/company-report-settings-resolver.js";
 import { writeBestEffortAudit } from "../lib/audit.js";
 import {
   ENERGY_TARGETS_REPORT_TYPE,
-  ReportSettingsSnapshotError,
-  buildEnergyTargetsReportSnapshot,
   parseEnergyTargetsLegacyOverrides,
-  visibleEnergyTargetsSections,
-  type EnergyTargetsReportSnapshot,
 } from "../lib/energy-targets-report-snapshot.js";
 import {
   ENERGY_PERFORMANCE_REPORT_TYPE,
-  EnergyPerformanceReportSnapshotError,
-  buildEnergyPerformanceReportSnapshot,
-  visibleEnergyPerformanceSections,
-  type EnergyPerformanceReportSnapshot,
 } from "../lib/energy-performance-report-snapshot.js";
 import {
   ANNUAL_ENERGY_REPORT_TYPE,
-  AnnualEnergyReportSnapshotError,
-  buildAnnualEnergyReportSnapshot,
   parseAnnualEnergyLegacyOverrides,
-  visibleAnnualEnergySections,
-  type AnnualEnergyReportSnapshot,
 } from "../lib/annual-energy-report-snapshot.js";
 import { createReportArchiveRecord, completeReportArchive, failReportArchive, sanitizeArchiveFilename, type ArchiveReportType } from "../lib/report-archive.js";
 import { ReportStorageError, reportStorage } from "../lib/report-storage.js";
@@ -44,24 +29,6 @@ import {
   redactedObjectIdentifier,
 } from "../lib/report-retention.js";
 import {
-  buildTechnicalProfileReportContext,
-  endOfYearEffectiveDate,
-  type TechnicalProfileReportContext,
-} from "../lib/unit-technical-profile-effective.js";
-import {
-  buildEquipmentInventoryContext,
-  toEquipmentReportSnapshot,
-} from "../lib/equipment-inventory-context.js";
-import {
-  buildCorporateReportHtml,
-  buildCorporateSectionHeading,
-  logoBufferToDataUri,
-} from "../lib/report-pdf-layout.js";
-import {
-  buildAnnualReportDataManifest,
-  buildEnergyPerformanceReportDataManifest,
-  buildEnergyTargetsReportDataManifest,
-  manifestAuditMetadata,
   summarizeReportDataManifest,
 } from "../lib/report-data-manifest.js";
 import {
@@ -72,12 +39,6 @@ import {
 
 const router = Router();
 const TARGET_REPORT_STATUSES = new Set(["draft", "active", "completed", "cancelled"]);
-const SEU_DECISION_LABELS: Record<string, string> = {
-  accepted_as_seu: "ÖEK",
-  not_seu: "ÖEK Dışı",
-  monitor: "İzleme",
-};
-
 class ReportScopeError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -111,74 +72,6 @@ function handleReportGenerationError(res: Response, error: unknown): boolean {
     return true;
   }
   return false;
-}
-
-function escapeHtml(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function technicalProfileReportContextHtml(context: TechnicalProfileReportContext): string {
-  const title = "Birim Teknik Profili";
-  if (context.status !== "resolved") {
-    return `<h2>${title}</h2>
-    <div class="warning-box">
-      <strong>Teknik profil baglami:</strong> ${escapeHtml(context.warning ?? "Secilen kapsam icin teknik profil snapshot'i kullanilmadi.")}
-      <br><span>Etki tarihi: ${escapeHtml(context.effectiveDate)}</span>
-    </div>`;
-  }
-
-  const metaRows = [
-    ["Birim", context.unitName ?? "-"],
-    ["Snapshot", context.snapshotNumber ? `#${context.snapshotNumber}` : "-"],
-    ["Profil versiyonu", context.profileVersion ?? "-"],
-    ["Gecerlilik", `${context.validFrom ?? "-"} - ${context.validTo ?? "devam"}`],
-    ["Yayim tarihi", context.publishedAt ? context.publishedAt.slice(0, 10) : "-"],
-    ["Tamamlanma", context.completionPercentage !== null ? `%${context.completionPercentage}` : "-"],
-  ];
-  const fieldRows = [...context.standardSummary.slice(0, 14), ...context.customSummary.slice(0, 8)]
-    .map((field) => `<tr><td>${escapeHtml(field.label)}</td><td>${escapeHtml(field.displayValue)}</td></tr>`)
-    .join("");
-
-  return `<h2>${title}</h2>
-    <div class="meta-grid">
-      ${metaRows.map(([label, value]) => `<div class="meta-item"><div class="meta-label">${escapeHtml(label)}</div><div class="meta-value">${escapeHtml(value)}</div></div>`).join("")}
-    </div>
-    ${fieldRows
-      ? `<table><tr><th>Alan</th><th>Deger</th></tr>${fieldRows}</table>`
-      : `<div class="warning-box">Yayimlanmis snapshot bulundu ancak rapora uygun dolu teknik profil alani yok.</div>`}`;
-}
-
-function equipmentInventoryReportContextHtml(context: ReturnType<typeof toEquipmentReportSnapshot>): string {
-  const rows = context.keyEquipment
-    .map((item) => `<tr>
-      <td>${escapeHtml(item.equipmentCode)}</td>
-      <td>${escapeHtml(item.name)}</td>
-      <td>${escapeHtml(item.category)}</td>
-      <td>${escapeHtml(item.unitName ?? "-")}</td>
-      <td style="text-align:center">${item.isCritical ? "Evet" : "Hayir"}</td>
-      <td style="text-align:right">${item.installedPowerKw !== null ? item.installedPowerKw.toLocaleString("tr-TR") : "-"}</td>
-      <td style="text-align:center">${item.meterCount}</td>
-      <td style="text-align:center">${item.energySourceCount}</td>
-    </tr>`)
-    .join("");
-  return `<h2>Enerji Tuketen Ekipman Envanteri</h2>
-    <div class="meta-grid">
-      <div class="meta-item"><div class="meta-label">Aktif Ekipman</div><div class="meta-value">${context.scope.activeEquipment}</div></div>
-      <div class="meta-item"><div class="meta-label">Kritik</div><div class="meta-value">${context.scope.criticalEquipment}</div></div>
-      <div class="meta-item"><div class="meta-label">Enerji Yogun</div><div class="meta-value">${context.scope.energyIntensiveEquipment}</div></div>
-      <div class="meta-item"><div class="meta-label">Birincil Sayac</div><div class="meta-value">${context.coverage.withPrimaryMeter}</div></div>
-      <div class="meta-item"><div class="meta-label">Enerji Kaynagi</div><div class="meta-value">${context.coverage.withAnyEnergySource}</div></div>
-      <div class="meta-item"><div class="meta-label">Kurulu Guc</div><div class="meta-value">${context.aggregates.installedPowerKw !== null ? `${context.aggregates.installedPowerKw.toLocaleString("tr-TR")} kW` : "-"}</div></div>
-    </div>
-    ${context.warnings.length > 0 ? `<div class="warning-box">Kaynak notlari: ${escapeHtml(context.warnings.slice(0, 4).join(", "))}</div>` : ""}
-    ${rows ? `<table><tr><th>Kod</th><th>Ad</th><th>Kategori</th><th>Birim</th><th>Kritik</th><th style="text-align:right">Kurulu Guc kW</th><th>Sayac</th><th>Kaynak</th></tr>${rows}</table>` : `<div class="warning-box">Kapsamda rapora eklenebilecek aktif ekipman bulunamadi.</div>`}
-    <p style="font-size:11px;color:#64748b">Bu bolum mevcut ekipman envanterinden uretilen ozet baglamdir; seri numarasi, varlik kodu, notlar ve uzun ozel alanlar rapora alinmaz.</p>`;
 }
 
 function parsePositiveInteger(value: unknown, field: string): number | undefined {
@@ -263,19 +156,6 @@ function safeContentDisposition(filename: string): string {
   const safe = sanitizeArchiveFilename(filename).replace(/"/g, "");
   const ascii = safe.replace(/[^\x20-\x7E]/g, "_");
   return `attachment; filename="${ascii}"`;
-}
-
-async function readCompanyPdfIdentity(companyId: number) {
-  const [company] = await db.select({
-    name: companiesTable.name,
-    legalName: companiesTable.legalName,
-    shortName: companiesTable.shortName,
-    address: companiesTable.address,
-  })
-    .from(companiesTable)
-    .where(eq(companiesTable.id, companyId))
-    .limit(1);
-  return company ?? null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -418,28 +298,6 @@ async function retryInfoForArchive(archive: typeof reportArchivesTable.$inferSel
   };
 }
 
-function reportManifestSettings(snapshot: {
-  profileVersion?: number | null;
-  typeSettingsVersion?: number | null;
-  documentNumber?: string | null;
-  revisionNumber?: string | null;
-  revisionDate?: string | null;
-}) {
-  return {
-    profileVersion: snapshot.profileVersion ?? null,
-    typeSettingsVersion: snapshot.typeSettingsVersion ?? null,
-    documentNumber: snapshot.documentNumber ?? null,
-    revisionNumber: snapshot.revisionNumber ?? null,
-    revisionDate: snapshot.revisionDate ?? null,
-  };
-}
-
-async function persistReportDataManifest(snapshotId: number, manifest: ReportDataManifestV1): Promise<void> {
-  await db.update(reportGenerationSnapshotsTable)
-    .set({ dataManifest: manifest })
-    .where(eq(reportGenerationSnapshotsTable.id, snapshotId));
-}
-
 async function buildArchiveDetailResponse(input: {
   archive: typeof reportArchivesTable.$inferSelect;
   snapshot: typeof reportGenerationSnapshotsTable.$inferSelect | null;
@@ -540,86 +398,6 @@ async function findScopedArchiveDetail(req: Request, archiveId: number) {
     .where(and(...conditions))
     .limit(1);
   return row ?? null;
-}
-
-async function getOfficialSeuReportSection({
-  companyId,
-  unitId,
-  year,
-}: {
-  companyId: number;
-  unitId: number | null;
-  year: number;
-}) {
-  const assessmentConditions: SQL[] = [
-    eq(seuAssessmentsTable.companyId, companyId),
-    eq(unitsTable.companyId, companyId),
-    eq(seuAssessmentsTable.year, year),
-    eq(seuAssessmentsTable.recordType, "unit_official"),
-    eq(seuAssessmentsTable.isOfficial, true),
-  ];
-  if (unitId !== null) assessmentConditions.push(eq(seuAssessmentsTable.unitId, unitId));
-
-  const candidates = await db
-    .select({
-      id: seuAssessmentsTable.id,
-      unitId: seuAssessmentsTable.unitId,
-      createdAt: seuAssessmentsTable.createdAt,
-    })
-    .from(seuAssessmentsTable)
-    .innerJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
-    .where(and(...assessmentConditions))
-    .orderBy(asc(seuAssessmentsTable.unitId), desc(seuAssessmentsTable.createdAt), desc(seuAssessmentsTable.id));
-
-  // Official kayıt üretim sözleşmesindeki gibi her birim için en son kaydı kullan.
-  const latestByUnit = new Map<number, number>();
-  for (const assessment of candidates) {
-    if (assessment.unitId !== null && !latestByUnit.has(assessment.unitId)) {
-      latestByUnit.set(assessment.unitId, assessment.id);
-    }
-  }
-  const assessmentIds = [...latestByUnit.values()];
-  if (assessmentIds.length === 0) return { assessmentCount: 0, items: [] };
-
-  const items = await db
-    .select({
-      assessmentId: seuAssessmentsTable.id,
-      assessmentYear: seuAssessmentsTable.year,
-      unitId: seuAssessmentsTable.unitId,
-      unitName: unitsTable.name,
-      id: seuAssessmentItemsTable.id,
-      name: seuAssessmentItemsTable.name,
-      energySourceName: energySourcesTable.name,
-      energyTep: seuAssessmentItemsTable.energyTep,
-      consumptionSharePercent: seuAssessmentItemsTable.consumptionSharePercent,
-      priorityResult: seuAssessmentItemsTable.priorityResult,
-      userDecision: seuAssessmentItemsTable.userDecision,
-      decisionReason: seuAssessmentItemsTable.decisionReason,
-    })
-    .from(seuAssessmentItemsTable)
-    .innerJoin(seuAssessmentsTable, eq(seuAssessmentItemsTable.assessmentId, seuAssessmentsTable.id))
-    .innerJoin(unitsTable, eq(seuAssessmentsTable.unitId, unitsTable.id))
-    .leftJoin(energySourcesTable, and(
-      eq(seuAssessmentItemsTable.energySourceId, energySourcesTable.id),
-      eq(energySourcesTable.companyId, companyId),
-      or(isNull(energySourcesTable.unitId), eq(energySourcesTable.unitId, seuAssessmentsTable.unitId)),
-    ))
-    .where(and(
-      inArray(seuAssessmentsTable.id, assessmentIds),
-      eq(seuAssessmentsTable.companyId, companyId),
-      eq(unitsTable.companyId, companyId),
-      eq(seuAssessmentsTable.year, year),
-      eq(seuAssessmentsTable.recordType, "unit_official"),
-      eq(seuAssessmentsTable.isOfficial, true),
-      ...(unitId !== null ? [eq(seuAssessmentsTable.unitId, unitId)] : []),
-    ))
-    .orderBy(
-      asc(seuAssessmentsTable.unitId),
-      asc(seuAssessmentItemsTable.consumptionSharePercent),
-      asc(seuAssessmentItemsTable.id),
-    );
-
-  return { assessmentCount: assessmentIds.length, items };
 }
 
 async function resolveReportScope(
@@ -775,63 +553,6 @@ async function purgeArchiveClaimed(input: {
     });
     return { status: "failed" as const, category };
   }
-}
-
-const MONTH_NAMES = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
-
-function retryOutputName(sourceName: string, sourceArchiveId: number, now: Date): string {
-  const marker = now.toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
-  const dot = sourceName.lastIndexOf(".");
-  const base = dot > 0 ? sourceName.slice(0, dot) : sourceName;
-  const ext = dot > 0 ? sourceName.slice(dot) : "";
-  return sanitizeArchiveFilename(`${base}-retry-${sourceArchiveId}-${marker}${ext}`);
-}
-
-function cloneManifestForRetry(source: unknown, sourceArchiveId: number, generatedAt: Date): ReportDataManifestV1 | null {
-  if (!isRecord(source) || source.schemaVersion !== 1 || typeof source.manifestHash !== "string") return null;
-  const next = {
-    ...source,
-    generatedAt: generatedAt.toISOString(),
-    manifestHash: createHash("sha256")
-      .update(JSON.stringify({ sourceArchiveId, generatedAt: generatedAt.toISOString(), previousManifestHash: source.manifestHash }))
-      .digest("hex"),
-  };
-  return next as ReportDataManifestV1;
-}
-
-function retryHtml(input: {
-  title: string;
-  reportType: string;
-  sourceArchiveId: number;
-  newArchiveId: number;
-  generatedAt: Date;
-}): Buffer {
-  return Buffer.from(`<!doctype html>
-<html lang="tr">
-<head><meta charset="utf-8"><title>${escapeHtml(input.title)}</title></head>
-<body>
-  <h1>${escapeHtml(input.title)}</h1>
-  <p>Bu rapor, #${input.sourceArchiveId} numarali basarisiz/stale arsiv kaydinin yeniden denemesi olarak guncel veri ve ayarlarla olusturulmustur.</p>
-  <p>Rapor turu: ${escapeHtml(input.reportType)} | Yeni archive: #${input.newArchiveId} | Uretim: ${escapeHtml(input.generatedAt.toISOString())}</p>
-</body>
-</html>`, "utf8");
-}
-
-async function retryContentBuffer(input: {
-  title: string;
-  reportType: ArchiveReportType;
-  contentType: string;
-  sourceArchiveId: number;
-  newArchiveId: number;
-  generatedAt: Date;
-}): Promise<Buffer> {
-  const html = retryHtml(input);
-  if (input.contentType === "text/html; charset=utf-8") return html;
-  return renderHtmlToPdf({
-    html: html.toString("utf8"),
-    title: input.title,
-    landscape: true,
-  });
 }
 
 async function markStaleArchiveFailed(input: {
@@ -1616,19 +1337,6 @@ router.post("/reports/generate", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Sunucu hatas�" });
   }
 });
-// ── Label maps ──────────────────────────────────────────────────────────────
-const TARGET_STATUS_LABELS: Record<string, string> = {
-  active: "Aktif", completed: "Tamamlandı", cancelled: "İptal", on_hold: "Beklemede",
-};
-const ACTION_STATUS_LABELS: Record<string, string> = {
-  planned: "Planlandı", in_progress: "Devam Ediyor", completed: "Tamamlandı",
-  cancelled: "İptal", on_hold: "Beklemede",
-};
-const FEASIBILITY_STATUS_LABELS: Record<string, string> = {
-  not_started: "Başlanmadı", in_progress: "Devam Ediyor", completed: "Tamamlandı",
-  approved: "Onaylandı", rejected: "Reddedildi",
-};
-
 // GET /api/reports/energy-targets/pdf
 router.get("/reports/energy-targets/pdf", requireAuth, async (req, res) => {
   try {

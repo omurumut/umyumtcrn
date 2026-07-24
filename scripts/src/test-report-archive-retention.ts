@@ -29,6 +29,16 @@ type TokenSet = {
 };
 
 type UserRow = { id: number; company_id: number; unit_id: number | null; password_hash?: string };
+type ManifestSource = { sourceType: string | null; recordCount: number; identityHash: string };
+type ManifestRow = {
+  id: number;
+  settings_snapshot_json: Record<string, unknown>;
+  data_manifest_json: {
+    manifestHash: string;
+    settings?: { profileVersion?: number | null; typeSettingsVersion?: number | null; footerText?: string | null };
+    sources: ManifestSource[];
+  };
+};
 type StorageModule = {
   reportStorage: {
     provider: string;
@@ -112,6 +122,24 @@ function fixtureManifest(input: { companyId: number; unitId: number | null; repo
     generatedAt: "2026-07-23T09:00:00.000Z",
     manifestHash: input.hash ?? "c".repeat(64),
   };
+}
+
+function sourceHash(manifest: ManifestRow["data_manifest_json"], sourceType: string): string {
+  const source = manifest.sources.find(item => item.sourceType === sourceType);
+  assert(source, `Manifest source missing: ${sourceType}`);
+  return source.identityHash;
+}
+
+async function readManifestRow(snapshotId: number): Promise<ManifestRow> {
+  const result = await pool.query<ManifestRow>(
+    `SELECT id, settings_snapshot_json, data_manifest_json
+     FROM report_generation_snapshots
+     WHERE id=$1`,
+    [snapshotId],
+  );
+  const row = result.rows[0];
+  assert(row?.data_manifest_json?.manifestHash && Array.isArray(row.data_manifest_json.sources), `Manifest row missing: ${snapshotId}`);
+  return row;
 }
 
 async function listen(app: TestApp): Promise<{ baseUrl: string; close: () => Promise<void> }> {
@@ -327,6 +355,9 @@ async function setupFixtures(storage: StorageModule["reportStorage"]) {
 
   await pool.query("DELETE FROM report_archives WHERE title LIKE 'retention fixture %'");
   await pool.query("DELETE FROM report_generation_snapshots WHERE filename LIKE 'retention-fixture-%' OR settings_snapshot_json->>'fixture' = 'archive-detail'");
+  await pool.query("DELETE FROM company_report_type_settings WHERE company_id IN ($1,$2) AND report_type='energy_targets_management'", [adminA.company_id, standardB.company_id]);
+  await pool.query("DELETE FROM company_report_profiles WHERE company_id IN ($1,$2)", [adminA.company_id, standardB.company_id]);
+  await pool.query("DELETE FROM energy_targets WHERE company_id=$1 AND name LIKE 'retention fixture retry parity %'", [adminA.company_id]);
   await pool.query("DELETE FROM company_report_retention_settings WHERE company_id IN ($1,$2)", [adminA.company_id, standardB.company_id]);
 
   return { adminA, kontrolA, standardA, standardB, adminB, kontrolB, superadmin, companyA: adminA.company_id, companyB: standardB.company_id };
@@ -746,6 +777,94 @@ async function testRetry(baseUrl: string, tokens: TokenSet, storageModule: Stora
   await seedArchive({ storage: storageModule.reportStorage, companyId: users.companyA, generatedBy: users.adminA.id, status: "generating", title: "retention fixture retry db active after failed", retryOfArchiveId: failedIndexSource.id });
   bump("archiveRetryScenarios", 5);
 
+  const parityUnitId = users.standardA.unit_id;
+  assert(typeof parityUnitId === "number", "Retry parity fixture unit bulunamadi.");
+  await pool.query(
+    `INSERT INTO company_report_profiles(company_id, default_title, footer_text, profile_version, updated_by)
+     VALUES($1, 'retention fixture report old', 'retention fixture old footer', 11, $2)
+     ON CONFLICT (company_id) DO UPDATE
+       SET default_title=EXCLUDED.default_title,
+           footer_text=EXCLUDED.footer_text,
+           profile_version=EXCLUDED.profile_version,
+           updated_by=EXCLUDED.updated_by,
+           updated_at=now()`,
+    [users.companyA, users.adminA.id],
+  );
+  await pool.query(
+    `INSERT INTO company_report_type_settings(company_id, report_type, title_override, type_settings_version, updated_by)
+     VALUES($1, 'energy_targets_management', 'retention fixture targets old', 21, $2)
+     ON CONFLICT (company_id, report_type) DO UPDATE
+       SET title_override=EXCLUDED.title_override,
+           type_settings_version=EXCLUDED.type_settings_version,
+           updated_by=EXCLUDED.updated_by,
+           updated_at=now()`,
+    [users.companyA, users.adminA.id],
+  );
+  const target = await pool.query<{ id: number }>(
+    `INSERT INTO energy_targets(
+       company_id, unit_id, name, baseline_year, target_year, target_reduction_percent,
+       baseline_value, target_value, actual_value, unit_label, status, objective_text, target_text
+     )
+     VALUES($1, $2, $3, 2025, 2026, 10, 1000, 900, 940, 'kWh', 'active', 'retry parity objective', 'retry parity target')
+     RETURNING id`,
+    [users.companyA, parityUnitId, `retention fixture retry parity ${Date.now()}`],
+  );
+  const archiveBoundary = await pool.query<{ max_id: number | null }>("SELECT max(id) max_id FROM report_archives");
+  const initialTargets = await api(baseUrl, "GET", `/api/reports/energy-targets/pdf?year=2026&unitId=${parityUnitId}`, tokens.adminA);
+  assert(initialTargets.status === 200, `Initial targets generation failed: ${initialTargets.status} ${initialTargets.text.slice(0, 120)}`);
+  const initialArchive = await pool.query<{ id: number; snapshot_id: number; checksum_sha256: string | null }>(
+    `SELECT id, snapshot_id, checksum_sha256
+     FROM report_archives
+     WHERE id > $1 AND company_id=$2 AND unit_id=$3 AND report_type='energy_targets_management'
+     ORDER BY id DESC
+     LIMIT 1`,
+    [archiveBoundary.rows[0]?.max_id ?? 0, users.companyA, parityUnitId],
+  );
+  assert(initialArchive.rows[0]?.snapshot_id, "Initial targets archive/snapshot missing.");
+  const sourceArchiveId = initialArchive.rows[0]!.id;
+  const sourceSnapshotId = initialArchive.rows[0]!.snapshot_id;
+  const sourceChecksum = initialArchive.rows[0]!.checksum_sha256;
+  const oldManifestRow = await readManifestRow(sourceSnapshotId);
+  const oldSnapshotText = JSON.stringify(oldManifestRow.settings_snapshot_json);
+  const oldManifestText = JSON.stringify(oldManifestRow.data_manifest_json);
+  assert(oldManifestRow.settings_snapshot_json.profileVersion === 11 && oldManifestRow.settings_snapshot_json.typeSettingsVersion === 21, "Initial targets settings snapshot did not use old settings.");
+  const oldTargetHash = sourceHash(oldManifestRow.data_manifest_json, "energy_targets");
+  const oldActionHash = sourceHash(oldManifestRow.data_manifest_json, "action_plans");
+  const oldProgressHash = sourceHash(oldManifestRow.data_manifest_json, "target_progress");
+  const oldVapHash = sourceHash(oldManifestRow.data_manifest_json, "vap_projects");
+  await pool.query("UPDATE energy_targets SET actual_value=957.25, updated_at=now() WHERE id=$1", [target.rows[0]!.id]);
+  await pool.query(
+    "UPDATE company_report_profiles SET footer_text='retention fixture current footer', profile_version=12, updated_by=$2, updated_at=now() WHERE company_id=$1",
+    [users.companyA, users.adminA.id],
+  );
+  await pool.query(
+    "UPDATE company_report_type_settings SET title_override='retention fixture targets current', type_settings_version=22, updated_by=$2, updated_at=now() WHERE company_id=$1 AND report_type='energy_targets_management'",
+    [users.companyA, users.adminA.id],
+  );
+  await pool.query(
+    "UPDATE report_archives SET status='failed', failed_at=now(), failure_category='render_failed', updated_at=now(), lifecycle_version=lifecycle_version+1 WHERE id=$1",
+    [sourceArchiveId],
+  );
+  const parityRetry = await api(baseUrl, "POST", `/api/reports/archive/${sourceArchiveId}/retry`, tokens.adminA, {});
+  assert(parityRetry.status === 201, `Targets parity retry failed: ${parityRetry.status} ${parityRetry.text}`);
+  const parityRetryBody = parityRetry.json as { newArchiveId?: number };
+  assert(typeof parityRetryBody.newArchiveId === "number", "Targets parity retry child missing.");
+  const parityChild = await archiveRow(parityRetryBody.newArchiveId);
+  const paritySourceAfter = await archiveRow(sourceArchiveId);
+  assert(paritySourceAfter.snapshot_id === sourceSnapshotId && paritySourceAfter.checksum_sha256 === sourceChecksum, "Targets parity source archive snapshot/checksum changed.");
+  const oldManifestAfter = await readManifestRow(sourceSnapshotId);
+  assert(JSON.stringify(oldManifestAfter.settings_snapshot_json) === oldSnapshotText && JSON.stringify(oldManifestAfter.data_manifest_json) === oldManifestText, "Targets parity source snapshot/manifest changed.");
+  const parityManifestRow = await readManifestRow(Number(parityChild.snapshot_id));
+  assert(parityManifestRow.data_manifest_json.manifestHash !== oldManifestRow.data_manifest_json.manifestHash, "Targets parity manifest hash did not change.");
+  assert(sourceHash(parityManifestRow.data_manifest_json, "energy_targets") !== oldTargetHash, "Targets parity source identity hash did not change.");
+  assert(sourceHash(parityManifestRow.data_manifest_json, "action_plans") === oldActionHash, "Unchanged action_plans hash changed.");
+  assert(sourceHash(parityManifestRow.data_manifest_json, "target_progress") === oldProgressHash, "Unchanged target_progress hash changed.");
+  assert(sourceHash(parityManifestRow.data_manifest_json, "vap_projects") === oldVapHash, "Unchanged vap_projects hash changed.");
+  assert(parityManifestRow.settings_snapshot_json.profileVersion === 12 && parityManifestRow.settings_snapshot_json.typeSettingsVersion === 22, "Retry did not use current settings versions.");
+  assert(parityManifestRow.settings_snapshot_json.footerText === "retention fixture current footer", "Retry did not use current settings values.");
+  assert(oldManifestAfter.settings_snapshot_json.footerText === "retention fixture old footer", "Old settings snapshot was mutated.");
+  bump("archiveRetryScenarios", 14);
+
   const source = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: users.standardA.unit_id, generatedBy: users.adminA.id });
   assert((await api(baseUrl, "POST", `/api/reports/archive/${source.id}/retry`, tokens.kontrolA, {})).status === 403, "Kontrol admin retry was not rejected.");
   assert((await api(baseUrl, "POST", `/api/reports/archive/${source.id}/retry`, tokens.standardA, {})).status === 403, "Standard retry was not rejected.");
@@ -826,12 +945,21 @@ async function testRetry(baseUrl: string, tokens: TokenSet, storageModule: Stora
   assert(!/duplicate|unique|constraint|report_archives_active_retry_child_unique|postgres/i.test(conflictText), "Concurrent retry raw DB detail leaked.");
   bump("archiveRetryScenarios", 6);
 
+  const expectedRetryContentTypes: Record<string, string> = {
+    annual_energy_performance: "text/html; charset=utf-8",
+    energy_targets_management: "application/pdf",
+    energy_performance_monitoring: "application/pdf",
+  };
   for (const reportType of ["annual_energy_performance", "energy_targets_management", "energy_performance_monitoring"]) {
     const smoke = await seedRetrySource({ storage: storageModule.reportStorage, companyId: users.companyA, unitId: null, generatedBy: users.adminA.id, reportType });
     assert((await api(baseUrl, "POST", `/api/reports/archive/${smoke.id}/retry`, tokens.superadmin, {})).status === 400, "Superadmin smoke without context accepted.");
     const smokeRetry = await api(baseUrl, "POST", `/api/reports/archive/${smoke.id}/retry?companyId=${users.companyA}`, tokens.superadmin, {});
     assert(smokeRetry.status === 201, `${reportType} retry smoke failed: ${smokeRetry.status}`);
-    bump("archiveRetryScenarios", 2);
+    const smokeRetryBody = smokeRetry.json as { newArchiveId?: number };
+    assert(typeof smokeRetryBody.newArchiveId === "number", `${reportType} retry smoke child missing.`);
+    const smokeChild = await archiveRow(smokeRetryBody.newArchiveId);
+    assert(smokeChild.content_type === expectedRetryContentTypes[reportType], `${reportType} retry content type mismatch.`);
+    bump("archiveRetryScenarios", 3);
   }
   assert(await auditCount("report_archive.retry_requested") >= 1, "Retry requested audit missing.");
   assert(await auditCount("report_archive.retry_started") >= 1, "Retry started audit missing.");
